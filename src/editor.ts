@@ -1,17 +1,31 @@
 import * as PIXI from "pixi.js";
 import { Node } from "./node";
+
 export class NodeEditor {
   private app: PIXI.Application;
   private nodes: Map<number, Node>;
   private isMouseDown: boolean;
+  private element: HTMLCanvasElement;
+  private resizeTimeout: number;
 
-  constructor(app: PIXI.Application) {
-    this.app = app;
+  constructor(element: HTMLCanvasElement) {
+    const rect = element.getBoundingClientRect();
+    this.app = new PIXI.Application({
+      view: element,
+      width: rect.width,
+      height: rect.height,
+    });
     this.nodes = new Map();
     this.isMouseDown = false;
+    this.element = element;
+    this.resizeTimeout = 0;
 
     // this.interactionManager = new InteractionManager(this);
     this.setupEventListeners();
+
+    this.app.ticker.add(() => this.update.bind(this));
+
+    this.addNode(new Node(1, { x: 10, y: 10 }, { x: 100, y: 100 }));
   }
 
   setupEventListeners() {
@@ -36,12 +50,23 @@ export class NodeEditor {
     }
   }
 
-  onResize(event: Event) {}
+  onResize() {
+    if (this.resizeTimeout) {
+      clearTimeout(this.resizeTimeout);
+    }
+    this.resizeTimeout = setTimeout(() => {
+      const rect = this.element.getBoundingClientRect();
+      this.app.renderer.resize(rect.width, rect.height);
+    }, 250);
+  }
 
   getNodeFromEvent(event) {}
 
   calculateNewPosition(event, node) {}
-  addNode(node) {}
+
+  addNode(node: Node) {
+    this.nodes.set(node.getId(), node);
+  }
 
   removeNode(nodeId) {}
 

@@ -48,5 +48,9 @@ export class Node {
     this.graphics.endFill();
   }
 
+  getId() {
+    return this.id;
+  }
+
   initializePorts() {}
 }
