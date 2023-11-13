@@ -76,6 +76,32 @@ export class MouseMoveEvent {
   }
 }
 
+export class MouseScrollEvent {
+  private static callbacks: Array<(e: WheelEvent) => void> = [];
+  private static element: Window | HTMLElement | null = null;
+
+  static attachElement(element: Window | HTMLElement) {
+    if (!MouseScrollEvent.element) {
+      MouseScrollEvent.element = element;
+      MouseScrollEvent.element.addEventListener("scroll", (e) => {
+        for (let i = 0; i < MouseScrollEvent.callbacks.length; i++) {
+          MouseScrollEvent.callbacks[i](e as WheelEvent);
+        }
+      });
+    }
+  }
+
+  static addCallback(callback: (e: WheelEvent) => void): void {
+    MouseScrollEvent.callbacks.push(callback);
+  }
+
+  static removeCallback(callback: (e: WheelEvent) => void): void {
+    MouseScrollEvent.callbacks = MouseScrollEvent.callbacks.filter(
+      (cb) => cb !== callback,
+    );
+  }
+}
+
 export class ResizeEvent {
   private static callbacks: Array<(e: Event) => void> = [];
   private static element: Window | HTMLElement | null = null;
