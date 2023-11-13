@@ -1,34 +1,30 @@
 import * as PIXI from "pixi.js";
 import { Port } from "./port";
-type XY = {
-  x: number;
-  y: number;
-};
-export class Node {
+import { Draggable } from "./draggable";
+
+export class Node implements Draggable {
   private id: number;
-  private pos: XY;
-  private size: XY;
+  private pos: PIXI.IPointData;
+  private size: PIXI.IPointData;
   private container: PIXI.Container;
   private graphics: PIXI.Graphics;
   private inputs: Port[];
   private outputs: Port[];
+  private readonly CIRCLE_RADIUS = 5; // Radius of the circles
+  private readonly PORT_SPACING = 20; // Vertical space between circles
 
-  constructor(id: number, position: XY, size: XY) {
+  constructor(id: number, position: PIXI.IPointData, size: PIXI.IPointData) {
     this.id = id;
 
-    // Position and size of the node
     this.pos = position;
     this.size = size;
 
-    // Graphical elements
-    this.container = new PIXI.Container(); // Pixi.js container for this node
-    this.graphics = new PIXI.Graphics(); // For drawing the node
+    this.container = new PIXI.Container();
+    this.graphics = new PIXI.Graphics();
 
-    // Ports (inputs/outputs)
     this.inputs = [];
     this.outputs = [];
 
-    // Initialize the node
     this.initialize();
   }
 
@@ -42,9 +38,9 @@ export class Node {
   }
 
   draw() {
-    this.graphics.beginFill(0xffffff); // Node background color
-    this.graphics.lineStyle(2, 0x000000); // Border
-    this.graphics.drawRect(0, 0, this.size.x, this.size.y);
+    this.graphics.beginFill(0x0c0e0f);
+    this.graphics.lineStyle(1, 0x15171a);
+    this.graphics.drawRoundedRect(0, 0, this.size.x, this.size.y, 6);
     this.graphics.endFill();
   }
 
@@ -52,5 +48,37 @@ export class Node {
     return this.id;
   }
 
-  initializePorts() {}
+  getGraphics() {
+    return this.container;
+  }
+
+  updatePosition(position: PIXI.IPointData) {
+    this.container.x = position.x;
+    this.container.y = position.y;
+  }
+
+  initializePorts() {
+    // Clear existing ports graphics if needed
+    this.inputs.forEach((input) =>
+      this.container.removeChild(input.getGraphics()),
+    );
+    this.outputs.forEach((output) =>
+      this.container.removeChild(output.getGraphics()),
+    );
+
+    this.inputs = [];
+    this.outputs = [];
+
+    // Example initialization (adjust as needed)
+    this.inputs.push(new Port({ x: 0, y: this.PORT_SPACING }));
+    this.outputs.push(new Port({ x: this.size.x, y: this.PORT_SPACING }));
+
+    // Add ports graphics to the container
+    this.inputs.forEach((input) =>
+      this.container.addChild(input.getGraphics()),
+    );
+    this.outputs.forEach((output) =>
+      this.container.addChild(output.getGraphics()),
+    );
+  }
 }

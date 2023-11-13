@@ -1,52 +1,93 @@
-import * as PIXI from "pixi.js";
+import { Application, Container, Graphics, IPointData } from "pixi.js";
 import { Node } from "./node";
+import { Draggable } from "./draggable";
+import { Grid } from "./grid";
+import {
+  MouseDownEvent,
+  MouseMoveEvent,
+  MouseUpEvent,
+  ResizeEvent,
+} from "./events";
 
 export class NodeEditor {
-  private app: PIXI.Application;
-  private nodes: Map<number, Node>;
-  private isMouseDown: boolean;
-  private element: HTMLCanvasElement;
+  private app: Application;
+  private isDragging: boolean;
   private resizeTimeout: number;
+  private selectedDraggable: Draggable | null;
+  private allDraggables: Map<number, Draggable>;
+  private dragOffset: IPointData | null;
+  private grid: Grid;
 
-  constructor(element: HTMLCanvasElement) {
-    const rect = element.getBoundingClientRect();
-    this.app = new PIXI.Application({
-      view: element,
-      width: rect.width,
-      height: rect.height,
+  constructor(canvas: HTMLCanvasElement) {
+    this.app = new Application({
+      view: canvas,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      autoDensity: true,
+      antialias: true,
+      backgroundColor: 0x1a1b1c,
+      resolution: window.devicePixelRatio || 1,
     });
-    this.nodes = new Map();
-    this.isMouseDown = false;
-    this.element = element;
+    this.allDraggables = new Map();
+    this.isDragging = false;
     this.resizeTimeout = 0;
+    this.selectedDraggable = null;
+    this.dragOffset = null;
 
-    // this.interactionManager = new InteractionManager(this);
-    this.setupEventListeners();
+    console.log(this.app.view.getBoundingClientRect!());
+    this.grid = new Grid(this.app);
+    this.app.stage.addChild(this.grid.getGraphics());
 
-    this.app.ticker.add(() => this.update.bind(this));
+    this.onResize();
+    this.addEventListeners();
+    this.grid.drawGrid();
 
-    this.addNode(new Node(1, { x: 10, y: 10 }, { x: 100, y: 100 }));
+    // this.addNode(new Node(1, { x: 100, y: 100 }, { x: 100, y: 200 }));
   }
 
-  setupEventListeners() {
-    this.app.view.addEventListener!("mousedown", this.onMouseDown.bind(this));
-    this.app.view.addEventListener!("mouseup", this.onMouseUp.bind(this));
-    this.app.view.addEventListener!("mousemove", this.onMouseMove.bind(this));
-    window.addEventListener("resize", this.onResize.bind(this));
+  addEventListeners() {
+    MouseDownEvent.addCallback(this.onMouseDown.bind(this));
+    MouseUpEvent.addCallback(this.onMouseUp.bind(this));
+    MouseMoveEvent.addCallback(this.onMouseMove.bind(this));
+    ResizeEvent.addCallback(this.onResize.bind(this));
+  }
+
+  addNode(node: Node) {
+    this.app.stage.addChild(node.getGraphics());
+    this.allDraggables.set(node.getId(), node);
   }
 
   onMouseDown(event: Event) {
-    this.isMouseDown = true;
+    const mousePosition = this.getMousePosition(event as MouseEvent);
+    this.selectedDraggable = this.findDraggableAt(mousePosition);
+
+    if (this.selectedDraggable) {
+      this.isDragging = true;
+      const draggableArea = this.selectedDraggable.getGraphics();
+      this.dragOffset = {
+        x: mousePosition.x - draggableArea.x,
+        y: mousePosition.y - draggableArea.y,
+      };
+    }
   }
 
-  onMouseUp(event: Event) {
-    this.isMouseDown = false;
+  onMouseUp() {
+    this.isDragging = false;
+    this.selectedDraggable = null;
+    this.dragOffset = null;
   }
 
   onMouseMove(event: Event) {
-    if (this.isMouseDown) {
-      // Calculate new position based on mouse movement
-      // Redraw or update the node
+    if (this.isDragging && this.selectedDraggable) {
+      const newPosition: IPointData = this.getMousePosition(
+        event as MouseEvent,
+      );
+
+      // Apply the offset to keep the cursor position consistent
+      this.selectedDraggable.updatePosition({
+        x: newPosition.x - (this.dragOffset?.x || 0),
+        y: newPosition.y - (this.dragOffset?.y || 0),
+      });
     }
   }
 
@@ -55,26 +96,38 @@ export class NodeEditor {
       clearTimeout(this.resizeTimeout);
     }
     this.resizeTimeout = setTimeout(() => {
-      const rect = this.element.getBoundingClientRect();
-      this.app.renderer.resize(rect.width, rect.height);
-    }, 250);
+      this.app.renderer.resize(window.innerWidth, window.innerHeight);
+      this.app.view.style!.width = `${window.innerWidth}px`;
+      this.app.view.style!.height = `${window.innerHeight}px`;
+    }, 100);
   }
 
-  getNodeFromEvent(event) {}
-
-  calculateNewPosition(event, node) {}
-
-  addNode(node: Node) {
-    this.nodes.set(node.getId(), node);
+  getMousePosition(event: MouseEvent): IPointData {
+    return { x: event.clientX, y: event.clientY };
   }
 
-  removeNode(nodeId) {}
+  private findDraggableAt(position: IPointData): Draggable | null {
+    for (const draggable of this.allDraggables.values()) {
+      const area = draggable.getGraphics();
 
-  connectNodes(outputNode, inputNode, outputPort, inputPort) {}
+      // Check if the position is within the draggable's interactive area
+      if (this.isPositionInsideArea(position, area)) {
+        return draggable;
+      }
+    }
+    return null;
+  }
 
-  update() {}
-
-  onNodeSelect(node) {}
-
-  onNodeDrag(node, newPosition) {}
+  private isPositionInsideArea(
+    position: IPointData,
+    area: Container | Graphics,
+  ): boolean {
+    const bounds = area.getBounds();
+    return (
+      position.x >= bounds.x &&
+      position.x <= bounds.x + bounds.width &&
+      position.y >= bounds.y &&
+      position.y <= bounds.y + bounds.height
+    );
+  }
 }
