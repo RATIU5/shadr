@@ -35,7 +35,6 @@ export class NodeEditor {
     this.selectedDraggable = null;
     this.dragOffset = null;
 
-    console.log(this.app.view.getBoundingClientRect!());
     this.grid = new Grid(this.app);
     this.app.stage.addChild(this.grid.getGraphics());
 
@@ -97,12 +96,9 @@ export class NodeEditor {
       clearTimeout(this.resizeTimeout);
     }
     this.resizeTimeout = setTimeout(() => {
-      this.app.renderer.resize(
-        this.app.view.offsetWidth,
-        this.app.view.offsetHeight,
-      );
-      this.app.view.style!.width = `${window.innerWidth}px`;
-      this.app.view.style!.height = `${window.innerHeight}px`;
+      this.app.renderer.resize(window.innerWidth, window.innerHeight);
+      this.app.view.width = window.innerWidth * window.devicePixelRatio;
+      this.app.view.height = window.innerHeight * window.devicePixelRatio;
     }, 100);
   }
 

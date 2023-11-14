@@ -2,131 +2,117 @@ import { Application, Graphics, IPointData } from "pixi.js";
 import {
   MouseDownEvent,
   MouseMoveEvent,
-  MouseScrollEvent,
   MouseUpEvent,
   ResizeEvent,
 } from "./events";
 
 export class Grid {
-  private tl: IPointData;
-  private br: IPointData;
   private graphics: Graphics;
+  private topLeft: IPointData;
+  private bottomRight: IPointData;
+  private dotColor: number;
+  private scale: number;
+  private dotSize: number;
+  private baseDotAlpha: number;
+  private centerDotAlpha: number;
   private gridSize: number;
-  private offsetX: number = 0;
-  private offsetY: number = 0;
-  private isMouseDown: boolean;
-  private lastMousePosition: IPointData;
-  private zoomLevel: number;
-  private maxPanX: number;
-  private maxPanY: number;
+  private isMiddleDown: boolean;
+  private lastMousePos: IPointData;
+  private offset: IPointData;
+  private maxPan: IPointData;
 
   constructor(app: Application) {
     this.graphics = new Graphics();
-    this.tl = { x: 0, y: 0 };
-    this.br = { x: app.renderer.width, y: app.renderer.height };
-    this.gridSize = 40;
-    this.isMouseDown = false;
-    this.lastMousePosition = { x: 0, y: 0 };
-    this.zoomLevel = 1;
-    this.maxPanX = 1000; // maximum pan distance to the left and right
-    this.maxPanY = 1000; // maximum pan distance to the top and bottom
+    this.topLeft = { x: 0, y: 0 };
+    this.bottomRight = { x: app.renderer.width, y: app.renderer.height };
+    this.dotColor = 0xcccccc;
+    this.scale = 1.5;
+    this.dotSize = 1 * this.scale;
+    this.baseDotAlpha = 0.1;
+    this.centerDotAlpha = 0.25;
+    this.gridSize = 25 * this.scale;
+    this.isMiddleDown = false;
+    this.lastMousePos = { x: 0, y: 0 };
+    this.offset = { x: 0, y: 0 };
+    this.maxPan = { x: 1000, y: 1000 };
 
     ResizeEvent.addCallback(() => {
-      (this.br.x = app.renderer.width), (this.br.y = app.renderer.height);
+      this.bottomRight.x = app.renderer.width;
+      this.bottomRight.y = app.renderer.height;
     });
     MouseDownEvent.addCallback(this.onMouseDown.bind(this));
     MouseUpEvent.addCallback(this.onMouseUp.bind(this));
     MouseMoveEvent.addCallback(this.onMouseMove.bind(this));
-    MouseScrollEvent.addCallback(this.onMouseZoom.bind(this));
   }
 
-  onMouseDown(event: MouseEvent) {
-    this.isMouseDown = true;
-    this.lastMousePosition = { x: event.clientX, y: event.clientY };
+  onMouseDown(e: MouseEvent) {
+    if (e.button === 1) {
+      this.isMiddleDown = true;
+      this.lastMousePos = { x: e.clientX, y: e.clientY };
+    }
   }
-  onMouseUp(event: Event) {
-    this.isMouseDown = false;
+
+  onMouseUp() {
+    this.isMiddleDown = false;
   }
-  onMouseMove(event: MouseEvent) {
-    if (this.isMouseDown) {
-      const currentMousePosition = { x: event.clientX, y: event.clientY };
 
-      let deltaX = currentMousePosition.x - (this.lastMousePosition?.x || 0);
-      let deltaY = currentMousePosition.y - (this.lastMousePosition?.y || 0);
-
+  onMouseMove(e: MouseEvent) {
+    if (this.isMiddleDown) {
+      const currentPos: IPointData = { x: e.clientX, y: e.clientY };
+      let deltaX = currentPos.x - this.lastMousePos.x;
+      let deltaY = currentPos.y - this.lastMousePos.y;
       this.updateOffset(deltaX, deltaY);
-
-      this.lastMousePosition = currentMousePosition;
+      this.lastMousePos = currentPos;
     }
-  }
-  onMouseZoom(event: WheelEvent) {
-    const zoomAmount = 0.01;
-    if (event.deltaY < 0) {
-      this.zoomLevel *= 1 + zoomAmount;
-    } else {
-      this.zoomLevel /= 1 + zoomAmount;
-    }
-
-    this.zoomLevel = Math.min(Math.max(this.zoomLevel, 0.1), 10);
-
-    this.drawGrid();
   }
 
   updateOffset(deltaX: number, deltaY: number) {
-    // Update offsetX, but don't exceed maxPanX
-    this.offsetX += deltaX;
-    if (this.offsetX > this.maxPanX) {
-      this.offsetX = this.maxPanX;
-    } else if (this.offsetX < -this.maxPanX) {
-      this.offsetX = -this.maxPanX;
+    this.offset.x += deltaX;
+    if (this.offset.x > this.maxPan.x) {
+      this.offset.x = this.maxPan.x;
+    } else if (this.offset.x < -this.maxPan.x) {
+      this.offset.x = -this.maxPan.x;
     }
 
-    // Update offsetY, but don't exceed maxPanY
-    this.offsetY += deltaY;
-    if (this.offsetY > this.maxPanY) {
-      this.offsetY = this.maxPanY;
-    } else if (this.offsetY < -this.maxPanY) {
-      this.offsetY = -this.maxPanY;
+    this.offset.y += deltaY;
+    if (this.offset.y > this.maxPan.y) {
+      this.offset.y = this.maxPan.y;
+    } else if (this.offset.y < -this.maxPan.y) {
+      this.offset.y = -this.maxPan.y;
     }
 
     this.drawGrid();
   }
 
   drawGrid() {
-    const dotColor = 0xcccccc;
-    const dotSize = 2;
-    const baseDotAlpha = 0.1;
-    const centerDotAlpha = 0.25;
+    this.graphics.clear();
 
     let startX =
-      ((this.offsetX % this.gridSize) + this.gridSize) % this.gridSize;
+      ((this.offset.x % this.gridSize) + this.gridSize) % this.gridSize;
     let startY =
-      ((this.offsetY % this.gridSize) + this.gridSize) % this.gridSize;
-
-    this.graphics.clear();
-    this.graphics.scale.set(this.zoomLevel, this.zoomLevel);
+      ((this.offset.y % this.gridSize) + this.gridSize) % this.gridSize;
 
     for (
       let x = startX - this.gridSize;
-      x <= this.br.x - this.tl.x;
+      x <= this.bottomRight.x + this.gridSize;
       x += this.gridSize
     ) {
       for (
         let y = startY - this.gridSize;
-        y <= this.br.y - this.tl.y;
+        y <= this.bottomRight.y + this.gridSize;
         y += this.gridSize
       ) {
-        let gridPosX = Math.floor((x - this.offsetX) / this.gridSize);
-        let gridPosY = Math.floor((y - this.offsetY) / this.gridSize);
-        if (gridPosX < 0) gridPosX = ((gridPosX % 5) + 5) % 5;
-        if (gridPosY < 0) gridPosY = ((gridPosY % 5) + 5) % 5;
+        let gridPosX = Math.floor((x - this.offset.x) / this.gridSize);
+        let gridPosY = Math.floor((y - this.offset.y) / this.gridSize);
 
-        let isCenterDot = gridPosX % 5 === 2 && gridPosY % 5 === 2;
+        gridPosX = ((gridPosX % 5) + 5) % 5;
+        gridPosY = ((gridPosY % 5) + 5) % 5;
 
-        let dotAlpha = isCenterDot ? centerDotAlpha : baseDotAlpha;
+        let isCenterDot = gridPosX === 2 && gridPosY === 2;
+        let dotAlpha = isCenterDot ? this.centerDotAlpha : this.baseDotAlpha;
 
-        this.graphics.beginFill(dotColor, dotAlpha);
-        this.graphics.drawCircle(x, y, dotSize);
+        this.graphics.beginFill(this.dotColor, dotAlpha);
+        this.graphics.drawCircle(x, y, this.dotSize);
         this.graphics.endFill();
       }
     }
