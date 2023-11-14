@@ -17,6 +17,8 @@ export class Grid {
   private isMouseDown: boolean;
   private lastMousePosition: IPointData;
   private zoomLevel: number;
+  private maxPanX: number;
+  private maxPanY: number;
 
   constructor(app: Application) {
     this.graphics = new Graphics();
@@ -25,7 +27,9 @@ export class Grid {
     this.gridSize = 40;
     this.isMouseDown = false;
     this.lastMousePosition = { x: 0, y: 0 };
-    this.zoomLevel = 0;
+    this.zoomLevel = 1;
+    this.maxPanX = 1000; // maximum pan distance to the left and right
+    this.maxPanY = 1000; // maximum pan distance to the top and bottom
 
     ResizeEvent.addCallback(() => {
       (this.br.x = app.renderer.width), (this.br.y = app.renderer.height);
@@ -56,24 +60,35 @@ export class Grid {
     }
   }
   onMouseZoom(event: WheelEvent) {
-    const zoomAmount = 0.1; // Adjust this value to control zoom sensitivity
+    const zoomAmount = 0.01;
     if (event.deltaY < 0) {
-      // Zoom in
       this.zoomLevel *= 1 + zoomAmount;
     } else {
-      // Zoom out
       this.zoomLevel /= 1 + zoomAmount;
     }
 
-    // Limit zoom level to reasonable values
     this.zoomLevel = Math.min(Math.max(this.zoomLevel, 0.1), 10);
 
     this.drawGrid();
   }
 
   updateOffset(deltaX: number, deltaY: number) {
+    // Update offsetX, but don't exceed maxPanX
     this.offsetX += deltaX;
+    if (this.offsetX > this.maxPanX) {
+      this.offsetX = this.maxPanX;
+    } else if (this.offsetX < -this.maxPanX) {
+      this.offsetX = -this.maxPanX;
+    }
+
+    // Update offsetY, but don't exceed maxPanY
     this.offsetY += deltaY;
+    if (this.offsetY > this.maxPanY) {
+      this.offsetY = this.maxPanY;
+    } else if (this.offsetY < -this.maxPanY) {
+      this.offsetY = -this.maxPanY;
+    }
+
     this.drawGrid();
   }
 
@@ -89,6 +104,7 @@ export class Grid {
       ((this.offsetY % this.gridSize) + this.gridSize) % this.gridSize;
 
     this.graphics.clear();
+    this.graphics.scale.set(this.zoomLevel, this.zoomLevel);
 
     for (
       let x = startX - this.gridSize;

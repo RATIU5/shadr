@@ -83,7 +83,7 @@ export class MouseScrollEvent {
   static attachElement(element: Window | HTMLElement) {
     if (!MouseScrollEvent.element) {
       MouseScrollEvent.element = element;
-      MouseScrollEvent.element.addEventListener("scroll", (e) => {
+      MouseScrollEvent.element.addEventListener("wheel", (e) => {
         for (let i = 0; i < MouseScrollEvent.callbacks.length; i++) {
           MouseScrollEvent.callbacks[i](e as WheelEvent);
         }

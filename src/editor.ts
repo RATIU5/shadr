@@ -19,10 +19,11 @@ export class NodeEditor {
   private grid: Grid;
 
   constructor(canvas: HTMLCanvasElement) {
+    const rect = canvas.getBoundingClientRect();
     this.app = new Application({
       view: canvas,
-      width: window.innerWidth,
-      height: window.innerHeight,
+      width: rect.width,
+      height: rect.height,
       autoDensity: true,
       antialias: true,
       backgroundColor: 0x1a1b1c,
@@ -96,7 +97,10 @@ export class NodeEditor {
       clearTimeout(this.resizeTimeout);
     }
     this.resizeTimeout = setTimeout(() => {
-      this.app.renderer.resize(window.innerWidth, window.innerHeight);
+      this.app.renderer.resize(
+        this.app.view.offsetWidth,
+        this.app.view.offsetHeight,
+      );
       this.app.view.style!.width = `${window.innerWidth}px`;
       this.app.view.style!.height = `${window.innerHeight}px`;
     }, 100);

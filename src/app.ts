@@ -14,7 +14,7 @@ if (!canvas) {
   MouseDownEvent.attachElement(canvas as HTMLElement);
   MouseUpEvent.attachElement(canvas as HTMLElement);
   MouseMoveEvent.attachElement(canvas as HTMLElement);
-  MouseScrollEvent.attachElement(canvas as HTMLElement);
+  MouseScrollEvent.attachElement(window);
   ResizeEvent.attachElement(window);
   new NodeEditor(canvas as HTMLCanvasElement);
 }
