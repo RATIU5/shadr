@@ -127,3 +127,81 @@ export class ResizeEvent {
     );
   }
 }
+
+export class TouchStartEvent {
+  private static callbacks: Array<(e: TouchEvent) => void> = [];
+  private static element: Window | HTMLElement | null = null;
+
+  static attachElement(element: Window | HTMLElement) {
+    if (!TouchStartEvent.element) {
+      TouchStartEvent.element = element;
+      TouchStartEvent.element.addEventListener("touchstart", (e) => {
+        for (let i = 0; i < TouchStartEvent.callbacks.length; i++) {
+          TouchStartEvent.callbacks[i](e as TouchEvent);
+        }
+      });
+    }
+  }
+
+  static addCallback(callback: (e: TouchEvent) => void): void {
+    TouchStartEvent.callbacks.push(callback);
+  }
+
+  static removeCallback(callback: (e: TouchEvent) => void): void {
+    TouchStartEvent.callbacks = TouchStartEvent.callbacks.filter(
+      (cb) => cb !== callback,
+    );
+  }
+}
+
+export class TouchEndEvent {
+  private static callbacks: Array<(e: TouchEvent) => void> = [];
+  private static element: Window | HTMLElement | null = null;
+
+  static attachElement(element: Window | HTMLElement) {
+    if (!TouchEndEvent.element) {
+      TouchEndEvent.element = element;
+      TouchEndEvent.element.addEventListener("touchend", (e) => {
+        for (let i = 0; i < TouchEndEvent.callbacks.length; i++) {
+          TouchEndEvent.callbacks[i](e as TouchEvent);
+        }
+      });
+    }
+  }
+
+  static addCallback(callback: (e: TouchEvent) => void): void {
+    TouchEndEvent.callbacks.push(callback);
+  }
+
+  static removeCallback(callback: (e: TouchEvent) => void): void {
+    TouchEndEvent.callbacks = TouchEndEvent.callbacks.filter(
+      (cb) => cb !== callback,
+    );
+  }
+}
+
+export class TouchMoveEvent {
+  private static callbacks: Array<(e: TouchEvent) => void> = [];
+  private static element: Window | HTMLElement | null = null;
+
+  static attachElement(element: Window | HTMLElement) {
+    if (!TouchMoveEvent.element) {
+      TouchMoveEvent.element = element;
+      TouchMoveEvent.element.addEventListener("touchmove", (e) => {
+        for (let i = 0; i < TouchMoveEvent.callbacks.length; i++) {
+          TouchMoveEvent.callbacks[i](e as TouchEvent);
+        }
+      });
+    }
+  }
+
+  static addCallback(callback: (e: TouchEvent) => void): void {
+    TouchMoveEvent.callbacks.push(callback);
+  }
+
+  static removeCallback(callback: (e: TouchEvent) => void): void {
+    TouchMoveEvent.callbacks = TouchMoveEvent.callbacks.filter(
+      (cb) => cb !== callback,
+    );
+  }
+}

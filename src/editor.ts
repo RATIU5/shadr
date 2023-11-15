@@ -36,11 +36,10 @@ export class NodeEditor {
     this.dragOffset = null;
 
     this.grid = new Grid(this.app);
-    this.app.stage.addChild(this.grid.getGraphics());
+    this.app.stage.addChild(this.grid.getMesh());
 
     this.onResize();
     this.addEventListeners();
-    this.grid.drawGrid();
 
     // this.addNode(new Node(1, { x: 100, y: 100 }, { x: 100, y: 200 }));
   }
