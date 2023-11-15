@@ -45,7 +45,7 @@ export class Grid {
     this.mesh = new Mesh(geometry, shader);
 
     MouseMoveEvent.addCallback((e) => {
-      this.setUniform("u_mousePos", this.toNDC({ x: e.clientX, y: e.clientY }));
+      this.setUniform("u_mousePos", [e.clientX, e.clientY]);
     });
   }
 
@@ -56,6 +56,7 @@ export class Grid {
   private toNDC(point: IPointData): [number, number] {
     const ndcX = (point.x / this.appSize.x) * 2 - 1;
     const ndcY = 1 - (point.y / this.appSize.y) * 2;
+    console.log(ndcX, ndcY);
     return [ndcX, ndcY];
   }
 

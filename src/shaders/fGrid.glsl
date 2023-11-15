@@ -9,7 +9,12 @@ uniform vec2 u_size;
 void main() {
     float dotWeight = 0.025;
 
-    vec2 screenCoords = gl_FragCoord.xy / u_size;
+    // Normalize mouse coordinates
+    vec2 normalizedMousePos = u_mousePos / u_size;
+    normalizedMousePos.y = normalizedMousePos.y * -1.;
+
+    // Adjust screen coordinates with mouse position to create panning effect
+    vec2 screenCoords = (gl_FragCoord.xy / u_size) - normalizedMousePos;
     vec2 gridCoords = screenCoords * u_size / u_dotSize;
 
     vec2 nearestGridPoint = floor(gridCoords) + 0.5;
