@@ -17,7 +17,16 @@ void main() {
 
     float edgeWidth = 0.01;
     float alpha = 1.0 - smoothstep(dotWeight - edgeWidth, dotWeight + edgeWidth, dist);
-    vec3 color = mix(vec3(0.0), vec3(0.3), alpha);
 
-    gl_FragColor = vec4(color, alpha);
+    vec2 modCoords = mod(nearestGridPoint, 5.0);
+    float highlight = 1.0 - step(0.1, length(modCoords - vec2(2.5)));
+
+    vec3 backgroundColor = vec3(0.05);
+    vec3 baseDotColor = vec3(0.2);
+    vec3 lighterDotColor = vec3(0.4);
+
+    vec3 dotColor = mix(baseDotColor, lighterDotColor, highlight);
+    vec3 color = mix(backgroundColor, dotColor, alpha);
+
+    gl_FragColor = vec4(color, 1.0);
 }
