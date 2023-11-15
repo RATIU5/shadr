@@ -4,17 +4,17 @@ precision mediump float;
 
 uniform float u_dotSize;
 uniform vec2 u_mousePos;
+uniform vec2 u_dragOffset;
 uniform vec2 u_size;
 
 void main() {
     float dotWeight = 0.025;
 
-    // Normalize mouse coordinates
     vec2 normalizedMousePos = u_mousePos / u_size;
-    normalizedMousePos.y = normalizedMousePos.y * -1.;
+    normalizedMousePos.y = normalizedMousePos.y * -2.;
+    normalizedMousePos.x = normalizedMousePos.x * 2.;
 
-    // Adjust screen coordinates with mouse position to create panning effect
-    vec2 screenCoords = (gl_FragCoord.xy / u_size) - normalizedMousePos;
+    vec2 screenCoords = (gl_FragCoord.xy / u_size) - normalizedMousePos - u_dragOffset;
     vec2 gridCoords = screenCoords * u_size / u_dotSize;
 
     vec2 nearestGridPoint = floor(gridCoords) + 0.5;

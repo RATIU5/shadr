@@ -1,40 +1,25 @@
-import {
-  Application,
-  Geometry,
-  Graphics,
-  ICanvas,
-  IPointData,
-  IRenderer,
-  Mesh,
-  Shader,
-  Texture,
-  TilingSprite,
-} from "pixi.js";
+import { Application, Geometry, IPointData, Mesh, Shader } from "pixi.js";
 
 import fGrid from "./shaders/fGrid.glsl";
 import vGrid from "./shaders/vGrid.glsl";
-import { MouseMoveEvent } from "./events";
+import { MouseDownEvent, MouseMoveEvent, MouseUpEvent } from "./events";
 
 export class Grid {
-  private gridSize: number;
   private scale: number;
   private dotSize: number;
-  private zoomLevel: number;
-  private minZoom: number;
-  private maxZoom: number;
-  private offset: IPointData;
+  private dragOffset: IPointData;
+  private isDragging: boolean;
   private mesh: Mesh<Shader>;
   private appSize: IPointData;
+  private dragStart: IPointData;
 
   constructor(app: Application) {
     this.appSize = { x: app.renderer.width, y: app.renderer.height };
-    this.gridSize = 25;
     this.scale = 100;
     this.dotSize = 1 * this.scale;
-    this.zoomLevel = 1;
-    this.minZoom = 0.5;
-    this.maxZoom = 1.5;
-    this.offset = { x: 0, y: 0 };
+    this.isDragging = false;
+    this.dragOffset = { x: 0, y: 0 };
+    this.dragStart = { x: 0, y: 0 };
 
     const geometry = this.createGeometry(this.appSize.x, this.appSize.y);
     const shader = Shader.from(vGrid, fGrid, {
@@ -45,19 +30,31 @@ export class Grid {
     this.mesh = new Mesh(geometry, shader);
 
     MouseMoveEvent.addCallback((e) => {
-      this.setUniform("u_mousePos", [e.clientX, e.clientY]);
+      if (this.isDragging) {
+        this.dragOffset = {
+          x: (e.clientX - this.dragStart.x) / this.appSize.x,
+          y: (e.clientY - this.dragStart.y) / this.appSize.y,
+        };
+
+        this.setUniform("u_dragOffset", [this.dragOffset.x, this.dragOffset.y]);
+        this.setUniform("u_mousePos", [e.clientX, e.clientY]);
+      }
+    });
+    MouseDownEvent.addCallback((e) => {
+      if (e.button === 1) {
+        this.isDragging = true;
+        this.dragStart = { x: e.clientX, y: e.clientY };
+      }
+    });
+    MouseUpEvent.addCallback((e) => {
+      if (e.button === 1) {
+        this.isDragging = false;
+      }
     });
   }
 
   private setUniform<T = any>(name: string, value: T) {
     this.mesh.shader.uniforms[name] = value;
-  }
-
-  private toNDC(point: IPointData): [number, number] {
-    const ndcX = (point.x / this.appSize.x) * 2 - 1;
-    const ndcY = 1 - (point.y / this.appSize.y) * 2;
-    console.log(ndcX, ndcY);
-    return [ndcX, ndcY];
   }
 
   createGeometry(width: number, height: number) {
