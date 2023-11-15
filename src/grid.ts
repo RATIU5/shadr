@@ -25,30 +25,39 @@ export class Grid {
     const shader = Shader.from(vGrid, fGrid, {
       u_dotSize: this.dotSize,
       u_mousePos: [0, 0],
+      u_dragOffset: [this.dragOffset.x, this.dragOffset.y],
       u_size: [this.appSize.x, this.appSize.y],
     });
     this.mesh = new Mesh(geometry, shader);
 
-    MouseMoveEvent.addCallback((e) => {
-      if (this.isDragging) {
-        this.dragOffset = {
-          x: (e.clientX - this.dragStart.x) / this.appSize.x,
-          y: (e.clientY - this.dragStart.y) / this.appSize.y,
-        };
-
-        this.setUniform("u_dragOffset", [this.dragOffset.x, this.dragOffset.y]);
-        this.setUniform("u_mousePos", [e.clientX, e.clientY]);
-      }
-    });
     MouseDownEvent.addCallback((e) => {
       if (e.button === 1) {
         this.isDragging = true;
-        this.dragStart = { x: e.clientX, y: e.clientY };
+        this.dragStart.x = e.clientX;
+        this.dragStart.y = e.clientY;
       }
     });
+
     MouseUpEvent.addCallback((e) => {
       if (e.button === 1) {
         this.isDragging = false;
+      }
+    });
+
+    MouseMoveEvent.addCallback((e) => {
+      if (this.isDragging) {
+        const deltaX = e.clientX - this.dragStart.x;
+        const deltaY = e.clientY - this.dragStart.y;
+
+        this.dragOffset.x += deltaX;
+        this.dragOffset.y += deltaY;
+
+        console.log(this.dragOffset);
+        this.setUniform("u_dragOffset", [100, 100]);
+        this.setUniform("u_mousePos", [e.clientX, e.clientY]);
+
+        this.dragStart.x = e.clientX;
+        this.dragStart.y = e.clientY;
       }
     });
   }
