@@ -24,8 +24,10 @@ export class Grid {
   private maxZoom: number;
   private offset: IPointData;
   private mesh: Mesh<Shader>;
+  private appSize: IPointData;
 
   constructor(app: Application) {
+    this.appSize = { x: app.renderer.width, y: app.renderer.height };
     this.gridSize = 25;
     this.scale = 100;
     this.dotSize = 1 * this.scale;
@@ -33,23 +35,28 @@ export class Grid {
     this.minZoom = 0.5;
     this.maxZoom = 1.5;
     this.offset = { x: 0, y: 0 };
-    const geometry = this.createGeometry(
-      app.renderer.width,
-      app.renderer.height,
-    );
+
+    const geometry = this.createGeometry(this.appSize.x, this.appSize.y);
     const shader = Shader.from(vGrid, fGrid, {
       u_dotSize: this.dotSize,
       u_mousePos: [0, 0],
-      u_size: [app.renderer.width, app.renderer.height],
+      u_size: [this.appSize.x, this.appSize.y],
     });
     this.mesh = new Mesh(geometry, shader);
+
     MouseMoveEvent.addCallback((e) => {
-      this.setUniform("u_mousePos", [e.clientX, e.clientY]);
+      this.setUniform("u_mousePos", this.toNDC({ x: e.clientX, y: e.clientY }));
     });
   }
 
   private setUniform<T = any>(name: string, value: T) {
     this.mesh.shader.uniforms[name] = value;
+  }
+
+  private toNDC(point: IPointData): [number, number] {
+    const ndcX = (point.x / this.appSize.x) * 2 - 1;
+    const ndcY = 1 - (point.y / this.appSize.y) * 2;
+    return [ndcX, ndcY];
   }
 
   createGeometry(width: number, height: number) {

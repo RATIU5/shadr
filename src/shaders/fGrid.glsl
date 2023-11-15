@@ -17,7 +17,7 @@ void main() {
 
     float edgeWidth = 0.01;
     float alpha = 1.0 - smoothstep(dotWeight - edgeWidth, dotWeight + edgeWidth, dist);
-    vec3 color = mix(vec3(1.0), vec3(0.0), alpha);
+    vec3 color = mix(vec3(0.0), vec3(0.3), alpha);
 
     gl_FragColor = vec4(color, alpha);
 }
