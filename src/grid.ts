@@ -25,7 +25,9 @@ export class Grid {
     const shader = Shader.from(vGrid, fGrid, {
       u_dotSize: this.dotSize,
       u_mousePos: [0, 0],
-      u_dragOffset: [this.dragOffset.x, this.dragOffset.y],
+      u_dragOffset: [0, 0],
+      u_zoom: 1.0,
+      u_gridSpacing: 50.0,
       u_size: [this.appSize.x, this.appSize.y],
     });
     this.mesh = new Mesh(geometry, shader);
@@ -52,9 +54,7 @@ export class Grid {
         this.dragOffset.x += deltaX;
         this.dragOffset.y += deltaY;
 
-        console.log(this.dragOffset);
-        this.setUniform("u_dragOffset", [100, 100]);
-        this.setUniform("u_mousePos", [e.clientX, e.clientY]);
+        this.setUniform("u_dragOffset", [this.dragOffset.x, this.dragOffset.y]);
 
         this.dragStart.x = e.clientX;
         this.dragStart.y = e.clientY;
