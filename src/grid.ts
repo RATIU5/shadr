@@ -2,10 +2,19 @@ import { Application, Geometry, IPointData, Mesh, Shader } from "pixi.js";
 
 import fGrid from "./shaders/fGrid.glsl";
 import vGrid from "./shaders/vGrid.glsl";
-import { MouseDownEvent, MouseMoveEvent, MouseUpEvent } from "./events";
+import {
+  MouseDownEvent,
+  MouseMoveEvent,
+  MouseUpEvent,
+  MouseScrollEvent,
+} from "./events";
 
 export class Grid {
-  private scale: number;
+  private scale = 100;
+  private minZoom = 0.5;
+  private maxZoom = 3.0;
+  private zoomSensitivity = 0.025;
+  private zoomFactor: number;
   private dotSize: number;
   private dragOffset: IPointData;
   private isDragging: boolean;
@@ -15,11 +24,11 @@ export class Grid {
 
   constructor(app: Application) {
     this.appSize = { x: app.renderer.width, y: app.renderer.height };
-    this.scale = 100;
     this.dotSize = 1 * this.scale;
     this.isDragging = false;
     this.dragOffset = { x: 0, y: 0 };
     this.dragStart = { x: 0, y: 0 };
+    this.zoomFactor = 1;
 
     const geometry = this.createGeometry(this.appSize.x, this.appSize.y);
     const shader = Shader.from(vGrid, fGrid, {
@@ -59,6 +68,17 @@ export class Grid {
         this.dragStart.x = e.clientX;
         this.dragStart.y = e.clientY;
       }
+    });
+
+    MouseScrollEvent.addCallback((e) => {
+      this.zoomFactor *=
+        e.deltaY > 0 ? 1 - this.zoomSensitivity : 1 + this.zoomSensitivity;
+
+      this.zoomFactor = Math.max(
+        this.minZoom,
+        Math.min(this.maxZoom, this.zoomFactor),
+      );
+      this.setUniform("u_zoom", this.zoomFactor);
     });
   }
 
