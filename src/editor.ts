@@ -2,12 +2,6 @@ import { Application, Container, Graphics, IPointData } from "pixi.js";
 import { Node } from "./node";
 import { Draggable } from "./draggable";
 import { Grid } from "./grid";
-import {
-  MouseDownEvent,
-  MouseMoveEvent,
-  MouseUpEvent,
-  ResizeEvent,
-} from "./events";
 
 export class NodeEditor {
   private app: Application;
@@ -17,6 +11,7 @@ export class NodeEditor {
   private allDraggables: Map<number, Draggable>;
   private dragOffset: IPointData | null;
   private grid: Grid;
+  private container: Container;
 
   constructor(canvas: HTMLCanvasElement) {
     const rect = canvas.getBoundingClientRect();
@@ -34,9 +29,11 @@ export class NodeEditor {
     this.resizeTimeout = 0;
     this.selectedDraggable = null;
     this.dragOffset = null;
+    this.container = new Container();
 
     this.grid = new Grid(this.app);
-    this.app.stage.addChild(this.grid.getMesh());
+    this.container.addChild(this.grid.getMesh());
+    this.app.stage.addChild(this.container);
 
     this.onResize();
     this.addEventListeners();
@@ -45,10 +42,9 @@ export class NodeEditor {
   }
 
   addEventListeners() {
-    MouseDownEvent.addCallback(this.onMouseDown.bind(this));
-    MouseUpEvent.addCallback(this.onMouseUp.bind(this));
-    MouseMoveEvent.addCallback(this.onMouseMove.bind(this));
-    ResizeEvent.addCallback(this.onResize.bind(this));
+    this.container.on("mousedown", this.onMouseDown.bind(this));
+    this.container.on("mouseup", this.onMouseUp.bind(this));
+    this.container.on("mousemove", this.onMouseMove.bind(this));
   }
 
   addNode(node: Node) {

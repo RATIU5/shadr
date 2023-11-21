@@ -12,36 +12,31 @@ import fGrid from "./shaders/fGrid.glsl";
 import vGrid from "./shaders/vGrid.glsl";
 
 export class Grid {
-  private scale = 100;
-  private minZoom = 0.25;
-  private maxZoom = 3.0;
-  private zoomSensitivity = 0.05;
-  private zoomFactor: number;
-  private dotSize: number;
-  private dragOffset: IPointData;
-  private isDragging: boolean;
+  private static readonly SCALE = 100;
+  private static readonly MIN_ZOOM = 0.25;
+  private static readonly MAX_ZOOM = 3.0;
+  private static readonly ZOOM_SENSITIVITY = 0.05;
+  private static readonly INITIAL_ZOOM_FACTOR = 1;
+  private static readonly GRID_SPACING = 50.0;
+  private static readonly DOT_SIZE = Grid.SCALE;
+
+  private zoomFactor: number = Grid.INITIAL_ZOOM_FACTOR;
+  private dragOffset: IPointData = { x: 0, y: 0 };
+  private isDragging: boolean = false;
   private appSize: IPointData;
-  private dragStart: IPointData;
+  private dragStart: IPointData = { x: 0, y: 0 };
   private container: Container;
 
   constructor(app: Application) {
     this.appSize = { x: app.renderer.width, y: app.renderer.height };
-    this.dotSize = 1 * this.scale;
-    this.isDragging = false;
-    this.dragOffset = { x: 0, y: 0 };
-    this.dragStart = { x: 0, y: 0 };
-    this.zoomFactor = 1;
-
     this.container = new Container();
+    this.setupMesh();
+    this.setupEventHandlers();
+  }
+
+  private setupMesh() {
     const geometry = this.createGeometry(this.appSize.x, this.appSize.y);
-    const shader = Shader.from(vGrid, fGrid, {
-      u_dotSize: this.dotSize,
-      u_mousePos: [0, 0],
-      u_dragOffset: [0, 0],
-      u_zoom: 1.0,
-      u_gridSpacing: 50.0,
-      u_size: [this.appSize.x, this.appSize.y],
-    });
+    const shader = this.createShader();
     const mesh = new Mesh(geometry, shader);
     mesh.hitArea = new Polygon([
       0,
@@ -55,51 +50,66 @@ export class Grid {
     ]);
     this.container.addChild(mesh);
     this.container.eventMode = "static";
+  }
 
-    this.container.on("pointerdown", (e) => {
-      console.log("test");
-      this.isDragging = true;
-      this.dragStart.x = e.clientX;
-      this.dragStart.y = e.clientY;
+  private createShader(): Shader {
+    return Shader.from(vGrid, fGrid, {
+      u_dotSize: Grid.DOT_SIZE,
+      u_mousePos: [0, 0],
+      u_dragOffset: [0, 0],
+      u_zoom: Grid.INITIAL_ZOOM_FACTOR,
+      u_gridSpacing: Grid.GRID_SPACING,
+      u_size: [this.appSize.x, this.appSize.y],
     });
+  }
 
-    this.container.on("pointerup", (e) => {
-      this.isDragging = false;
-    });
+  private setupEventHandlers() {
+    this.container.on("pointerdown", this.onPointerDown.bind(this));
+    this.container.on("pointerup", this.onPointerUp.bind(this));
+    this.container.on("pointermove", this.onPointerMove.bind(this));
+    this.container.on("wheel", this.onWheel.bind(this));
+  }
 
-    this.container.on("pointermove", (e) => {
-      if (this.isDragging) {
-        const deltaX = e.clientX - this.dragStart.x;
-        const deltaY = e.clientY - this.dragStart.y;
+  private onPointerDown(e: any) {
+    this.isDragging = true;
+    this.dragStart.x = e.clientX;
+    this.dragStart.y = e.clientY;
+  }
 
-        this.dragOffset.x += deltaX * this.zoomFactor;
-        this.dragOffset.y += deltaY * this.zoomFactor;
+  private onPointerUp() {
+    this.isDragging = false;
+  }
 
-        this.setUniform("u_dragOffset", [this.dragOffset.x, this.dragOffset.y]);
+  private onPointerMove(e: any) {
+    if (!this.isDragging) return;
 
-        this.dragStart.x = e.clientX;
-        this.dragStart.y = e.clientY;
-      }
-    });
+    const deltaX = e.clientX - this.dragStart.x;
+    const deltaY = e.clientY - this.dragStart.y;
 
-    this.container.on("wheel", (e) => {
-      this.zoomFactor *=
-        e.deltaY > 0 ? 1 - this.zoomSensitivity : 1 + this.zoomSensitivity;
+    this.dragOffset.x += deltaX * this.zoomFactor;
+    this.dragOffset.y += deltaY * this.zoomFactor;
 
-      this.zoomFactor = Math.max(
-        this.minZoom,
-        Math.min(this.maxZoom, this.zoomFactor),
-      );
-      this.setUniform("u_zoom", this.zoomFactor);
-    });
+    this.setUniform("u_dragOffset", [this.dragOffset.x, this.dragOffset.y]);
+    this.dragStart = { x: e.clientX, y: e.clientY };
+  }
+
+  private onWheel(e: WheelEvent) {
+    this.zoomFactor *=
+      e.deltaY > 0 ? 1 - Grid.ZOOM_SENSITIVITY : 1 + Grid.ZOOM_SENSITIVITY;
+    this.zoomFactor = Math.max(
+      Grid.MIN_ZOOM,
+      Math.min(Grid.MAX_ZOOM, this.zoomFactor),
+    );
+    this.setUniform("u_zoom", this.zoomFactor);
   }
 
   private setUniform<T = any>(name: string, value: T) {
-    (this.container.children[0] as Mesh).shader.uniforms[name] = value;
+    const mesh = this.container.children[0] as Mesh;
+    mesh.shader.uniforms[name] = value;
   }
 
-  createGeometry(width: number, height: number) {
-    let positionalBuffer = new Float32Array([
+  private createGeometry(width: number, height: number): Geometry {
+    const positionalBuffer = new Float32Array([
       0,
       0,
       width,
@@ -114,7 +124,7 @@ export class Grid {
       .addIndex([0, 1, 2, 0, 2, 3]);
   }
 
-  getMesh() {
+  getMesh(): Container {
     return this.container;
   }
 }
