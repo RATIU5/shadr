@@ -11,9 +11,9 @@ import {
 
 export class Grid {
   private scale = 100;
-  private minZoom = 0.5;
+  private minZoom = 0.25;
   private maxZoom = 3.0;
-  private zoomSensitivity = 0.025;
+  private zoomSensitivity = 0.05;
   private zoomFactor: number;
   private dotSize: number;
   private dragOffset: IPointData;
@@ -60,8 +60,8 @@ export class Grid {
         const deltaX = e.clientX - this.dragStart.x;
         const deltaY = e.clientY - this.dragStart.y;
 
-        this.dragOffset.x += deltaX;
-        this.dragOffset.y += deltaY;
+        this.dragOffset.x += deltaX * this.zoomFactor;
+        this.dragOffset.y += deltaY * this.zoomFactor;
 
         this.setUniform("u_dragOffset", [this.dragOffset.x, this.dragOffset.y]);
 
