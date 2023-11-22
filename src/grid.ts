@@ -124,7 +124,7 @@ export class Grid {
       .addIndex([0, 1, 2, 0, 2, 3]);
   }
 
-  getMesh(): Container {
+  get(): Container {
     return this.container;
   }
 }

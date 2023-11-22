@@ -10,7 +10,6 @@ export class NodeEditor {
   private selectedDraggable: Draggable | null;
   private allDraggables: Map<number, Draggable>;
   private dragOffset: IPointData | null;
-  private grid: Grid;
   private container: Container;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -31,8 +30,8 @@ export class NodeEditor {
     this.dragOffset = null;
     this.container = new Container();
 
-    this.grid = new Grid(this.app);
-    this.container.addChild(this.grid.getMesh());
+    const grid = new Grid(this.app);
+    this.container.addChild(grid.get());
     this.app.stage.addChild(this.container);
 
     this.onResize();
