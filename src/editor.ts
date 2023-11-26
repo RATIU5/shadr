@@ -2,126 +2,95 @@ import { Application, Container, Graphics, IPointData } from "pixi.js";
 import { Node } from "./node";
 import { Draggable } from "./draggable";
 import { Grid } from "./grid";
+import { Events } from "./events";
+
+type Interactions = {
+  zoomFactor: number;
+  dragOffset: IPointData;
+  minZoom: number;
+  maxZoom: number;
+  zoomSensitivity: number;
+  isDragging: boolean;
+  dragStart: IPointData;
+};
 
 export class NodeEditor {
-  private app: Application;
-  private isDragging: boolean;
-  private resizeTimeout: number;
-  private selectedDraggable: Draggable | null;
-  private allDraggables: Map<number, Draggable>;
-  private dragOffset: IPointData | null;
-  private container: Container;
+  private interactions: Interactions;
+  private gridOptions: GridOptions;
+  private grid: Grid;
+  private nodes: Node[];
 
   constructor(canvas: HTMLCanvasElement) {
-    const rect = canvas.getBoundingClientRect();
-    this.app = new Application({
+    const app = new Application({
       view: canvas,
-      width: rect.width,
-      height: rect.height,
+      width: window.innerWidth,
+      height: window.innerHeight,
       autoDensity: true,
       antialias: true,
       backgroundColor: 0x1a1b1c,
       resolution: window.devicePixelRatio || 1,
     });
-    this.allDraggables = new Map();
-    this.isDragging = false;
-    this.resizeTimeout = 0;
-    this.selectedDraggable = null;
-    this.dragOffset = null;
-    this.container = new Container();
 
-    const grid = new Grid(this.app);
-    this.container.addChild(grid.get());
-    this.app.stage.addChild(this.container);
+    this.interactions = {
+      zoomFactor: 1,
+      dragOffset: { x: 0, y: 0 },
+      minZoom: 0.5,
+      maxZoom: 5,
+      zoomSensitivity: 0.025,
+      isDragging: false,
+      dragStart: { x: 0, y: 0 },
+    };
 
-    this.onResize();
-    this.addEventListeners();
+    // Needed to capture events
+    app.stage.eventMode = "static";
+    app.stage.on("mousedown", this.handleMouseDown.bind(this));
+    app.stage.on("mouseup", this.handleMouseUp.bind(this));
+    app.stage.on("mousemove", this.handleMouseMove.bind(this));
+    app.stage.on("wheel", this.handkeMouseWheel.bind(this));
 
-    // this.addNode(new Node(1, { x: 100, y: 100 }, { x: 100, y: 200 }));
+    this.grid = new Grid(app, this.gridOptions);
+    app.stage.addChild(this.grid.getMesh());
   }
 
-  addEventListeners() {
-    this.container.on("mousedown", this.onMouseDown.bind(this));
-    this.container.on("mouseup", this.onMouseUp.bind(this));
-    this.container.on("mousemove", this.onMouseMove.bind(this));
-  }
-
-  addNode(node: Node) {
-    this.app.stage.addChild(node.getGraphics());
-    this.allDraggables.set(node.getId(), node);
-  }
-
-  onMouseDown(event: Event) {
-    const mousePosition = this.getMousePosition(event as MouseEvent);
-    this.selectedDraggable = this.findDraggableAt(mousePosition);
-
-    if (this.selectedDraggable) {
-      this.isDragging = true;
-      const draggableArea = this.selectedDraggable.getGraphics();
-      this.dragOffset = {
-        x: mousePosition.x - draggableArea.x,
-        y: mousePosition.y - draggableArea.y,
+  handleMouseDown = (e) => {
+    if (e.button === 0 || e.button === 1) {
+      this.interactions.isDragging = true;
+      this.interactions.dragStart = {
+        x: e.clientX,
+        y: e.clientY,
       };
     }
-  }
+  };
 
-  onMouseUp() {
-    this.isDragging = false;
-    this.selectedDraggable = null;
-    this.dragOffset = null;
-  }
+  handleMouseUp = (e) => {
+    this.interactions.isDragging = false;
+  };
 
-  onMouseMove(event: Event) {
-    if (this.isDragging && this.selectedDraggable) {
-      const newPosition: IPointData = this.getMousePosition(
-        event as MouseEvent,
-      );
+  handleMouseMove = (e) => {
+    if (this.interactions.isDragging) {
+      const deltaX = e.clientX - this.interactions.dragStart.x;
+      const deltaY = e.clientY - this.interactions.dragStart.y;
 
-      // Apply the offset to keep the cursor position consistent
-      this.selectedDraggable.updatePosition({
-        x: newPosition.x - (this.dragOffset?.x || 0),
-        y: newPosition.y - (this.dragOffset?.y || 0),
-      });
+      this.interactions.dragOffset.x += deltaX * this.interactions.zoomFactor;
+      this.interactions.dragOffset.y += deltaY * this.interactions.zoomFactor;
+
+      this.grid.setUniform("u_dragOffset", [
+        this.interactions.dragOffset.x,
+        this.interactions.dragOffset.y,
+      ]);
+      this.interactions.dragStart = { x: e.clientX, y: e.clientY };
     }
-  }
+  };
 
-  onResize() {
-    if (this.resizeTimeout) {
-      clearTimeout(this.resizeTimeout);
-    }
-    this.resizeTimeout = setTimeout(() => {
-      this.app.renderer.resize(window.innerWidth, window.innerHeight);
-      this.app.view.width = window.innerWidth * window.devicePixelRatio;
-      this.app.view.height = window.innerHeight * window.devicePixelRatio;
-    }, 100);
-  }
-
-  getMousePosition(event: MouseEvent): IPointData {
-    return { x: event.clientX, y: event.clientY };
-  }
-
-  private findDraggableAt(position: IPointData): Draggable | null {
-    for (const draggable of this.allDraggables.values()) {
-      const area = draggable.getGraphics();
-
-      // Check if the position is within the draggable's interactive area
-      if (this.isPositionInsideArea(position, area)) {
-        return draggable;
-      }
-    }
-    return null;
-  }
-
-  private isPositionInsideArea(
-    position: IPointData,
-    area: Container | Graphics,
-  ): boolean {
-    const bounds = area.getBounds();
-    return (
-      position.x >= bounds.x &&
-      position.x <= bounds.x + bounds.width &&
-      position.y >= bounds.y &&
-      position.y <= bounds.y + bounds.height
+  handkeMouseWheel = (e) => {
+    this.interactions.zoomFactor *=
+      e.deltaY > 0
+        ? 1 - this.interactions.zoomSensitivity
+        : 1 + this.interactions.zoomSensitivity;
+    this.interactions.zoomFactor = Math.max(
+      this.interactions.minZoom,
+      Math.min(this.interactions.maxZoom, this.interactions.zoomFactor),
     );
-  }
+    this.grid.setUniform("u_zoom", this.interactions.zoomFactor);
+  };
 }
