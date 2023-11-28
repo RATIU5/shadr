@@ -3,6 +3,7 @@ import { Node } from "./node";
 import { Draggable } from "./draggable";
 import { Grid } from "./grid";
 import { Events } from "./events";
+import { openNodeModel } from "./dom";
 
 type Interactions = {
   zoomFactor: number;
@@ -46,7 +47,7 @@ export class NodeEditor {
     app.stage.on("mousedown", this.handleMouseDown.bind(this));
     app.stage.on("mouseup", this.handleMouseUp.bind(this));
     app.stage.on("mousemove", this.handleMouseMove.bind(this));
-    app.stage.on("wheel", this.handkeMouseWheel.bind(this));
+    app.stage.on("wheel", this.handleMouseWheel.bind(this));
 
     this.grid = new Grid(app, this.gridOptions);
     app.stage.addChild(this.grid.getMesh());
@@ -82,7 +83,7 @@ export class NodeEditor {
     }
   };
 
-  handkeMouseWheel = (e) => {
+  handleMouseWheel = (e) => {
     this.interactions.zoomFactor *=
       e.deltaY > 0
         ? 1 - this.interactions.zoomSensitivity
@@ -93,4 +94,6 @@ export class NodeEditor {
     );
     this.grid.setUniform("u_zoom", this.interactions.zoomFactor);
   };
+
+  handleKeyUp = (e: KeyboardEvent) => {};
 }
