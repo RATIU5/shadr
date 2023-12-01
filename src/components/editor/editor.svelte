@@ -1,13 +1,18 @@
 <script lang="ts">
+	import { tick } from 'svelte';
+
 	let mouseX = $state(0);
 	let mouseY = $state(0);
 	let showContextMenu = $state(false);
 	let contextMenu: HTMLElement;
 	let canvasElement: HTMLCanvasElement;
 
-	function handleContextMenu(e: Event) {
+	async function handleContextMenu(e: Event) {
 		e.preventDefault();
 		e.stopPropagation();
+		showContextMenu = true;
+
+		await tick();
 
 		const contextRect = contextMenu.getBoundingClientRect();
 		const canvasRect = canvasElement.getBoundingClientRect();
@@ -22,7 +27,6 @@
 			mouseY = (e as MouseEvent).clientY;
 		}
 
-		showContextMenu = true;
 		document.addEventListener('click', handleOuterClick);
 	}
 
