@@ -1,6 +1,7 @@
 export type ContextItem = {
-	label: string;
-	action: () => void;
+	type: 'item' | 'separator';
+	label?: string;
+	action?: () => void;
 	disabled?: boolean;
 };
 
@@ -8,7 +9,7 @@ export function contextMenu(node: HTMLElement, items: ContextItem[]) {
 	const menu = document.createElement('ul');
 	menu.id = 'context-menu';
 	menu.className =
-		'absolute bg-neutral-800 shadow-xl rounded-md p-1 inset-border min-w-52 text-neutral-300 text-sm';
+		'absolute bg-neutral-800 shadow-xl rounded-md p-1 inset-border min-w-52 text-neutral-300 text-[13px] z-10';
 	menu.style.display = 'none';
 	document.body.appendChild(menu);
 
@@ -17,11 +18,11 @@ export function contextMenu(node: HTMLElement, items: ContextItem[]) {
 		items.forEach((item) => {
 			const li = document.createElement('li');
 			li.className =
-				'hover:bg-neutral-700 rounded cursor-pointer py-2 px-3 flex items-center gap-2';
-			li.textContent = item.label;
+				'hover:bg-neutral-700 rounded cursor-pointer py-2 px-2 flex items-center gap-2';
+			li.textContent = item.label ?? '';
 			if (!item.disabled) {
 				li.addEventListener('click', () => {
-					item.action();
+					item.action && item.action();
 					menu.style.display = 'none';
 				});
 			}

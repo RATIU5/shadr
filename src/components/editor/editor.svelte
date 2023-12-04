@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { contextMenu, type ContextItem } from './context-menu/context-menu';
 	import { editor } from './editor';
-	import { grid } from './grid/grid';
 
 	const items: ContextItem[] = [
-		{ label: 'Select All', action: () => console.log('Select All') },
-		{ label: 'Copy', action: () => console.log('Copy') },
-		{ label: 'Cut', action: () => console.log('Cut') },
-		{ label: 'Paste', action: () => console.log('Paste') }
+		{ type: 'item', label: 'Create new node', action: () => console.log('n') },
+		{ type: 'item', label: 'Select all', action: () => console.log('a') },
+		{ type: 'separator' },
+		{ type: 'item', label: 'Zoom in', action: () => console.log('+') },
+		{ type: 'item', label: 'Zoom out', action: () => console.log('-') },
+		{ type: 'item', label: 'Reset zoom', action: () => console.log('z') }
 	];
 </script>
 
