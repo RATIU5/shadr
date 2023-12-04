@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { contextMenu, type ContextItem } from './context-menu/context-menu';
+	import { editor } from './editor';
+	import { grid } from './grid/grid';
 
 	const items: ContextItem[] = [
 		{ label: 'Select All', action: () => console.log('Select All') },
@@ -9,4 +11,4 @@
 	];
 </script>
 
-<canvas use:contextMenu={items} class="w-screen h-screen"></canvas>
+<canvas use:contextMenu={items} use:editor class="w-screen h-screen"></canvas>
