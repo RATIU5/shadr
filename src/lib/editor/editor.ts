@@ -1,6 +1,7 @@
 import { Application, Container, Graphics, type IPointData } from 'pixi.js';
 import { Grid } from './grid';
 import type { EditorState } from './editor-state';
+import { Node } from '$lib/nodes/node';
 
 export class NodeEditor {
 	private app: Application;
@@ -30,7 +31,11 @@ export class NodeEditor {
 		this.onResize();
 		this.addEventListeners();
 
-		// this.addNode(new Node(1, { x: 100, y: 100 }, { x: 100, y: 200 }));
+		this.addNode(new Node(1, { x: 100, y: 100 }, { x: 100, y: 200 }));
+	}
+
+	addNode(node: Node) {
+		this.container.addChild(node.get());
 	}
 
 	addEventListeners() {
