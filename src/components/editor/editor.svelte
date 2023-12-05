@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { contextMenu, type ContextItem } from './context-menu/context-menu';
-	import { editor } from './editor';
+	import { contextMenu, type ContextItem } from '../actions/context-menu/context-menu';
+	import { editor } from '../actions/editor/editor';
 	import { EditorState } from '../../lib/editor/editor-state';
 
 	const editorState = new EditorState();
