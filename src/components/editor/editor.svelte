@@ -18,7 +18,14 @@
 		{ type: 'separator' },
 		{ type: 'item', label: 'Zoom in', action: () => (editorState.zoomFactor -= 0.5) },
 		{ type: 'item', label: 'Zoom out', action: () => (editorState.zoomFactor += 0.5) },
-		{ type: 'item', label: 'Reset zoom', action: () => (editorState.zoomFactor = 1) }
+		{
+			type: 'item',
+			label: 'Reset view',
+			action: () => {
+				editorState.dragOffset = { x: 0, y: 0 };
+				editorState.zoomFactor = 1;
+			}
+		}
 	];
 </script>
 

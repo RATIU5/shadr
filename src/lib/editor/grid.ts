@@ -23,6 +23,9 @@ export class Grid {
 		this.state.addZoomFactorCallback((zoomFactor) => {
 			this.setUniform('u_zoom', zoomFactor);
 		});
+		this.state.addDragOffsetCallback((dragOffset) => {
+			this.setUniform('u_dragOffset', [dragOffset.x, dragOffset.y]);
+		});
 		this.appSize = { x: app.renderer.width, y: app.renderer.height };
 		this.container = new Container();
 		this.setupMesh();
@@ -83,10 +86,10 @@ export class Grid {
 		const deltaX = e.clientX - this.dragStart.x;
 		const deltaY = e.clientY - this.dragStart.y;
 
-		this.dragOffset.x += deltaX * this.state.zoomFactor;
-		this.dragOffset.y += deltaY * this.state.zoomFactor;
+		this.state.dragOffset.x += deltaX * this.state.zoomFactor;
+		this.state.dragOffset.y += deltaY * this.state.zoomFactor;
 
-		this.setUniform('u_dragOffset', [this.dragOffset.x, this.dragOffset.y]);
+		this.setUniform('u_dragOffset', [this.state.dragOffset.x, this.state.dragOffset.y]);
 		this.dragStart = { x: e.clientX, y: e.clientY };
 	}
 

@@ -12,7 +12,7 @@ export class React<T = any> {
 		this.#_value = val;
 		this.#callbacks.forEach((callback) => callback(val));
 	}
-	addZoomFactorCallback(callback: (value: T) => void) {
+	addValueCallback(callback: (value: T) => void) {
 		this.#callbacks.push(callback);
 	}
 }
