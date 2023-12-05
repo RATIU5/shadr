@@ -1,4 +1,4 @@
-import { React } from '$lib/react';
+import { React } from '$lib/utils/react';
 
 export class EditorState {
 	public static readonly MIN_GRID_ZOOM = 0.25;
