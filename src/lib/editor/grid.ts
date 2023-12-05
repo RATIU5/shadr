@@ -63,9 +63,11 @@ export class Grid {
 	}
 
 	private onPointerDown(e: any) {
-		this.isDragging = true;
-		this.dragStart.x = e.clientX;
-		this.dragStart.y = e.clientY;
+		if ((e as MouseEvent).button === 1) {
+			this.isDragging = true;
+			this.dragStart.x = e.clientX;
+			this.dragStart.y = e.clientY;
+		}
 	}
 
 	private onPointerUp() {
