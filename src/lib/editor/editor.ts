@@ -1,5 +1,6 @@
 import { Application, Container, Graphics, type IPointData } from 'pixi.js';
 import { Grid } from './grid';
+import type { EditorState } from './editor-state';
 
 export class NodeEditor {
 	private app: Application;
@@ -7,7 +8,7 @@ export class NodeEditor {
 	private resizeTimeout: number;
 	private container: Container;
 
-	constructor(canvas: HTMLCanvasElement) {
+	constructor(canvas: HTMLCanvasElement, editorState: EditorState) {
 		const rect = canvas.getBoundingClientRect();
 		this.app = new Application({
 			view: canvas,
@@ -22,7 +23,7 @@ export class NodeEditor {
 		this.resizeTimeout = 0;
 		this.container = new Container();
 
-		const grid = new Grid(this.app);
+		const grid = new Grid(this.app, editorState);
 		this.container.addChild(grid.get());
 		this.app.stage.addChild(this.container);
 

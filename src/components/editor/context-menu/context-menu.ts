@@ -6,6 +6,8 @@ export type ContextItem = {
 	items?: ContextItem[];
 };
 
+// TODO: Add keyboard navigation
+
 export function contextMenu(node: HTMLElement, items: ContextItem[]) {
 	let mouseX = 0;
 	let mouseY = 0;
@@ -105,7 +107,7 @@ function createItem(
 		} else if (item.items && item.items.length > 0) {
 			const submenu = document.createElement('ul');
 			submenu.className =
-				'absolute bg-neutral-800 shadow-xl rounded-md p-1 inset-border min-w-52 text-neutral-300 text-[13px] z-10 left-full top-0  -ml-1 hidden';
+				'absolute bg-neutral-800 shadow-xl rounded-md p-1 inset-border min-w-52 text-neutral-300 text-[13px] z-10 left-full top-0 -ml-1 hidden';
 			submenu.id = 'context-submenu';
 
 			item.items.forEach((subItem) => {
