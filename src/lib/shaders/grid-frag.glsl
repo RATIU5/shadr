@@ -2,21 +2,17 @@
 
 precision mediump float;
 
-// Uniforms
 uniform float u_dotSize;
 uniform vec2 u_dragOffset;
 uniform vec2 u_size;
 uniform float u_zoom;
 
-// Constants for visual properties
 const float DOT_WEIGHT = 0.025;
 const float EDGE_WIDTH = 0.01;
 const vec3 BACKGROUND_COLOR = vec3(0.05);
 const vec3 BASE_DOT_COLOR = vec3(0.2);
 const vec3 LIGHTER_DOT_COLOR = vec3(0.4);
-
-// New constant for dot spacing
-const float DOT_SPACING = 0.02; // Adjust this value as needed
+const float DOT_SPACING = 0.02;
 
 // Calculate normalized mouse position based on drag offset and canvas size
 vec2 getNormalizedMousePos() {
@@ -28,7 +24,6 @@ vec2 getNormalizedMousePos() {
 
 // Calculate the screen coordinates
 vec2 getScreenCoords(vec2 normalizedMousePos) {
-  // Apply zoom only to the positioning of the dots, not to their size
   vec2 zoomAdjustedCoords = (gl_FragCoord.xy / u_size - 0.5) * u_zoom + 0.5;
   return zoomAdjustedCoords - normalizedMousePos;
 }
