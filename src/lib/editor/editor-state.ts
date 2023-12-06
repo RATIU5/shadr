@@ -7,10 +7,12 @@ export class EditorState {
 
 	#_zoomFactor: React<number>;
 	#_dragOffset: React<IPointData>;
+	#_nodeContainerPos: React<IPointData>;
 
 	constructor() {
 		this.#_zoomFactor = new React(1);
 		this.#_dragOffset = new React({ x: 0, y: 0 });
+		this.#_nodeContainerPos = new React({ x: 0, y: 0 });
 	}
 
 	get zoomFactor(): number {
@@ -32,11 +34,23 @@ export class EditorState {
 		this.#_dragOffset.value = val;
 	}
 
+	get nodeContainerPos(): IPointData {
+		return this.#_nodeContainerPos.value;
+	}
+
+	set nodeContainerPos(val: IPointData) {
+		this.#_nodeContainerPos.value = val;
+	}
+
 	public addZoomFactorCallback(callback: (value: number) => void) {
 		this.#_zoomFactor.addValueCallback(callback);
 	}
 
 	public addDragOffsetCallback(callback: (value: IPointData) => void) {
 		this.#_dragOffset.addValueCallback(callback);
+	}
+
+	public addNodeContainerPosCallback(callback: (value: IPointData) => void) {
+		this.#_nodeContainerPos.addValueCallback(callback);
 	}
 }

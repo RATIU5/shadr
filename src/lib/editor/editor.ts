@@ -25,8 +25,11 @@ export class NodeEditor {
 		this.container = new Container();
 
 		const grid = new Grid(this.app, editorState);
-		this.container.addChild(grid.get());
+		this.app.stage.addChild(grid.get());
 		this.app.stage.addChild(this.container);
+		editorState.addNodeContainerPosCallback((pos) => {
+			this.container.position.set(pos.x, pos.y);
+		});
 
 		this.onResize();
 		this.addEventListeners();

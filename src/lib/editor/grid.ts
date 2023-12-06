@@ -89,6 +89,10 @@ export class Grid {
 		this.state.dragOffset.x += deltaX * this.state.zoomFactor;
 		this.state.dragOffset.y += deltaY * this.state.zoomFactor;
 
+		this.state.nodeContainerPos = {
+			x: this.state.dragOffset.x * this.state.zoomFactor,
+			y: this.state.dragOffset.y * this.state.zoomFactor
+		};
 		this.setUniform('u_dragOffset', [this.state.dragOffset.x, this.state.dragOffset.y]);
 		this.dragStart = { x: e.clientX, y: e.clientY };
 	}
