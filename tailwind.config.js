@@ -2,11 +2,14 @@ const plugin = require('tailwindcss/plugin');
 
 /** @type {import('tailwindcss').Config} */
 export default {
-	content: ['./src/**/*.{html,js,svelte,ts}'],
-	theme: {
-		extend: {}
-	},
-	plugins: [
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [
 		plugin(function ({ addUtilities }) {
 			const newUtilities = {
 				'.inset-border': {
@@ -16,4 +19,4 @@ export default {
 			addUtilities(newUtilities);
 		})
 	]
-};
+}
