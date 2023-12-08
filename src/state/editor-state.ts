@@ -83,7 +83,7 @@ const state: EditorState = {
     },
   ],
   zoomFactor: 1.0,
-  zoomSensitivity: 0.1,
+  zoomSensitivity: 0.05,
   interaction: {
     dragIsDown: false,
     mousePos: [0, 0],

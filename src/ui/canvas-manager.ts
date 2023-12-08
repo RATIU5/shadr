@@ -14,6 +14,7 @@ function setupCanvasEventListeners(canvas: HTMLCanvasElement) {
   const zoomSensitivity = getZoomSensitivity();
 
   canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
     const currentZoom = getZoom();
     const zoomChangeFactor =
       e.deltaY > 0 ? 1 - zoomSensitivity : 1 + zoomSensitivity;
