@@ -36,7 +36,7 @@ export function contextMenu(node: ICanvas, items: ContextItem[]) {
   function updateMenuItems() {
     menu.innerHTML = "";
     items.forEach((item) => {
-      const li = createItem(item, menu, menu);
+      const li = createItem(item, menu, menu, node);
       menu.appendChild(li);
     });
   }
@@ -98,7 +98,8 @@ export function contextMenu(node: ICanvas, items: ContextItem[]) {
 function createItem(
   item: ContextItem,
   parentMenu: HTMLUListElement,
-  rootMenu: HTMLUListElement
+  rootMenu: HTMLUListElement,
+  node: ICanvas
 ): HTMLLIElement {
   const li = document.createElement("li");
   li.className = item.disabled
@@ -126,7 +127,7 @@ function createItem(
       submenu.id = "context-submenu";
 
       item.items.forEach((subItem) => {
-        submenu.appendChild(createItem(subItem, submenu, rootMenu));
+        submenu.appendChild(createItem(subItem, submenu, rootMenu, node));
       });
 
       li.appendChild(submenu);
@@ -136,8 +137,9 @@ function createItem(
         submenu.style.display = "block";
         setTimeout(() => {
           const submenuRect = submenu.getBoundingClientRect();
-          const viewportWidth = window.innerWidth;
-          const viewportHeight = window.innerHeight;
+          const viewportRect = node.getBoundingClientRect!();
+          const viewportWidth = viewportRect.width;
+          const viewportHeight = viewportRect.height;
 
           if (submenuRect.right > viewportWidth) {
             submenu.style.left = `-${submenuRect.width - 8}px`;

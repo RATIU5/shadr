@@ -7,6 +7,8 @@ function initializeApplicaton() {
   const canvas = document.getElementById("editor") as HTMLCanvasElement;
   const app = new Application({
     view: canvas,
+    width: window.innerWidth,
+    height: window.innerHeight,
     autoDensity: true,
     antialias: true,
     backgroundColor: 0x1a1b1c,

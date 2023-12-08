@@ -31,7 +31,7 @@ function setupCanvasEventListeners(canvas: HTMLCanvasElement) {
     }
   });
 
-  canvas.addEventListener("mouseup", (e) => {
+  canvas.addEventListener("mouseup", () => {
     getInteraction().dragIsDown = false;
   });
 
