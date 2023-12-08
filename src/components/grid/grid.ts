@@ -21,7 +21,7 @@ class Grid {
     const mesh = this.createMesh(geometry, shader);
     this.app.stage.addChild(mesh);
 
-    on("grid:scroll", (zoom: number) => {
+    on("grid:zoom", (zoom: number) => {
       shader.uniforms.u_zoom = zoom;
     });
     on("grid:drag", (dragOffset: [number, number]) => {

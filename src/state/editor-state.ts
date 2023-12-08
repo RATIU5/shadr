@@ -8,12 +8,13 @@ export type ContextItem = {
   items?: ContextItem[];
 };
 
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 5.0;
+
 export type EditorState = {
   contextMenu: ContextItem[];
   zoomFactor: number;
   zoomSensitivity: number;
-  minZoom: number;
-  maxZoom: number;
   interaction: {
     dragIsDown: boolean;
     mousePos: number[];
@@ -29,7 +30,7 @@ export type EditorState = {
   };
 };
 
-export const state: EditorState = {
+const state: EditorState = {
   contextMenu: [
     {
       type: "item",
@@ -58,7 +59,7 @@ export const state: EditorState = {
       type: "item",
       label: "Zoom in",
       action: () => {
-        state.zoomFactor -= 0.5;
+        setZoom(getZoom() - 0.5);
         emit("grid:zoom", state.zoomFactor);
       },
     },
@@ -66,7 +67,7 @@ export const state: EditorState = {
       type: "item",
       label: "Zoom out",
       action: () => {
-        state.zoomFactor += 0.5;
+        setZoom(getZoom() + 0.5);
         emit("grid:zoom", state.zoomFactor);
       },
     },
@@ -75,7 +76,7 @@ export const state: EditorState = {
       label: "Reset view",
       action: () => {
         state.interaction.dragOffset = { x: 0, y: 0 };
-        state.zoomFactor = 1;
+        setZoom(1);
         emit("grid:zoom", state.zoomFactor);
         emit("grid:drag", [0, 0]);
       },
@@ -83,8 +84,6 @@ export const state: EditorState = {
   ],
   zoomFactor: 1.0,
   zoomSensitivity: 0.1,
-  minZoom: 0.5,
-  maxZoom: 5.0,
   interaction: {
     dragIsDown: false,
     mousePos: [0, 0],
@@ -99,3 +98,22 @@ export const state: EditorState = {
     zoom: 1.0,
   },
 };
+
+export function setZoom(value: number) {
+  state.zoomFactor = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+}
+export function getZoom() {
+  return state.zoomFactor;
+}
+
+export function getContextMenu() {
+  return state.contextMenu;
+}
+
+export function getZoomSensitivity() {
+  return state.zoomSensitivity;
+}
+
+export function getInteraction() {
+  return state.interaction;
+}
