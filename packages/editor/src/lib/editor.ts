@@ -1,4 +1,5 @@
-import { Application, IApplicationOptions } from 'pixi.js';
+import { IApplicationOptions } from 'pixi.js';
+import { Renderer } from './renderer/renderer';
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
@@ -6,15 +7,14 @@ export type EditorConfig = {
 };
 
 export class Editor {
-  app: Application;
+  renderer: Renderer;
+  nodes: Map<string, any>;
+  connections: Set<any>;
 
   constructor(config: EditorConfig) {
-    this.app = new Application({
-      ...config.pixiConfig,
-      view: config.canvas,
-      width: config.canvas.clientWidth,
-      height: config.canvas.clientHeight,
-    });
+    this.renderer = new Renderer(config.canvas, config.pixiConfig);
+    this.nodes = new Map();
+    this.connections = new Set();
   }
 
   start() {
