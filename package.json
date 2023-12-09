@@ -3,10 +3,14 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "dev": "nx run-many --target=build --projects=editor && nx serve shadr"
+    "dev": "nx run-many --target=build --projects=editor && nx serve shadr",
+    "test": "nx run-many --all --target=test --parallel",
+    "lint": "nx run-many --all --target=lint --parallel",
+    "build": "nx run-many --target=build --projects=editor,shadr --parallel=false"
   },
   "private": true,
   "dependencies": {
+    "pixi.js": "^7.3.2",
     "tslib": "^2.3.0"
   },
   "devDependencies": {
@@ -22,12 +26,15 @@
     "@typescript-eslint/parser": "^6.9.1",
     "@vitest/coverage-v8": "~0.34.6",
     "@vitest/ui": "~0.34.6",
+    "autoprefixer": "^10.4.16",
     "eslint": "~8.48.0",
     "eslint-config-prettier": "^9.0.0",
     "jsdom": "~22.1.0",
     "nx": "17.2.0",
+    "postcss": "^8.4.32",
     "prettier": "^2.6.2",
     "swc-loader": "0.1.15",
+    "tailwindcss": "^3.3.6",
     "typescript": "~5.2.2",
     "vite": "^5.0.0",
     "vitest": "~0.34.6"
