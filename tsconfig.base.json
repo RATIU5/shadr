@@ -15,7 +15,7 @@
     "skipDefaultLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "editor": ["packages/editor/src/index.ts"]
+      "editor": ["packages/editor/src/index.ts"],
     }
   },
   "exclude": ["node_modules", "tmp"]
