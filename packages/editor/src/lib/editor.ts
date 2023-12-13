@@ -1,9 +1,9 @@
-import { IApplicationOptions } from 'pixi.js';
-import { Renderer } from './renderer/renderer';
+import { IApplicationOptions } from "pixi.js";
+import { Renderer } from "./renderer/renderer";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
-  pixiConfig?: Partial<Omit<IApplicationOptions, 'view' | 'width' | 'height'>>;
+  pixiConfig?: Partial<Omit<IApplicationOptions, "view" | "width" | "height">>;
 };
 
 export class Editor {
@@ -18,6 +18,6 @@ export class Editor {
   }
 
   start() {
-    console.log('Editor started');
+    console.log("Editor started");
   }
 }

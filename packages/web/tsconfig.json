@@ -1,32 +1,10 @@
 {
-  "extends": "../../tsconfig.base.json",
-  "files": [],
+  "extends": "../../tsconfig.base.node.json",
   "compilerOptions": {
-    
-    "target": "ESNext",
-    "useDefineForClassFields": true,
-    "module": "ESNext",
-    "lib": ["ESNext", "DOM"],
-    "moduleResolution": "Node",
-    "strict": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "esModuleInterop": true,
-    "noEmit": false,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noImplicitReturns": true,
-    "skipLibCheck": true,
+    "outDir": "build",
+    "preserveSymlinks": true,
     "declaration": true,
-    "types": ["vite/client"]
+    "declarationMap": true
   },
-  "include": ["src"],
-  "references": [
-    {
-      "path": "./tsconfig.app.json",
-    },
-    {
-      "path": "./tsconfig.spec.json"
-    }
-  ]
+  "include": ["src"]
 }

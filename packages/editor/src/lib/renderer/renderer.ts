@@ -1,4 +1,4 @@
-import { Application, Container, IApplicationOptions, Polygon } from 'pixi.js';
+import { Application, Container, IApplicationOptions, Polygon } from "pixi.js";
 
 export class Renderer {
   canvas: HTMLCanvasElement;
@@ -7,7 +7,7 @@ export class Renderer {
 
   constructor(
     canvas: HTMLCanvasElement,
-    pixiConfig?: Partial<Omit<IApplicationOptions, 'view' | 'width' | 'height'>>
+    pixiConfig?: Partial<Omit<IApplicationOptions, "view" | "width" | "height">>
   ) {
     this.canvas = canvas;
     this.app = new Application(
@@ -21,7 +21,7 @@ export class Renderer {
       )
     );
     this.container = new Container();
-    this.container.eventMode = 'static';
+    this.container.eventMode = "static";
     this.container.hitArea = new Polygon([
       0,
       0,
@@ -37,8 +37,8 @@ export class Renderer {
   }
 
   setupEventListeners() {
-    this.container.on('mousemove', (event) => {
-      console.log('move');
+    this.container.on("mousemove", (event) => {
+      console.log("move");
     });
   }
 }
