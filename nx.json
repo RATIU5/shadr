@@ -25,7 +25,7 @@
       "inputs": ["default", "^default"]
     }
   },
-  "nxCloudAccessToken": "NWQxNDk0ZTAtMGRiMy00NTc0LWJiNjYtODY2ODc3ZjZkZjVkfHJlYWQtd3JpdGU=",
+  "nxCloudAccessToken": "NWE0MmMzM2YtYjFmNy00ZDlhLTkxZTgtMjUyOGJiZjEwNDljfHJlYWQtd3JpdGU=",
   "generators": {
     "@nx/web:application": {
       "style": "css",
