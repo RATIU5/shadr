@@ -1,11 +1,3 @@
 {
-    "extends": "../../tsconfig.base.node.json",
-    "include": ["src"],
-    "main": "./src/index.ts",
-    "compilerOptions": {
-      "outDir": "lib",
-      "preserveSymlinks": true,
-      "declaration": true,
-      "declarationMap": true
-    }
-  }
+  "extends": "../../tsconfig.base.json" 
+}

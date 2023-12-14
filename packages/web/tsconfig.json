@@ -1,10 +1,20 @@
 {
-  "extends": "../../tsconfig.base.node.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "build",
-    "preserveSymlinks": true,
-    "declaration": true,
-    "declarationMap": true
-  },
-  "include": ["src"]
+    "useDefineForClassFields": true,
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  }
 }

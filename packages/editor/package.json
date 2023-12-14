@@ -1,10 +1,19 @@
 {
-    "private": true,
-    "name": "@shadr/editor",
-    "version": "0.1.0",
-    "description": "Library that contains the core editor for shadr",
-    "main": "lib",
-    "scripts": {
-      "build": "pnpm clean && tsc"
-    }
+  "name": "@shadr/editor",
+  "version": "0.0.0",
+  "description": "A customizable node editor for Shadr",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "pixi.js": "^7.3.2"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "RATIU5 <contact@ratiu5.dev>",
+  "license": "ISC",
+  "devDependencies": {
+    "typescript": "^5.3.3"
   }
+}
