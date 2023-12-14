@@ -1,9 +1,13 @@
-import './style.css'
-import typescriptLogo from './typescript.svg'
-import viteLogo from '/vite.svg'
-import { setupCounter } from './counter.ts'
+import viteLogo from "/vite.svg";
+import { setupCounter } from "./counter";
+import "./style.css";
+import typescriptLogo from "./typescript.svg";
+import { test } from "@shadr/editor/src";
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
+test();
+
+// biome-ignore lint/style/noNonNullAssertion: <explanation>
+document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div>
     <a href="https://vitejs.dev" target="_blank">
       <img src="${viteLogo}" class="logo" alt="Vite logo" />
@@ -19,6 +23,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       Click on the Vite and TypeScript logos to learn more
     </p>
   </div>
-`
+`;
 
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
+// biome-ignore lint/style/noNonNullAssertion: <explanation>
+setupCounter(document.querySelector<HTMLButtonElement>("#counter")!);

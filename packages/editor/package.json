@@ -8,12 +8,14 @@
     "pixi.js": "^7.3.2"
   },
   "scripts": {
-    "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon --watch src --ext ts --exec npm run build",
+    "clean": "rimraf dist",
+    "build": "npm run clean && tsc"
   },
   "author": "RATIU5 <contact@ratiu5.dev>",
   "license": "ISC",
   "devDependencies": {
+    "nodemon": "^3.0.2",
     "typescript": "^5.3.3"
   }
 }
