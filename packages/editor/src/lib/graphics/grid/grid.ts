@@ -8,6 +8,7 @@ import gridVertShader from "../shaders/grid.vert";
 export class Grid {
   /**
    * The mesh of the grid
+   * @readonly
    */
   #mesh: Mesh<Shader>;
 
@@ -29,17 +30,17 @@ export class Grid {
   constructor(width: number, height: number) {
     this.#width = width;
     this.#height = height;
-    const geometry = this.createGeometry();
-    const shader = this.createShader();
-    this.#mesh = this.createMesh(geometry, shader);
+    const geometry = this.#createGeometry();
+    const shader = this.#createShader();
+    this.#mesh = this.#createMesh(geometry, shader);
   }
 
   /**
    * Creates the geometry using Pixi.js Geometry class. It creates a rectangle the size of the width and height passed in the constructor
    * @returns {Geometry} The geometry of the grid
    */
-  createGeometry(): Geometry {
-    const positionalBuffer = this.getGridSizePoints();
+  #createGeometry(): Geometry {
+    const positionalBuffer = this.#getGridSizePoints();
     return new Geometry().addAttribute("position", positionalBuffer, 2).addIndex([0, 1, 2, 0, 2, 3]);
   }
 
@@ -47,7 +48,7 @@ export class Grid {
    * Creates the shader using Pixi.js Shader class. It uses the vertex and fragment shaders from the shaders folder
    * @returns {Shader} The shader of the grid
    */
-  createShader(): Shader {
+  #createShader(): Shader {
     return Shader.from(gridVertShader, gridFragShader, {
       u_dotSize: 100.0,
       u_mousePos: [0, 0],
@@ -64,9 +65,9 @@ export class Grid {
    * @param {Shader} shader The shader of the grid
    * @returns {Mesh} The mesh of the grid
    */
-  createMesh(geometry: Geometry, shader: Shader): Mesh<Shader> {
+  #createMesh(geometry: Geometry, shader: Shader): Mesh<Shader> {
     const mesh = new Mesh(geometry, shader);
-    mesh.hitArea = new Polygon(this.getGridSizePoints());
+    mesh.hitArea = new Polygon(this.#getGridSizePoints());
     return mesh;
   }
 
@@ -74,11 +75,24 @@ export class Grid {
    * Gets the grid size points used to create the geometry and hit area
    * @returns {number[]} The grid size points
    */
-  getGridSizePoints(): number[] {
+  #getGridSizePoints(): number[] {
     return [0, 0, this.#width, 0, this.#width, this.#height, 0, this.#height];
   }
 
-  getMesh(): Mesh<Shader> {
+  /**
+   * Gets the mesh of the grid to be added to the stage
+   * @returns {Mesh} The mesh of the grid
+   */
+  public getMesh(): Mesh<Shader> {
     return this.#mesh;
+  }
+
+  /**
+   * Set a value to a specific uniform in the shader
+   * @param {string} name The name of the uniform
+   * @param {T} value The value to set the uniform to
+   */
+  public setUniform<T = unknown>(name: string, value: T) {
+    this.#mesh.shader.uniforms[name] = value;
   }
 }

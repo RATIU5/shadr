@@ -27,11 +27,25 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.stage = new Container();
     this.stage.eventMode = "static";
 
+    this.setupEventListeners();
+
     // Setup grid background and add to stage
-    const grid = new Grid(this.eventBus, config.canvas.clientWidth, config.canvas.clientHeight);
+    const grid = new Grid(config.canvas.clientWidth, config.canvas.clientHeight);
     this.stage.addChild(grid.getMesh());
 
     this.eventBus.emit("editor:ready");
+  }
+
+  setupEventListeners() {
+    this.stage.on("pointerdown", (event) => {
+      this.eventBus.emit("editor:mouseDown", event);
+    });
+    this.stage.on("pointermove", (event) => {
+      this.eventBus.emit("editor:mouseMove", event);
+    });
+    this.stage.on("pointerup", (event) => {
+      this.eventBus.emit("editor:mouseUp", event);
+    });
   }
 
   start() {

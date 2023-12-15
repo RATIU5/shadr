@@ -2,7 +2,7 @@ export type Callback = <T = unknown>(data?: T) => void;
 export type EventListeners = {
   [event in EventType]?: Array<Callback>;
 };
-export type EventType = "editor:ready" | "editor:start";
+export type EventType = "editor:ready" | "editor:start" | "editor:mouseDown" | "editor:mouseMove" | "editor:mouseUp";
 
 /**
  * A simple event bus that allows for subscribing to and emitting events.
