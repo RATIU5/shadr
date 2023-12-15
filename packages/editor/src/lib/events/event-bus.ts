@@ -1,4 +1,4 @@
-export type Callback = (data?: unknown) => void;
+export type Callback = <T = unknown>(data?: T) => void;
 export type EventListeners = {
   [event in EventType]?: Array<Callback>;
 };
@@ -47,7 +47,7 @@ export class EventBus {
    * @param {EventType} event - The name of the event to emit.
    * @param {unknown} data - The data to pass to each listener's callback function.
    */
-  emit(event: EventType, data?: unknown) {
+  emit<T = unknown>(event: EventType, data?: T) {
     if (!this.#eventListeners[event]) {
       return;
     }
