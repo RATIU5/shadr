@@ -19,7 +19,7 @@ export class EventBus {
   }
 
   /**
-   * Adds a listener for a specific event.
+   * Adds a listener for a specific event. If you need to remove the listener later, you should store a reference to the callback function.
    * @param {EventType} event - The name of the event to emit.
    * @param {Callback} listener - The callback function to execute when the event is emitted.
    */
