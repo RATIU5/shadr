@@ -138,6 +138,25 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       // Render the stage with the new positions
       this.renderer.render(this.stage);
     });
+    this.eventBus.on("editor:wheel", (event) => {
+      const zoomSens = this.interactionState.get("zoomSensitivity");
+      let currentZoom = this.interactionState.get("zoomFactor");
+
+      if ((event?.deltaY ?? 0) > 0) {
+        currentZoom *= 1 - zoomSens;
+      } else {
+        currentZoom *= 1 + zoomSens;
+      }
+
+      currentZoom = Math.max(
+        this.interactionState.get("minZoom"),
+        Math.min(this.interactionState.get("maxZoom"), currentZoom),
+      );
+      this.interactionState.set("zoomFactor", currentZoom);
+
+      this.grid.setUniform("u_zoom", this.interactionState.get("zoomFactor"));
+      this.renderer.render(this.stage);
+    });
   }
 
   start() {
