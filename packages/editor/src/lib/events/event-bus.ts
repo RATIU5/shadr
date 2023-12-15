@@ -3,61 +3,55 @@ export type EventListeners = {
   [event: string]: Array<Callback>;
 };
 
-let eventListeners: EventListeners | undefined = undefined;
-
 /**
- * Initializes the event bus by creating an empty object for storing event listeners.
+ * A simple event bus that allows for subscribing to and emitting events.
  */
-export function initializeEventBus() {
-  eventListeners = {};
-}
+export class EventBus {
+  private eventListeners: EventListeners;
 
-/**
- * Registers a listener for a specific event.
- * @param {string} event - The name of the event to listen for.
- * @param {Callback} listener - The callback function to execute when the event is emitted.
- * @throws Will throw an error if the event bus is not initialized.
- */
-export function on(event: string, listener: Callback) {
-  if (!eventListeners) {
-    throw new Error("Event bus not initialized");
+  /**
+   * Initializes the event bus by creating an empty object for storing event listeners.
+   * @constructor
+   */
+  constructor() {
+    this.eventListeners = {};
   }
-  if (!eventListeners[event]) {
-    eventListeners[event] = [];
-  }
-  eventListeners[event].push(listener);
-}
 
-/**
- * Removes a listener for a specific event.
- * @param {string} event - The name of the event.
- * @param {Callback} listenerToRemove - The callback function to be removed.
- * @throws Will throw an error if the event bus is not initialized.
- */
-export function off(event: string, listenerToRemove: Callback) {
-  if (!eventListeners) {
-    throw new Error("Event bus not initialized");
+  /**
+   * Emits an event to all registered listeners.
+   * @param {string} event - The name of the event to emit.
+   * @param {Callback} listener - The callback function to execute when the event is emitted.
+   */
+  on(event: string, listener: Callback) {
+    if (!this.eventListeners[event]) {
+      this.eventListeners[event] = [];
+    }
+    this.eventListeners[event].push(listener);
   }
-  if (!eventListeners[event]) {
-    return;
-  }
-  eventListeners[event] = eventListeners[event].filter((listener) => listener !== listenerToRemove);
-}
 
-/**
- * Emits an event to all registered listeners.
- * @param {string} event - The name of the event to emit.
- * @param {any} data - The data to pass to each listener's callback function.
- * @throws Will throw an error if the event bus is not initialized.
- */
-export function emit(event: string, data: unknown) {
-  if (!eventListeners) {
-    throw new Error("Event bus not initialized");
+  /**
+   * Removes a listener for a specific event.
+   * @param {string} event - The name of the event.
+   * @param {Callback} listenerToRemove - The callback function to be removed.
+   */
+  off(event: string, listenerToRemove: Callback) {
+    if (!this.eventListeners[event]) {
+      return;
+    }
+    this.eventListeners[event] = this.eventListeners[event].filter((listener) => listener !== listenerToRemove);
   }
-  if (!eventListeners[event]) {
-    return;
-  }
-  for (const listener of eventListeners[event]) {
-    listener(data);
+
+  /**
+   * Emits an event to all registered listeners.
+   * @param {string} event - The name of the event to emit.
+   * @param {any} data - The data to pass to each listener's callback function.
+   */
+  emit(event: string, data: unknown) {
+    if (!this.eventListeners[event]) {
+      return;
+    }
+    for (const listener of this.eventListeners[event]) {
+      listener(data);
+    }
   }
 }
