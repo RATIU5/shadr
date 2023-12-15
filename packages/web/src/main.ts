@@ -1,29 +1,12 @@
-import viteLogo from "/vite.svg";
-import { setupCounter } from "./counter";
-import "./style.css";
-import typescriptLogo from "./typescript.svg";
-import { test } from "@shadr/editor/src";
+const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 
-test();
-
-// biome-ignore lint/style/noNonNullAssertion: <explanation>
-document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-  <div>
-    <a href="https://vitejs.dev" target="_blank">
-      <img src="${viteLogo}" class="logo" alt="Vite logo" />
-    </a>
-    <a href="https://www.typescriptlang.org/" target="_blank">
-      <img src="${typescriptLogo}" class="logo vanilla" alt="TypeScript logo" />
-    </a>
-    <h1>Vite + TypeScript</h1>
-    <div class="card">
-      <button id="counter" type="button"></button>
-    </div>
-    <p class="read-the-docs">
-      Click on the Vite and TypeScript logos to learn more
-    </p>
-  </div>
-`;
-
-// biome-ignore lint/style/noNonNullAssertion: <explanation>
-setupCounter(document.querySelector<HTMLButtonElement>("#counter")!);
+const editor = new Editor({
+  canvas: document.getElementById("node-editor") as HTMLCanvasElement,
+  pixiConfig: {
+    autoDensity: true,
+    antialias: true,
+    backgroundColor: 0x1a1b1c,
+    resolution: window.devicePixelRatio || 1,
+  },
+});
+editor.start();
