@@ -6,7 +6,7 @@
     "dev": "concurrently \"lerna run --scope @shadr/editor watch\" \"lerna run --scope @shadr/web dev\"",
     "build": "lerna run build --stream",
     "clean": "lerna run clean --stream",
-    "check": "npx @biomejs/biome check --apply ./packages/*/src/*.ts",
+    "check": "npx @biomejs/biome check --apply .",
     "publish": "lerna publish"
   },
   "devDependencies": {
