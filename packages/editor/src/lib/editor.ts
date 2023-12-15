@@ -1,4 +1,4 @@
-import { Container, FederatedPointerEvent, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
+import { Container, FederatedPointerEvent, FederatedWheelEvent, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
 import { EventBus } from "./events/event-bus";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
@@ -10,6 +10,9 @@ export type EditorConfig = {
 export type InteractionState = {
   dragDown: boolean;
   zoomFactor: number;
+  zoomSensitivity: number;
+  minZoom: number;
+  maxZoom: number;
   mousePosition: {
     x: number;
     y: number;
@@ -29,6 +32,7 @@ export type EditorEvents = {
   "editor:pointerDown": FederatedPointerEvent;
   "editor:pointerMove": FederatedPointerEvent;
   "editor:pointerUp": FederatedPointerEvent;
+  "editor:wheel": FederatedWheelEvent;
 };
 
 export class Editor<VIEW extends ICanvas = ICanvas> {
@@ -43,6 +47,9 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.interactionState = new State({
       dragDown: false,
       zoomFactor: 1,
+      zoomSensitivity: 0.025,
+      minZoom: 0.5,
+      maxZoom: 5,
       mousePosition: {
         x: 0,
         y: 0,
@@ -90,6 +97,10 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.stage.on("pointerup", (event) => {
       this.eventBus.emit("editor:pointerUp", event);
     });
+    this.stage.on("wheel", (event) => {
+      event.preventDefault();
+      this.eventBus.emit("editor:wheel", event);
+    });
 
     // Setup actions for emitted events
     this.eventBus.on("editor:pointerDown", (event) => {
@@ -110,8 +121,8 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
         const deltaY = (event?.clientY ?? 0) - this.interactionState.get("dragStart").y;
 
         this.interactionState.set("dragOffset", {
-          x: this.interactionState.get("dragOffset").x + deltaX * this.interactionState.get("zoomFactor"),
-          y: this.interactionState.get("dragOffset").y + deltaY * this.interactionState.get("zoomFactor"),
+          x: (this.interactionState.get("dragOffset").x + deltaX) * this.interactionState.get("zoomFactor"),
+          y: (this.interactionState.get("dragOffset").y + deltaY) * this.interactionState.get("zoomFactor"),
         });
 
         this.grid.setUniform("u_dragOffset", [
@@ -126,6 +137,29 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       }
 
       // Render the stage with the new positions
+      this.renderer.render(this.stage);
+    });
+    this.eventBus.on("editor:wheel", (event) => {
+      if ((event?.deltaY ?? 0) > 0) {
+        this.interactionState.set(
+          "zoomFactor",
+          this.interactionState.get("zoomFactor") * (1 - this.interactionState.get("zoomSensitivity")),
+        );
+      } else {
+        this.interactionState.set(
+          "zoomFactor",
+          this.interactionState.get("zoomFactor") * (1 + this.interactionState.get("zoomSensitivity")),
+        );
+      }
+      this.interactionState.set(
+        "zoomFactor",
+        Math.max(
+          this.interactionState.get("minZoom"),
+          Math.min(this.interactionState.get("maxZoom"), this.interactionState.get("zoomFactor")),
+        ),
+      );
+
+      this.grid.setUniform("u_zoom", this.interactionState.get("zoomFactor"));
       this.renderer.render(this.stage);
     });
   }
