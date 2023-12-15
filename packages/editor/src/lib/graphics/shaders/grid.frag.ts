@@ -1,4 +1,4 @@
-#version 100 
+export default `#version 100 
 
 precision mediump float;
 
@@ -68,4 +68,4 @@ void main() {
   float alpha = computeAlpha(dist);
   vec3 color = computeColor(alpha, highlight);
   gl_FragColor = vec4(color, 1.0);
-}
+}`;

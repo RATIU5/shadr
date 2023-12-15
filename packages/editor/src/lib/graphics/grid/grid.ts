@@ -1,6 +1,6 @@
 import { Geometry, Mesh, Polygon, Shader } from "pixi.js";
-import gridFragShader from "./shaders/grid.frag";
-import gridVertShader from "./shaders/grid.vert";
+import gridFragShader from "../shaders/grid.frag";
+import gridVertShader from "../shaders/grid.vert";
 
 /**
  * Class to create a grid mesh
