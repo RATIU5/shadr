@@ -12,7 +12,9 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   stage: Container;
 
   constructor(config: EditorConfig) {
-    // Configure Pixi.js rendering engine
+    this.eventBus = new EventBus();
+
+    // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
       view: config.canvas,
       width: config.canvas.clientWidth,
@@ -23,17 +25,17 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       resolution: window.devicePixelRatio || 1,
     });
     this.stage = new Container();
+    this.stage.eventMode = "static";
 
-    const grid = new Grid(config.canvas.clientWidth, config.canvas.clientHeight);
+    // Setup grid background and add to stage
+    const grid = new Grid(this.eventBus, config.canvas.clientWidth, config.canvas.clientHeight);
     this.stage.addChild(grid.getMesh());
-
-    this.eventBus = new EventBus();
 
     this.eventBus.emit("editor:ready");
   }
 
   start() {
-    console.log("Editor started");
+    // Actually render the stage to the canvas
     this.renderer.render(this.stage);
   }
 }
