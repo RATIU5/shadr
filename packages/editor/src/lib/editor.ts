@@ -1,18 +1,42 @@
-import { Container, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
+import { Container, FederatedPointerEvent, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
 import { EventBus } from "./events/event-bus";
 import { Grid } from "./graphics/grid/grid";
+import { State } from "./state/state";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
 };
 
+export type InteractionState = {
+  mouseDown: boolean;
+  mousePosition: {
+    x: number;
+    y: number;
+  };
+};
+
+export type EditorEvents = {
+  "editor:ready": undefined;
+  "editor:mouseDown": FederatedPointerEvent;
+  "editor:mouseMove": FederatedPointerEvent;
+  "editor:mouseUp": FederatedPointerEvent;
+};
+
 export class Editor<VIEW extends ICanvas = ICanvas> {
   renderer: IRenderer<VIEW>;
-  eventBus: EventBus;
+  eventBus: EventBus<EditorEvents>;
   stage: Container;
+  interactionState: State<InteractionState>;
 
   constructor(config: EditorConfig) {
     this.eventBus = new EventBus();
+    this.interactionState = new State({
+      mouseDown: false,
+      mousePosition: {
+        x: 0,
+        y: 0,
+      },
+    });
 
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
@@ -45,6 +69,15 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     });
     this.stage.on("pointerup", (event) => {
       this.eventBus.emit("editor:mouseUp", event);
+    });
+
+    this.eventBus.on("editor:mouseDown", (event) => {
+      this.interactionState.set("mouseDown", true);
+      this.interactionState.set("mousePosition", {
+        x: event?.clientX ?? 0,
+        y: event?.clientY ?? 0,
+      });
+      console.log("mouseDown", this.interactionState.get("mousePosition"));
     });
   }
 

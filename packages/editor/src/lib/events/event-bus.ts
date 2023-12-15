@@ -1,29 +1,29 @@
-export type Callback = <T = unknown>(data?: T) => void;
-export type EventListeners = {
-  [event in EventType]?: Array<Callback>;
+export type Callback<T = unknown> = (data?: T) => void;
+export type EventListeners<T> = {
+  [Event in keyof T]?: Array<Callback<T[Event]>>;
 };
-export type EventType = "editor:ready" | "editor:start" | "editor:mouseDown" | "editor:mouseMove" | "editor:mouseUp";
 
 /**
  * A simple event bus that allows for subscribing to and emitting events
+ * @template T The type of events that can be emitted
  */
-export class EventBus {
-  #eventListeners: EventListeners;
+export class EventBus<T> {
+  #eventListeners: EventListeners<T>;
 
   /**
    * Initializes the event bus by creating an empty object for storing event listeners
    * @constructor
    */
   constructor() {
-    this.#eventListeners = {};
+    this.#eventListeners = {} as EventListeners<T>;
   }
 
   /**
    * Adds a listener for a specific event. If you need to remove the listener later, you should store a reference to the callback function
-   * @param {EventType} event - The name of the event to emit
-   * @param {Callback} listener - The callback function to execute when the event is emitted
+   * @param {Event} event - The name of the event to emit
+   * @param {Callback<T[Event]>} listener - The callback function to execute when the event is emitted
    */
-  on(event: EventType, listener: Callback) {
+  on<Event extends keyof T>(event: Event, listener: Callback<T[Event]>) {
     if (!this.#eventListeners[event]) {
       this.#eventListeners[event] = [];
     }
@@ -32,10 +32,10 @@ export class EventBus {
 
   /**
    * Removes a listener for a specific event
-   * @param {EventType} event - The name of the event
-   * @param {Callback} listenerToRemove - The callback function to be removed
+   * @param {Event} event - The name of the event
+   * @param {Callback<T[Event]>} listenerToRemove - The callback function to be removed
    */
-  off(event: EventType, listenerToRemove: Callback) {
+  off<Event extends keyof T>(event: Event, listenerToRemove: Callback<T[Event]>) {
     if (!this.#eventListeners[event]) {
       return;
     }
@@ -44,10 +44,10 @@ export class EventBus {
 
   /**
    * Emits an event to all registered listeners
-   * @param {EventType} event - The name of the event to emit
-   * @param {unknown} data - The data to pass to each listener's callback function
+   * @param {Event} event - The name of the event to emit
+   * @param {T[Event]} data - The data to pass to each listener's callback function
    */
-  emit<T = unknown>(event: EventType, data?: T) {
+  emit<Event extends keyof T>(event: Event, data?: T[Event]) {
     if (!this.#eventListeners[event]) {
       return;
     }
