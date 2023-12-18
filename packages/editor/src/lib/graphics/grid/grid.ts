@@ -52,7 +52,7 @@ export class Grid {
     return Shader.from(gridVertShader, gridFragShader, {
       u_dotSize: 100.0,
       u_mousePos: [0, 0],
-      u_dragOffset: [0, 0],
+      u_offset: [0, 0],
       u_zoom: 1.0,
       u_gridSpacing: 50.0,
       u_size: [this.#width, this.#height],

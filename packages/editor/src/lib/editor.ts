@@ -21,7 +21,7 @@ export type InteractionState = {
     x: number;
     y: number;
   };
-  dragOffset: {
+  gridOffset: {
     x: number;
     y: number;
   };
@@ -59,7 +59,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
         x: 0,
         y: 0,
       },
-      dragOffset: {
+      gridOffset: {
         x: 0,
         y: 0,
       },
@@ -121,14 +121,14 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
         const deltaX = (event?.clientX ?? 0) - this.interactionState.get("dragStart").x;
         const deltaY = (event?.clientY ?? 0) - this.interactionState.get("dragStart").y;
 
-        this.interactionState.set("dragOffset", {
-          x: this.interactionState.get("dragOffset").x + deltaX * this.interactionState.get("zoomFactor"),
-          y: this.interactionState.get("dragOffset").y + deltaY * this.interactionState.get("zoomFactor"),
+        this.interactionState.set("gridOffset", {
+          x: this.interactionState.get("gridOffset").x + deltaX * this.interactionState.get("zoomFactor"),
+          y: this.interactionState.get("gridOffset").y + deltaY * this.interactionState.get("zoomFactor"),
         });
 
-        this.grid.setUniform("u_dragOffset", [
-          this.interactionState.get("dragOffset").x,
-          this.interactionState.get("dragOffset").y,
+        this.grid.setUniform("u_offset", [
+          this.interactionState.get("gridOffset").x,
+          this.interactionState.get("gridOffset").y,
         ]);
 
         this.interactionState.set("dragStart", {
@@ -139,25 +139,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       // Render the stage with the new positions
       this.renderer.render(this.stage);
     });
-    this.eventBus.on("editor:wheel", (event) => {
-      const zoomSens = this.interactionState.get("zoomSensitivity");
-      let currentZoom = this.interactionState.get("zoomFactor");
-
-      if ((event?.deltaY ?? 0) > 0) {
-        currentZoom *= 1 - zoomSens;
-      } else {
-        currentZoom *= 1 + zoomSens;
-      }
-
-      currentZoom = Math.max(
-        this.interactionState.get("minZoom"),
-        Math.min(this.interactionState.get("maxZoom"), currentZoom),
-      );
-      this.interactionState.set("zoomFactor", currentZoom);
-
-      this.grid.setUniform("u_zoom", this.interactionState.get("zoomFactor"));
-      this.renderer.render(this.stage);
-    });
+    this.eventBus.on("editor:wheel", (event) => {});
   }
 
   start() {

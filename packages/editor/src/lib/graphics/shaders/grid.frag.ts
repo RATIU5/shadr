@@ -3,7 +3,7 @@ export default `#version 100
 precision mediump float;
 
 uniform float u_dotSize;
-uniform vec2 u_dragOffset;
+uniform vec2 u_offset;
 uniform vec2 u_size;
 uniform float u_zoom;
 
@@ -16,7 +16,7 @@ const float DOT_SPACING = 0.02;
 
 // Calculate normalized mouse position based on drag offset and canvas size
 vec2 getNormalizedMousePos() {
-  vec2 pos = u_dragOffset / u_size;
+  vec2 pos = u_offset / u_size;
   pos.y = pos.y * -2.0;
   pos.x = pos.x * 2.0;
   return pos;
