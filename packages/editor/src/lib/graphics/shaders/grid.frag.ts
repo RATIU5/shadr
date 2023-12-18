@@ -9,9 +9,9 @@ uniform float u_zoom;
 
 const float DOT_WEIGHT = 0.025;
 const float EDGE_WIDTH = 0.01;
-const vec3 BACKGROUND_COLOR = vec3(0.05);
-const vec3 BASE_DOT_COLOR = vec3(0.2);
-const vec3 LIGHTER_DOT_COLOR = vec3(0.4);
+const vec3 BACKGROUND_COLOR = vec3(0.1);
+const vec3 BASE_DOT_COLOR = vec3(0.175);
+const vec3 LIGHTER_DOT_COLOR = vec3(0.3);
 const float DOT_SPACING = 0.02;
 
 // Calculate normalized mouse position based on drag offset and canvas size
