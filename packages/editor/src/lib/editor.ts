@@ -29,9 +29,9 @@ export type InteractionState = {
 
 export type EditorEvents = {
   "editor:ready": undefined;
-  "editor:pointerDown": FederatedPointerEvent;
-  "editor:pointerMove": FederatedPointerEvent;
-  "editor:pointerUp": FederatedPointerEvent;
+  "editor:mouseDown": FederatedPointerEvent;
+  "editor:mouseMove": FederatedPointerEvent;
+  "editor:mouseUp": FederatedPointerEvent;
   "editor:wheel": FederatedWheelEvent;
 };
 
@@ -41,6 +41,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   stage: Container;
   grid: Grid;
   interactionState: State<InteractionState>;
+  initialDistance: number;
 
   constructor(config: EditorConfig) {
     this.eventBus = new EventBus();
@@ -63,6 +64,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
         y: 0,
       },
     });
+    this.initialDistance = 0;
 
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
@@ -88,21 +90,21 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
 
   setupEventListeners() {
     // Setup event emitter for pointer events
-    this.stage.on("pointerdown", (event) => {
-      this.eventBus.emit("editor:pointerDown", event);
+    this.stage.on("mousedown", (event) => {
+      this.eventBus.emit("editor:mouseDown", event);
     });
-    this.stage.on("pointermove", (event) => {
-      this.eventBus.emit("editor:pointerMove", event);
+    this.stage.on("mousemove", (event) => {
+      this.eventBus.emit("editor:mouseMove", event);
     });
-    this.stage.on("pointerup", (event) => {
-      this.eventBus.emit("editor:pointerUp", event);
+    this.stage.on("mouseup", (event) => {
+      this.eventBus.emit("editor:mouseUp", event);
     });
     this.stage.on("wheel", (event) => {
       this.eventBus.emit("editor:wheel", event);
     });
 
     // Setup actions for emitted events
-    this.eventBus.on("editor:pointerDown", (event) => {
+    this.eventBus.on("editor:mouseDown", (event) => {
       if (event?.button === 1) {
         this.interactionState.set("dragDown", true);
         this.interactionState.set("dragStart", {
@@ -111,10 +113,10 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
         });
       }
     });
-    this.eventBus.on("editor:pointerUp", () => {
+    this.eventBus.on("editor:mouseUp", () => {
       this.interactionState.set("dragDown", false);
     });
-    this.eventBus.on("editor:pointerMove", (event) => {
+    this.eventBus.on("editor:mouseMove", (event) => {
       if (this.interactionState.get("dragDown")) {
         const deltaX = (event?.clientX ?? 0) - this.interactionState.get("dragStart").x;
         const deltaY = (event?.clientY ?? 0) - this.interactionState.get("dragStart").y;
@@ -134,7 +136,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
           y: event?.clientY ?? 0,
         });
       }
-
       // Render the stage with the new positions
       this.renderer.render(this.stage);
     });
