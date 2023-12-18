@@ -80,7 +80,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.setupEventListeners();
 
     // Setup grid background and add to stage
-    this.grid = new Grid(config.canvas.clientWidth, config.canvas.clientHeight);
+    this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
 
     this.eventBus.emit("editor:ready");
