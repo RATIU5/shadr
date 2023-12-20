@@ -9,6 +9,7 @@ export type EventListeners<T> = {
  */
 export class EventBus<T> {
   #eventListeners: EventListeners<T>;
+  #domEventListeners: Map<string, Set<keyof T>>;
 
   /**
    * Initializes the event bus by creating an empty object for storing event listeners
@@ -16,6 +17,33 @@ export class EventBus<T> {
    */
   constructor() {
     this.#eventListeners = {} as EventListeners<T>;
+    this.#domEventListeners = new Map();
+  }
+
+  attach(element: Element, eventType: string, eventName: keyof T, eventDetail: EventDetail = {}) {
+    // Generate a unique key for the element-event combination
+    const elementId = element.id || `unique-id-${Math.random().toString(36).substr(2, 9)}`;
+    const eventKey = elementId + eventType;
+
+    if (!this.#domEventListeners.has(eventKey)) {
+      this.#domEventListeners.set(eventKey, {} as Record<keyof T, EventDetail>);
+      element.addEventListener(eventType, (event) => {
+        const eventsMap = this.#domEventListeners.get(eventKey);
+        for (const [name, detail] of Object.entries(eventsMap)) {
+          if (!detail.condition || detail.condition(event)) {
+            this.emit(name as keyof T);
+          }
+        }
+      });
+    }
+
+    const eventsMap = this.#domEventListeners.get(eventKey);
+    // Duplicate event name, skip attaching again
+    if (eventsMap && eventName in eventsMap) {
+      return;
+    }
+
+    eventsMap[eventName] = eventDetail;
   }
 
   /**

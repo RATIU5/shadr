@@ -2,7 +2,6 @@ import { Container, FederatedPointerEvent, FederatedWheelEvent, ICanvas, IRender
 import { EventBus } from "./events/event-bus";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
-import { Evnt } from "./events/evnt";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
@@ -85,7 +84,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.stage = new Container();
     this.stage.eventMode = "static";
 
-    this.setupEventListeners();
+    this.setupEventListeners(config.canvas);
 
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
@@ -94,10 +93,8 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.eventBus.emit("editor:ready");
   }
 
-  setupEventListeners() {
+  setupEventListeners(canvas: HTMLCanvasElement) {
     console.log("Setup event listeners");
-    Evnt.create("test", document, "mousedown", (e) => e.button === 0);
-
     // this.stage.on("keydown", (event: KeyboardEvent) => {
     //   console.log("spaceDown");
     //   if (event.code === "Space") {
