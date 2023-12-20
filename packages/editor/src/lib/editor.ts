@@ -2,13 +2,16 @@ import { Container, FederatedPointerEvent, FederatedWheelEvent, ICanvas, IRender
 import { EventBus } from "./events/event-bus";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
+import { Evnt } from "./events/evnt";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
 };
 
 export type InteractionState = {
-  dragDown: boolean;
+  spaceDown: boolean;
+  leftMouseDown: boolean;
+  middleMouseDown: boolean;
   zoomFactor: number;
   zoomSensitivity: number;
   minZoom: number;
@@ -29,6 +32,9 @@ export type InteractionState = {
 
 export type EditorEvents = {
   "editor:ready": undefined;
+  "editor:dragXY": FederatedPointerEvent;
+  "editor:dragX": FederatedPointerEvent;
+  "editor:dragY": FederatedPointerEvent;
   "editor:mouseDown": FederatedPointerEvent;
   "editor:mouseMove": FederatedPointerEvent;
   "editor:mouseUp": FederatedPointerEvent;
@@ -41,12 +47,13 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   stage: Container;
   grid: Grid;
   interactionState: State<InteractionState>;
-  initialDistance: number;
 
   constructor(config: EditorConfig) {
     this.eventBus = new EventBus();
     this.interactionState = new State({
-      dragDown: false,
+      spaceDown: false,
+      leftMouseDown: false,
+      middleMouseDown: false,
       zoomFactor: 1,
       zoomSensitivity: 0.025,
       minZoom: 0.5,
@@ -64,7 +71,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
         y: 0,
       },
     });
-    this.initialDistance = 0;
 
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
@@ -89,57 +95,67 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   }
 
   setupEventListeners() {
-    // Setup event emitter for pointer events
-    this.stage.on("mousedown", (event) => {
-      this.eventBus.emit("editor:mouseDown", event);
-    });
-    this.stage.on("mousemove", (event) => {
-      this.eventBus.emit("editor:mouseMove", event);
-    });
-    this.stage.on("mouseup", (event) => {
-      this.eventBus.emit("editor:mouseUp", event);
-    });
-    this.stage.on("wheel", (event) => {
-      this.eventBus.emit("editor:wheel", event);
-    });
+    console.log("Setup event listeners");
+    Evnt.create("test", document, "mousedown", (e) => e.button === 0);
 
-    // Setup actions for emitted events
-    this.eventBus.on("editor:mouseDown", (event) => {
-      if (event?.button === 1) {
-        this.interactionState.set("dragDown", true);
-        this.interactionState.set("dragStart", {
-          x: event?.clientX ?? 0,
-          y: event?.clientY ?? 0,
-        });
-      }
-    });
-    this.eventBus.on("editor:mouseUp", () => {
-      this.interactionState.set("dragDown", false);
-    });
-    this.eventBus.on("editor:mouseMove", (event) => {
-      if (this.interactionState.get("dragDown")) {
-        const deltaX = (event?.clientX ?? 0) - this.interactionState.get("dragStart").x;
-        const deltaY = (event?.clientY ?? 0) - this.interactionState.get("dragStart").y;
+    // this.stage.on("keydown", (event: KeyboardEvent) => {
+    //   console.log("spaceDown");
+    //   if (event.code === "Space") {
+    //     this.interactionState.set("spaceDown", true);
+    //   }
+    // });
+    // this.stage.on("keyup", (event) => {
+    //   if (event.code === "Space") {
+    //     this.interactionState.set("spaceDown", false);
+    //   }
+    // });
+    // this.stage.on("mousedown", (event) => {
+    //   if (event.button === 0) {
+    //     this.interactionState.set("leftMouseDown", true);
+    //   } else if (event.button === 1) {
+    //     this.interactionState.set("middleMouseDown", true);
+    //   }
+    // });
+    // this.stage.on("mousemove", (event) => {
+    //   if (
+    //     this.interactionState.get("middleMouseDown") ||
+    //     (this.interactionState.get("leftMouseDown") && this.interactionState.get("spaceDown"))
+    //   ) {
+    //     const deltaX = (event?.clientX ?? 0) - this.interactionState.get("dragStart").x;
+    //     const deltaY = (event?.clientY ?? 0) - this.interactionState.get("dragStart").y;
 
-        this.interactionState.set("gridOffset", {
-          x: this.interactionState.get("gridOffset").x + deltaX * this.interactionState.get("zoomFactor"),
-          y: this.interactionState.get("gridOffset").y + deltaY * this.interactionState.get("zoomFactor"),
-        });
+    //     this.interactionState.set("gridOffset", {
+    //       x: this.interactionState.get("gridOffset").x + deltaX * this.interactionState.get("zoomFactor"),
+    //       y: this.interactionState.get("gridOffset").y + deltaY * this.interactionState.get("zoomFactor"),
+    //     });
+    //     this.eventBus.emit("editor:dragXY", event);
+    //     this.interactionState.set("dragStart", {
+    //       x: event?.clientX ?? 0,
+    //       y: event?.clientY ?? 0,
+    //     });
+    //   }
+    // });
+    // this.stage.on("mouseup", (event) => {
+    //   if (event.button === 0) {
+    //     this.interactionState.set("leftMouseDown", false);
+    //   } else if (event.button === 1) {
+    //     this.interactionState.set("middleMouseDown", false);
+    //   }
+    // });
+    // this.stage.on("wheel", (event) => {});
+    // this.stage.on("touchstart", (event) => {});
+    // this.stage.on("touchmove", (event) => {});
+    // this.stage.on("touchend", (event) => {});
 
-        this.grid.setUniform("u_offset", [
-          this.interactionState.get("gridOffset").x,
-          this.interactionState.get("gridOffset").y,
-        ]);
-
-        this.interactionState.set("dragStart", {
-          x: event?.clientX ?? 0,
-          y: event?.clientY ?? 0,
-        });
-      }
-      // Render the stage with the new positions
-      this.renderer.render(this.stage);
-    });
-    this.eventBus.on("editor:wheel", (event) => {});
+    // this.eventBus.on("editor:dragXY", () => {
+    //   console.log("dragXY");
+    //   this.grid.setUniform("u_offset", [
+    //     this.interactionState.get("gridOffset").x,
+    //     this.interactionState.get("gridOffset").y,
+    //   ]);
+    // });
+    // this.eventBus.on("editor:dragX", () => {});
+    // this.eventBus.on("editor:dragY", () => {});
   }
 
   start() {
