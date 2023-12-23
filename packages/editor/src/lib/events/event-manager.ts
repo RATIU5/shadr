@@ -1,13 +1,16 @@
 type EventListenerCallback = (event: Event) => void;
-type ConditionFunction = (event: Event) => boolean;
-type EventType = keyof HTMLElementEventMap;
-type EventDetail = {
-  node: Node;
-  eventType: EventType;
-  condition?: ConditionFunction;
-};
+type ConditionFunction<T extends Event = Event> = (event: T) => boolean;
+2;
+type EventType = keyof GlobalEventHandlersEventMap;
 type EventName = string;
-type EventMap = Map<EventName, EventDetail>;
+type EventMap = Map<
+  EventName,
+  {
+    node: Node;
+    eventType: EventType;
+    condition?: ConditionFunction<GlobalEventHandlersEventMap[EventType]>;
+  }
+>;
 
 /** Class to handle custom event binding and triggering. */
 export class EventManager {
@@ -30,7 +33,12 @@ export class EventManager {
    * @param eventType - The type of the event to listen for.
    * @param condition - An optional function to conditionally handle the event.
    */
-  public bind(eventName: EventName, node: Node, eventType: EventType, condition?: ConditionFunction) {
+  public bind<T extends EventType>(
+    eventName: EventName,
+    node: Node,
+    eventType: T,
+    condition?: ConditionFunction<GlobalEventHandlersEventMap[T]>,
+  ) {
     if (this.eventMap.has(eventName)) {
       console.warn(`Event name '${eventName}' is already used.`);
       return;
@@ -47,7 +55,9 @@ export class EventManager {
     if (existingEventType) {
       this.eventMap.set(eventName, { node, eventType, condition });
     } else {
-      node.addEventListener(eventType, (event) => this.callbackHandler(eventType, event));
+      node.addEventListener(eventType, (event) =>
+        this.callbackHandler(eventType, event as GlobalEventHandlersEventMap[T]),
+      );
       this.eventMap.set(eventName, { node, eventType, condition });
     }
   }
@@ -73,7 +83,7 @@ export class EventManager {
    * @param eventName - The name of the custom event to emit.
    * @param event - The event object to pass to the callbacks.
    */
-  public emit(eventName: EventName, event: Event) {
+  public emit(eventName: EventName, event?: Event) {
     const listeners = this.listeners.get(eventName);
     if (listeners) {
       for (const listener of listeners) {
@@ -87,7 +97,7 @@ export class EventManager {
    * @param eventName - The name of the custom event.
    * @param callback - The callback function to register.
    */
-  public on(eventName: EventName, callback: EventListenerCallback) {
+  public on(eventName: EventName, callback?: EventListenerCallback) {
     if (!this.listeners.has(eventName)) {
       this.listeners.set(eventName, []);
     }

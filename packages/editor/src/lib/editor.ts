@@ -1,5 +1,4 @@
 import { Container, FederatedPointerEvent, FederatedWheelEvent, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
-import { EventBus } from "./events/event-bus";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
 import { EventManager } from "./events/event-manager";
@@ -43,13 +42,12 @@ export type EditorEvents = {
 
 export class Editor<VIEW extends ICanvas = ICanvas> {
   renderer: IRenderer<VIEW>;
-  eventBus: EventBus<EditorEvents>;
   stage: Container;
   grid: Grid;
+  eventManager: EventManager;
   interactionState: State<InteractionState>;
 
   constructor(config: EditorConfig) {
-    this.eventBus = new EventBus();
     this.interactionState = new State({
       spaceDown: false,
       leftMouseDown: false,
@@ -72,6 +70,8 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       },
     });
 
+    this.eventManager = new EventManager();
+
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
       view: config.canvas,
@@ -90,28 +90,28 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
-
-    this.eventBus.emit("editor:ready");
+    this.eventManager.emit("something");
   }
 
   setupEventListeners(canvas: HTMLCanvasElement) {
     console.log("Setup event listeners");
     // Usage example:
-    const eventManager = new EventManager();
-    const firstListener = (e: Event) => console.log("LEFT CLICK");
-    const fourthListener = (e: Event) => console.log("LEFT CLICK2");
-    const secondListener = (e: Event) => console.log("SPACEBAR");
-    const thridListener = (e: Event) => console.log("ANY CLICK");
+    const firstListener = (e?: Event) => console.log("LEFT CLICK");
+    const fourthListener = (e?: Event) => console.log("LEFT CLICK2");
+    const secondListener = (e?: Event) => console.log("SPACEBAR");
+    const thridListener = (e?: Event) => console.log("ANY CLICK");
 
-    eventManager.bind("left-click", document, "mousedown", (e) => e.button === 0);
-    eventManager.bind("left-click2", document, "mousedown", (e) => e.button === 0);
-    eventManager.bind("click", document, "mousedown");
-    eventManager.bind("space", document, "keydown", (e) => e.code === "Space");
+    this.eventManager.bind("left-click", document, "mousedown", (e) => e.button === 0);
+    this.eventManager.bind("left-click2", document, "mousedown", (e) => e.button === 0);
+    this.eventManager.bind("left-click2", document, "mousedown", (e) => e.button === 0);
+    this.eventManager.bind("click", document, "mousedown");
+    this.eventManager.bind("space", document, "keydown", (e) => e.code === "Space");
 
-    eventManager.on("left-click", firstListener);
-    eventManager.on("space", secondListener);
-    eventManager.on("left-click2", fourthListener);
-    eventManager.on("click", thridListener);
+    this.eventManager.on("left-click", firstListener);
+    this.eventManager.on("space", secondListener);
+    this.eventManager.on("left-click2", fourthListener);
+    this.eventManager.on("click", thridListener);
+    this.eventManager.on("something", (e) => console.log("something"));
     // this.stage.on("keydown", (event: KeyboardEvent) => {
     //   console.log("spaceDown");
     //   if (event.code === "Space") {
