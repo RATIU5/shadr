@@ -98,13 +98,13 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     console.log("Setup event listeners");
     // Usage example:
     const eventManager = new Evnt();
-    const firstListener = (e: Event) => console.log("First listener", e);
-    const secondListener = (e: Event) => console.log("Second listener", e);
-    const thridListener = (e: Event) => console.log("Third listener", e);
+    const firstListener = (e: Event) => console.log("LEFT CLICK");
+    const secondListener = (e: Event) => console.log("SPACEBAR");
+    const thridListener = (e: Event) => console.log("ANY CLICK");
 
-    eventManager.bind(document, "mousedown", "left-click", (e) => e.button === 0);
-    eventManager.bind(document, "mousedown", "click");
-    eventManager.bind(document, "keydown", "space", (e) => e.code === "Space");
+    eventManager.bind("left-click", document, "mousedown", (e) => e.button === 0);
+    eventManager.bind("click", document, "mousedown");
+    eventManager.bind("space", document, "keydown", (e) => e.code === "Space");
 
     eventManager.on("left-click", firstListener);
     eventManager.on("space", secondListener);
