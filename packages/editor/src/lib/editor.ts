@@ -2,7 +2,7 @@ import { Container, FederatedPointerEvent, FederatedWheelEvent, ICanvas, IRender
 import { EventBus } from "./events/event-bus";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
-import { Evnt } from "./events/evnt";
+import { EventManager } from "./events/event-manager";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
@@ -97,17 +97,20 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   setupEventListeners(canvas: HTMLCanvasElement) {
     console.log("Setup event listeners");
     // Usage example:
-    const eventManager = new Evnt();
+    const eventManager = new EventManager();
     const firstListener = (e: Event) => console.log("LEFT CLICK");
+    const fourthListener = (e: Event) => console.log("LEFT CLICK2");
     const secondListener = (e: Event) => console.log("SPACEBAR");
     const thridListener = (e: Event) => console.log("ANY CLICK");
 
     eventManager.bind("left-click", document, "mousedown", (e) => e.button === 0);
+    eventManager.bind("left-click2", document, "mousedown", (e) => e.button === 0);
     eventManager.bind("click", document, "mousedown");
     eventManager.bind("space", document, "keydown", (e) => e.code === "Space");
 
     eventManager.on("left-click", firstListener);
     eventManager.on("space", secondListener);
+    eventManager.on("left-click2", fourthListener);
     eventManager.on("click", thridListener);
     // this.stage.on("keydown", (event: KeyboardEvent) => {
     //   console.log("spaceDown");
