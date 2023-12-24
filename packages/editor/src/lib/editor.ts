@@ -38,6 +38,7 @@ export type EditorEvents = {
   "editor:mouseMove": FederatedPointerEvent;
   "editor:mouseUp": FederatedPointerEvent;
   "editor:wheel": FederatedWheelEvent;
+  something: string;
 };
 
 export class Editor<VIEW extends ICanvas = ICanvas> {
@@ -90,7 +91,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
-    this.eventManager.emit("something");
+    this.eventManager.emit<string>("something", "a value");
   }
 
   setupEventListeners(canvas: HTMLCanvasElement) {
