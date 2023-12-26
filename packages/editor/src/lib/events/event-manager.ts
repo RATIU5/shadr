@@ -1,112 +1,91 @@
-type EventListenerCallback<T extends Event = Event> = (event?: T) => void;
-type ConditionFunction<T extends Event = Event> = (event: T) => boolean;
-type EventType = keyof GlobalEventHandlersEventMap;
-type EventName = string;
+type CallbackFunction<DataType> = (data?: DataType) => void;
+type Transformer<DataType> = (e: GlobalEventHandlersEventMap[keyof GlobalEventHandlersEventMap]) => DataType;
 
-type EventDetail = {
+interface Callbacks<DataType> {
+  callbacks: Set<CallbackFunction<DataType>>;
+}
+interface EventListener<DataType> extends Callbacks<DataType> {
   node: Node;
-  eventType: EventType;
-  condition?: ConditionFunction<Event>;
-};
+  eventType: keyof GlobalEventHandlersEventMap;
+  transformer: Transformer<DataType>;
+}
 
-type EventMap = Map<EventName, EventDetail>;
-type ListenerMap = Map<EventName, EventListenerCallback[]>;
+type EventOptions<DataType> = EventListener<DataType> | Callbacks<DataType>;
+export type EventRegistry<TypeList> = { [K in keyof TypeList]?: EventOptions<TypeList[K]> };
 
-/** Class to handle custom event binding and triggering. */
-export class EventManager {
-  /** Map of event listeners by event name. */
-  private listeners: ListenerMap;
+// T is an object type, keys are string literals, values are type of data passed to the callback
+// e.g. { "editor:ready": undefined; "editor:dragXY": FederatedPointerEvent; ... }
 
-  /** Map of event details by event name. */
-  private eventMap: EventMap;
+export class EventManager<T> {
+  #eventRegistry: EventRegistry<T>;
 
-  /** Constructs a new event manager instance. */
   constructor() {
-    this.listeners = new Map();
-    this.eventMap = new Map();
+    this.#eventRegistry = {};
   }
 
-  /**
-   * Binds an event listener to a node for a specific event type.
-   * @param eventName - The unique name for the custom event.
-   * @param node - The DOM node to listen for the event on.
-   * @param eventType - The type of the event to listen for.
-   * @param condition - An optional function to conditionally handle the event.
-   */
-  public bind<T extends EventType>(
-    eventName: EventName,
+  // Add a callback to be run when an event is emitted
+  // Nothing specific to the node event happens here
+  public on<K extends keyof T>(event: K, callback: CallbackFunction<T[K]>) {
+    if (event in this.#eventRegistry) {
+      return console.warn(`Event ${String(event)} already bound`);
+    }
+    if (!this.#eventRegistry[event]) {
+      this.#eventRegistry[event] = { callbacks: new Set() };
+    }
+
+    this.#eventRegistry[event]?.callbacks.add(callback);
+  }
+
+  // Emit handles running all the callbacks from a given event name
+  // Nothing specific to the node event happens here
+  public emit<K extends keyof T>(event: K, data?: T[K]) {
+    const callbacks = this.#eventRegistry[event]?.callbacks;
+    if (callbacks && callbacks.size > 0) {
+      for (const callback of callbacks) {
+        callback(data);
+      }
+    }
+  }
+
+  public bind<K extends keyof T>(
+    event: K,
     node: Node,
-    eventType: T,
-    condition?: ConditionFunction<GlobalEventHandlersEventMap[T]>,
+    eventType: keyof GlobalEventHandlersEventMap,
+    transform: (e: GlobalEventHandlersEventMap[typeof eventType]) => T[K],
   ) {
-    if (this.eventMap.has(eventName)) {
-      console.warn(`Event name '${eventName}' is already used.`);
-      return;
+    if (event in this.#eventRegistry) {
+      return console.warn(`Event ${String(event)} already bound`);
     }
 
-    let existingEventType = false;
-    for (const detail of this.eventMap.values()) {
-      if (detail.node === node && detail.eventType === eventType) {
-        existingEventType = true;
-        break;
-      }
-    }
-
-    const newEventDetail: EventDetail = {
-      node,
-      eventType,
-      condition: condition as ConditionFunction<Event>,
-    };
-
-    if (existingEventType) {
-      this.eventMap.set(eventName, newEventDetail);
-    } else {
-      node.addEventListener(eventType, (event) =>
-        this.callbackHandler(eventType, event as GlobalEventHandlersEventMap[T]),
-      );
-      this.eventMap.set(eventName, newEventDetail);
+    const eventExists = this.#doesNodeAndEventTypeExist(node, eventType);
+    if (!eventExists) {
+      this.#eventRegistry[event] = {
+        node,
+        eventType,
+        transformer: transform,
+        callbacks: new Set(),
+      };
+      node.addEventListener(eventType, (e: GlobalEventHandlersEventMap[typeof eventType]) => {
+        this.#handleEvent(e, event);
+      });
     }
   }
 
-  /**
-   * Internal handler for DOM events, which invokes callbacks based on event type.
-   * @param eventType - The type of the event that was triggered.
-   * @param e - The event object.
-   */
-  private callbackHandler(eventType: EventType, e: Event) {
-    for (const [name, detail] of this.eventMap) {
-      if (detail.node === e.currentTarget && detail.eventType === eventType) {
-        const conditionPassed = !detail.condition || detail.condition(e);
-        if (conditionPassed) {
-          this.emit(name, e);
-        }
-      }
+  #handleEvent(event: Event, eventName: keyof T) {
+    const eventOptions = this.#eventRegistry[eventName];
+    if (eventOptions && "transformer" in eventOptions) {
+      const data = eventOptions.transformer(event);
+      this.emit(eventName, data);
     }
   }
 
-  /**
-   * Emits a custom event, triggering all associated callbacks.
-   * @param eventName - The name of the custom event to emit.
-   * @param event - The event object to pass to the callbacks.
-   */
-  public emit<T = Event>(eventName: EventName, event?: T) {
-    const listeners = this.listeners.get(eventName);
-    if (listeners) {
-      for (const listener of listeners) {
-        listener(event);
+  #doesNodeAndEventTypeExist(node: Node, eventType: keyof GlobalEventHandlersEventMap) {
+    for (const index in this.#eventRegistry) {
+      const event = this.#eventRegistry[index];
+      if (event && "node" in event && event?.node === node && event?.eventType === eventType) {
+        return true;
       }
     }
-  }
-
-  /**
-   * Registers a callback for a custom event.
-   * @param eventName - The name of the custom event.
-   * @param callback - The callback function to register.
-   */
-  public on(eventName: EventName, callback: EventListenerCallback) {
-    if (!this.listeners.has(eventName)) {
-      this.listeners.set(eventName, []);
-    }
-    this.listeners.get(eventName)?.push(callback);
+    return false;
   }
 }

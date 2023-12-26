@@ -31,13 +31,8 @@ export type InteractionState = {
 
 export type EditorEvents = {
   "editor:ready": undefined;
-  "editor:dragXY": FederatedPointerEvent;
-  "editor:dragX": FederatedPointerEvent;
-  "editor:dragY": FederatedPointerEvent;
-  "editor:mouseDown": FederatedPointerEvent;
-  "editor:mouseMove": FederatedPointerEvent;
-  "editor:mouseUp": FederatedPointerEvent;
-  "editor:wheel": FederatedWheelEvent;
+  "editor:setup": string;
+  "editor:dragXY": string;
   something: string;
 };
 
@@ -45,7 +40,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   renderer: IRenderer<VIEW>;
   stage: Container;
   grid: Grid;
-  eventManager: EventManager;
+  eventManager: EventManager<EditorEvents>;
   interactionState: State<InteractionState>;
 
   constructor(config: EditorConfig) {
@@ -71,7 +66,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       },
     });
 
-    this.eventManager = new EventManager();
+    this.eventManager = new EventManager<EventState>();
 
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
@@ -91,28 +86,32 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
-    this.eventManager.emit<string>("something", "a value");
+    this.eventManager.emit("something", "a value");
   }
 
   setupEventListeners(canvas: HTMLCanvasElement) {
     console.log("Setup event listeners");
-    // Usage example:
-    const firstListener = (e?: Event) => console.log("LEFT CLICK");
-    const fourthListener = (e?: Event) => console.log("LEFT CLICK2");
-    const secondListener = (e?: Event) => console.log("SPACEBAR");
-    const thridListener = (e?: Event) => console.log("ANY CLICK");
 
-    this.eventManager.bind("left-click", document, "mousedown", (e) => e.button === 0);
-    this.eventManager.bind("left-click2", document, "mousedown", (e) => e.button === 0);
-    this.eventManager.bind("left-click2", document, "mousedown", (e) => e.button === 0);
-    this.eventManager.bind("click", document, "mousedown");
-    this.eventManager.bind("space", document, "keydown", (e) => e.code === "Space");
+    // Define event listeners
+    this.eventManager.on("editor:ready", () => {
+      console.log("editor:ready");
+    });
+    this.eventManager.on("editor:setup", (value) => {
+      console.log("editor:setup", value);
+    });
+    this.eventManager.on("editor:dragXY", (event) => {
+      console.log("editor:dragXY", event);
+    });
 
-    this.eventManager.on("left-click", firstListener);
-    this.eventManager.on("space", secondListener);
-    this.eventManager.on("left-click2", fourthListener);
-    this.eventManager.on("click", thridListener);
-    this.eventManager.on("something", (e) => console.log("something"));
+    // Bind events with custom data types
+    this.eventManager.bind("editor:dragXY", document, "mousemove", (event) => {
+      return "hello";
+    });
+
+    // Manually trigger events
+    this.eventManager.emit("editor:ready");
+    this.eventManager.emit("editor:setup", "a value");
+
     // this.stage.on("keydown", (event: KeyboardEvent) => {
     //   console.log("spaceDown");
     //   if (event.code === "Space") {
