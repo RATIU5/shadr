@@ -30,10 +30,7 @@ export type InteractionState = {
 };
 
 export type EditorEvents = {
-  "editor:ready": undefined;
-  "editor:setup": string;
-  "editor:dragXY": string;
-  something: string;
+  "editor:space-down": boolean;
 };
 
 export class Editor<VIEW extends ICanvas = ICanvas> {
@@ -86,29 +83,12 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
-    this.eventManager.emit("something", "a value");
   }
 
   setupEventListeners(canvas: HTMLCanvasElement) {
-    // Define event listeners
-    this.eventManager.on("editor:ready", () => {
-      console.log("editor:ready");
+    this.eventManager.bind("editor:space-down", document, "keydown", {
+      filter: (event: KeyboardEvent) => event.code === "Space",
     });
-    this.eventManager.on("editor:setup", (value) => {
-      console.log("editor:setup", value);
-    });
-    this.eventManager.on("editor:dragXY", (event) => {
-      console.log("editor:dragXY", event);
-    });
-
-    // Bind events with custom data types
-    this.eventManager.bind("editor:dragXY", document, "mousemove", (event) => {
-      return "hello";
-    });
-
-    // Manually trigger events
-    this.eventManager.emit("editor:ready");
-    this.eventManager.emit("editor:setup", "a value");
 
     // this.stage.on("keydown", (event: KeyboardEvent) => {
     //   console.log("spaceDown");

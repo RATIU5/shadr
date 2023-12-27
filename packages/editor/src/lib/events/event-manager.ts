@@ -8,7 +8,21 @@ type CallbackFunction<DataType> = (data?: DataType) => void;
  * Type definition for a transformer function.
  * @param e - Event object of a type from the GlobalEventHandlersEventMap.
  */
-type Transformer<DataType> = (e: GlobalEventHandlersEventMap[keyof GlobalEventHandlersEventMap]) => DataType;
+type TransformFunction<DataType, E extends Event> = (e: E) => DataType;
+
+/**
+ * Type definition for a filter function.
+ * @param e - Event object of a type from the GlobalEventHandlersEventMap.
+ */
+type FilterFunction<E extends Event> = (event: E) => boolean;
+
+/**
+ * Type definition for event listener options.
+ */
+type EventListenerOptions<DataType, E extends Event = Event> = {
+  transform?: TransformFunction<DataType, E>;
+  filter?: FilterFunction<E>;
+};
 
 /**
  * Interface for maintaining a set of callback functions.
@@ -20,21 +34,23 @@ interface Callbacks<DataType> {
 /**
  * Interface extending Callbacks to include event listening details.
  */
-interface EventListener<DataType> extends Callbacks<DataType> {
+interface EventListener<DataType, E extends Event = Event> extends Callbacks<DataType> {
   node: Node;
   eventType: keyof GlobalEventHandlersEventMap;
-  transformer: Transformer<DataType>;
+  options?: EventListenerOptions<DataType, E>;
 }
 
 /**
  * Union type for event options, which can either be an EventListener or Callbacks.
  */
-type EventOptions<DataType> = EventListener<DataType> | Callbacks<DataType>;
+type EventOptions<DataType, E extends Event> = EventListener<DataType, E> | Callbacks<DataType>;
 
 /**
  * Type for mapping event names to their respective options.
  */
-export type EventRegistry<TypeList> = { [K in keyof TypeList]?: EventOptions<TypeList[K]> };
+export type EventRegistry<TypeList, E extends Event = Event> = {
+  [K in keyof TypeList]?: EventOptions<TypeList[K], E>;
+};
 
 /**
  * Class representing an event manager to handle custom events.
@@ -81,13 +97,13 @@ export class EventManager<T> {
    * @param event - The name of the event to bind.
    * @param node - The DOM node to bind the event listener to.
    * @param eventType - The type of the DOM event to listen for.
-   * @param transform - A function to transform the DOM event into the desired data type.
+   * @param options - Options for filtering or transforming the event.
    */
-  public bind<K extends keyof T>(
+  public bind<K extends keyof T, E extends Event>(
     event: K,
     node: Node,
     eventType: keyof GlobalEventHandlersEventMap,
-    transform: (e: GlobalEventHandlersEventMap[typeof eventType]) => T[K],
+    options?: EventListenerOptions<T[K], E>,
   ) {
     if (event in this.#eventRegistry) {
       return console.warn(`Event ${String(event)} already bound`);
@@ -98,11 +114,11 @@ export class EventManager<T> {
       this.#eventRegistry[event] = {
         node,
         eventType,
-        transformer: transform,
+        options,
         callbacks: new Set(),
-      };
-      node.addEventListener(eventType, (e: GlobalEventHandlersEventMap[typeof eventType]) => {
-        this.#handleEvent(e, event);
+      } as EventOptions<T[K], E>;
+      node.addEventListener(eventType, (e: Event) => {
+        this.#handleEvent<E>(e as E, event);
       });
     }
   }
@@ -112,11 +128,14 @@ export class EventManager<T> {
    * @param event - The DOM event object.
    * @param eventName - The name of the custom event.
    */
-  #handleEvent(event: Event, eventName: keyof T) {
+  #handleEvent<E extends Event>(event: E, eventName: keyof T) {
     const eventOptions = this.#eventRegistry[eventName];
-    if (eventOptions && "transformer" in eventOptions) {
-      const data = eventOptions.transformer(event);
-      this.emit(eventName, data);
+    if (eventOptions && "options" in eventOptions) {
+      const filter = eventOptions.options?.filter;
+      if (!filter || filter(event)) {
+        const data = eventOptions.options?.transform?.(event);
+        this.emit(eventName, data);
+      }
     }
   }
 
