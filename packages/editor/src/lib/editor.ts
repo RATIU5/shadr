@@ -31,6 +31,7 @@ export type InteractionState = {
 
 export type EditorEvents = {
   "editor:space-down": boolean;
+  "editor:a-down": boolean;
 };
 
 export class Editor<VIEW extends ICanvas = ICanvas> {
@@ -89,9 +90,16 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.eventManager.bind("editor:space-down", document, "keydown", {
       filter: (event: KeyboardEvent) => event.code === "Space",
     });
+    this.eventManager.bind("editor:a-down", document, "keydown", {
+      filter: (event: KeyboardEvent) => event.code === "KeyA",
+    });
 
-    this.eventManager.on("editor:space-down", (data?: boolean) => {
+    this.eventManager.on("editor:space-down", (data) => {
       console.log("spaceDown", data);
+    });
+
+    this.eventManager.on("editor:a-down", (data) => {
+      console.log("aDown", data);
     });
 
     // this.stage.on("keydown", (event: KeyboardEvent) => {
