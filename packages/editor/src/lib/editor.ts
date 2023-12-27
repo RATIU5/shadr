@@ -66,7 +66,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       },
     });
 
-    this.eventManager = new EventManager<EventState>();
+    this.eventManager = new EventManager();
 
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
@@ -90,8 +90,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   }
 
   setupEventListeners(canvas: HTMLCanvasElement) {
-    console.log("Setup event listeners");
-
     // Define event listeners
     this.eventManager.on("editor:ready", () => {
       console.log("editor:ready");
