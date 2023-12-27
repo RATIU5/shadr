@@ -68,9 +68,6 @@ export class EventManager<T> {
    * @param callback - The callback function to execute when the event is emitted.
    */
   public on<K extends keyof T>(event: K, callback: CallbackFunction<T[K]>) {
-    if (event in this.#eventRegistry) {
-      return console.warn(`Event ${String(event)} already bound`);
-    }
     if (!this.#eventRegistry[event]) {
       this.#eventRegistry[event] = { callbacks: new Set() };
     }

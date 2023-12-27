@@ -90,6 +90,10 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       filter: (event: KeyboardEvent) => event.code === "Space",
     });
 
+    this.eventManager.on("editor:space-down", (data?: boolean) => {
+      console.log("spaceDown", data);
+    });
+
     // this.stage.on("keydown", (event: KeyboardEvent) => {
     //   console.log("spaceDown");
     //   if (event.code === "Space") {
