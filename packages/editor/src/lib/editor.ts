@@ -1,7 +1,7 @@
 import { Container, FederatedPointerEvent, FederatedWheelEvent, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
-import { EventManager } from "./events/event-manager";
+import { EventBus } from "./events/event-bus";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
@@ -31,14 +31,14 @@ export type InteractionState = {
 
 export type EditorEvents = {
   "editor:space-down": boolean;
-  "editor:a-down": boolean;
+  "editor:a-down": boolean | undefined;
 };
 
 export class Editor<VIEW extends ICanvas = ICanvas> {
   renderer: IRenderer<VIEW>;
   stage: Container;
   grid: Grid;
-  eventManager: EventManager<EditorEvents>;
+  eventBus: EventBus<EditorEvents>;
   interactionState: State<InteractionState>;
 
   constructor(config: EditorConfig) {
@@ -64,7 +64,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       },
     });
 
-    this.eventManager = new EventManager();
+    this.eventBus = new EventBus();
 
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
@@ -79,26 +79,19 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.stage = new Container();
     this.stage.eventMode = "static";
 
-    this.setupEventListeners(config.canvas);
+    this.setupEvents();
 
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
+    this.eventBus.emit("editor:space-down", true);
   }
 
-  setupEventListeners(canvas: HTMLCanvasElement) {
-    this.eventManager.bind("editor:space-down", document, "keydown", {
-      filter: (event: KeyboardEvent) => event.code === "Space",
-    });
-    this.eventManager.bind("editor:a-down", document, "keydown", {
-      filter: (event: KeyboardEvent) => event.code === "KeyA",
-    });
-
-    this.eventManager.on("editor:space-down", (data) => {
+  setupEvents() {
+    this.eventBus.on("editor:space-down", (data) => {
       console.log("spaceDown", data);
     });
-
-    this.eventManager.on("editor:a-down", (data) => {
+    this.eventBus.on("editor:a-down", (data) => {
       console.log("aDown", data);
     });
 
