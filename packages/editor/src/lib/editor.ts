@@ -10,7 +10,7 @@ export type EditorConfig = {
 
 export type ApplicationState = {
   zoomFactor: number;
-  gridOffset: {
+  dragOffset: {
     x: number;
     y: number;
   };
@@ -31,7 +31,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   constructor(config: EditorConfig) {
     this.state = new State<ApplicationState>({
       zoomFactor: 1,
-      gridOffset: {
+      dragOffset: {
         x: 0,
         y: 0,
       },
@@ -81,21 +81,23 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       }
     });
 
+    this.eventBus.on("editor:dragDown", (coords) => {
+      this.state.get("dragStart").x = coords.x;
+      this.state.get("dragStart").y = coords.y;
+    });
+
     this.eventBus.on("editor:dragXY", (coords) => {
       const deltaX = coords.x - this.state.get("dragStart").x;
       const deltaY = coords.y - this.state.get("dragStart").y;
-      this.state.set("gridOffset", {
-        x: this.state.get("gridOffset").x + deltaX * this.state.get("zoomFactor"),
-        y: this.state.get("gridOffset").y + deltaY * this.state.get("zoomFactor"),
-      });
+      this.state.get("dragOffset").x += deltaX * this.state.get("zoomFactor");
+      this.state.get("dragOffset").y += deltaY * this.state.get("zoomFactor");
 
-      this.grid.setUniform("u_offset", [this.state.get("gridOffset").x, this.state.get("gridOffset").y]);
+      // Update grid offset uniform
+      this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
       this.renderer.render(this.stage);
 
-      this.state.set("dragStart", {
-        x: coords.x,
-        y: coords.y,
-      });
+      this.state.get("dragStart").x = coords.x;
+      this.state.get("dragStart").y = coords.y;
     });
 
     // this.stage.on("keydown", (event: KeyboardEvent) => {

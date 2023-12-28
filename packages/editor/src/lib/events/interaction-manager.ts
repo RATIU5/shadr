@@ -15,6 +15,10 @@ export type BusState = {
     x: number;
     y: number;
   };
+  "editor:dragDown": {
+    x: number;
+    y: number;
+  };
 };
 
 export class InteractionManager {
@@ -66,9 +70,20 @@ export class InteractionManager {
   handleMouseDown(event: MouseEvent) {
     if (event.button === 0) {
       this.state.leftMouseDown.set(true);
+
+      if (this.state.spaceDown.get()) {
+        this.eventBus.emit("editor:dragDown", {
+          x: event.clientX,
+          y: event.clientY,
+        });
+      }
     } else if (event.button === 1) {
       this.state.middleMouseDown.set(true);
       this.eventBus.emit("mousedown:middle", true);
+      this.eventBus.emit("editor:dragDown", {
+        x: event.clientX,
+        y: event.clientY,
+      });
     }
   }
 
