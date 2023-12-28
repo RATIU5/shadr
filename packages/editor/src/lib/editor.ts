@@ -1,11 +1,23 @@
-import { Container, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
+import { Container, ICanvas, IRenderer, Renderer, autoDetectRenderer } from "pixi.js";
 import { Grid } from "./graphics/grid/grid";
 import { EventBus } from "./events/event-bus";
-import { Signal, createSignal } from "./utils/signal";
-import { BusState, InteractionManager, InteractionState } from "./events/interaction-manager";
+import { BusState, InteractionManager } from "./events/interaction-manager";
+import { State } from "./state/state";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
+};
+
+export type ApplicationState = {
+  zoomFactor: number;
+  gridOffset: {
+    x: number;
+    y: number;
+  };
+  dragStart: {
+    x: number;
+    y: number;
+  };
 };
 
 export class Editor<VIEW extends ICanvas = ICanvas> {
@@ -13,15 +25,21 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   stage: Container;
   grid: Grid;
   eventBus: EventBus<BusState>;
-  interactionState: InteractionState;
+  state: State<ApplicationState>;
   interactionManager: InteractionManager;
 
   constructor(config: EditorConfig) {
-    this.interactionState = {
-      spaceDown: createSignal(false),
-      leftMouseDown: createSignal(false),
-      middleMouseDown: createSignal(false),
-    };
+    this.state = new State<ApplicationState>({
+      zoomFactor: 1,
+      gridOffset: {
+        x: 0,
+        y: 0,
+      },
+      dragStart: {
+        x: 0,
+        y: 0,
+      },
+    });
     this.eventBus = new EventBus();
 
     // Setup Pixi.js renderer and stage
@@ -38,7 +56,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.stage.eventMode = "static";
 
     // Handles all events and interactions with the editor
-    this.interactionManager = new InteractionManager(this.stage, this.renderer, this.interactionState, this.eventBus);
+    this.interactionManager = new InteractionManager(this.stage, this.renderer, this.eventBus);
 
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
@@ -57,8 +75,27 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       }
     });
 
+    this.eventBus.on("mousedown:middle", (value) => {
+      if (this.renderer.view.style) {
+        this.renderer.view.style.cursor = value ? "grab" : "default";
+      }
+    });
+
     this.eventBus.on("editor:dragXY", (coords) => {
-      console.log("dragXY", coords);
+      const deltaX = coords.x - this.state.get("dragStart").x;
+      const deltaY = coords.y - this.state.get("dragStart").y;
+      this.state.set("gridOffset", {
+        x: this.state.get("gridOffset").x + deltaX * this.state.get("zoomFactor"),
+        y: this.state.get("gridOffset").y + deltaY * this.state.get("zoomFactor"),
+      });
+
+      this.grid.setUniform("u_offset", [this.state.get("gridOffset").x, this.state.get("gridOffset").y]);
+      this.renderer.render(this.stage);
+
+      this.state.set("dragStart", {
+        x: coords.x,
+        y: coords.y,
+      });
     });
 
     // this.stage.on("keydown", (event: KeyboardEvent) => {

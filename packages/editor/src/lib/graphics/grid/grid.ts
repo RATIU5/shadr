@@ -93,6 +93,7 @@ export class Grid {
    * @param {T} value The value to set the uniform to
    */
   public setUniform<T = unknown>(name: string, value: T) {
+    console.log(name, value);
     this.#mesh.shader.uniforms[name] = value;
   }
 }

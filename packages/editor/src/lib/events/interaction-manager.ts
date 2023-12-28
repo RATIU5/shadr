@@ -1,6 +1,6 @@
 import { Container, IRenderer } from "pixi.js";
 import { EventBus } from "./event-bus";
-import { Signal } from "../utils/signal";
+import { Signal, createSignal } from "../utils/signal";
 
 export type InteractionState = {
   spaceDown: Signal<boolean>;
@@ -10,6 +10,7 @@ export type InteractionState = {
 
 export type BusState = {
   "keydown:space": boolean;
+  "mousedown:middle": boolean;
   "editor:dragXY": {
     x: number;
     y: number;
@@ -22,10 +23,14 @@ export class InteractionManager {
   state: InteractionState;
   eventBus: EventBus<BusState>;
 
-  constructor(stage: Container, renderer: IRenderer, state: InteractionState, eventBus: EventBus<BusState>) {
+  constructor(stage: Container, renderer: IRenderer, eventBus: EventBus<BusState>) {
     this.stage = stage;
     this.renderer = renderer;
-    this.state = state;
+    this.state = {
+      spaceDown: createSignal(false),
+      leftMouseDown: createSignal(false),
+      middleMouseDown: createSignal(false),
+    };
     this.eventBus = eventBus;
 
     this.initEventListeners();
@@ -63,6 +68,7 @@ export class InteractionManager {
       this.state.leftMouseDown.set(true);
     } else if (event.button === 1) {
       this.state.middleMouseDown.set(true);
+      this.eventBus.emit("mousedown:middle", true);
     }
   }
 
@@ -71,6 +77,7 @@ export class InteractionManager {
       this.state.leftMouseDown.set(false);
     } else if (event.button === 1) {
       this.state.middleMouseDown.set(false);
+      this.eventBus.emit("mousedown:middle", false);
     }
   }
 
