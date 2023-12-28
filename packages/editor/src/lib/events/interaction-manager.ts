@@ -120,12 +120,10 @@ export class InteractionManager {
   }
 
   handleMouseWheel(event: WheelEvent) {
-    const dragDir = event.shiftKey ? "editor:dragX" : "editor:dragY";
-
     if (event.shiftKey) {
-      this.eventBus.emit("editor:dragX", 10 * (event.deltaX / 100));
+      this.eventBus.emit("editor:dragX", -10 * (event.deltaX / 100));
     } else {
-      this.eventBus.emit("editor:dragY", 10 * (event.deltaY / 100));
+      this.eventBus.emit("editor:dragY", -10 * (event.deltaY / 100));
     }
   }
 }
