@@ -11,6 +11,7 @@ export type InteractionState = {
 export type BusState = {
   "keydown:space": boolean;
   "mousedown:middle": boolean;
+  "mousedown:right": boolean;
   "editor:dragXY": {
     x: number;
     y: number;
@@ -19,6 +20,8 @@ export type BusState = {
     x: number;
     y: number;
   };
+  "editor:dragX": number;
+  "editor:dragY": number;
 };
 
 export class InteractionManager {
@@ -47,6 +50,8 @@ export class InteractionManager {
     this.stage.on("mousedown", this.handleMouseDown.bind(this));
     this.stage.on("mouseup", this.handleMouseUp.bind(this));
     document.addEventListener("mousemove", this.handleMouseMove.bind(this));
+    document.addEventListener("contextmenu", (event) => event.preventDefault());
+    document.addEventListener("wheel", this.handleMouseWheel.bind(this));
   }
 
   initBusEvents() {
@@ -84,6 +89,8 @@ export class InteractionManager {
         x: event.clientX,
         y: event.clientY,
       });
+    } else if (event.button === 2) {
+      this.eventBus.emit("mousedown:right", true);
     }
   }
 
@@ -93,6 +100,8 @@ export class InteractionManager {
     } else if (event.button === 1) {
       this.state.middleMouseDown.set(false);
       this.eventBus.emit("mousedown:middle", false);
+    } else if (event.button === 2) {
+      this.eventBus.emit("mousedown:right", false);
     }
   }
 
@@ -107,6 +116,16 @@ export class InteractionManager {
         x: event.clientX,
         y: event.clientY,
       });
+    }
+  }
+
+  handleMouseWheel(event: WheelEvent) {
+    const dragDir = event.shiftKey ? "editor:dragX" : "editor:dragY";
+
+    if (event.shiftKey) {
+      this.eventBus.emit("editor:dragX", 10 * (event.deltaX / 100));
+    } else {
+      this.eventBus.emit("editor:dragY", 10 * (event.deltaY / 100));
     }
   }
 }

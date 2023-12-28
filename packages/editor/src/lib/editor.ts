@@ -100,62 +100,21 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       this.state.get("dragStart").y = coords.y;
     });
 
-    // this.stage.on("keydown", (event: KeyboardEvent) => {
-    //   console.log("spaceDown");
-    //   if (event.code === "Space") {
-    //     this.interactionState.set("spaceDown", true);
-    //   }
-    // });
-    // this.stage.on("keyup", (event) => {
-    //   if (event.code === "Space") {
-    //     this.interactionState.set("spaceDown", false);
-    //   }
-    // });
-    // this.stage.on("mousedown", (event) => {
-    //   if (event.button === 0) {
-    //     this.interactionState.set("leftMouseDown", true);
-    //   } else if (event.button === 1) {
-    //     this.interactionState.set("middleMouseDown", true);
-    //   }
-    // });
-    // this.stage.on("mousemove", (event) => {
-    //   if (
-    //     this.interactionState.get("middleMouseDown") ||
-    //     (this.interactionState.get("leftMouseDown") && this.interactionState.get("spaceDown"))
-    //   ) {
-    //     const deltaX = (event?.clientX ?? 0) - this.interactionState.get("dragStart").x;
-    //     const deltaY = (event?.clientY ?? 0) - this.interactionState.get("dragStart").y;
-    //     this.interactionState.set("gridOffset", {
-    //       x: this.interactionState.get("gridOffset").x + deltaX * this.interactionState.get("zoomFactor"),
-    //       y: this.interactionState.get("gridOffset").y + deltaY * this.interactionState.get("zoomFactor"),
-    //     });
-    //     this.eventBus.emit("editor:dragXY", event);
-    //     this.interactionState.set("dragStart", {
-    //       x: event?.clientX ?? 0,
-    //       y: event?.clientY ?? 0,
-    //     });
-    //   }
-    // });
-    // this.stage.on("mouseup", (event) => {
-    //   if (event.button === 0) {
-    //     this.interactionState.set("leftMouseDown", false);
-    //   } else if (event.button === 1) {
-    //     this.interactionState.set("middleMouseDown", false);
-    //   }
-    // });
-    // this.stage.on("wheel", (event) => {});
-    // this.stage.on("touchstart", (event) => {});
-    // this.stage.on("touchmove", (event) => {});
-    // this.stage.on("touchend", (event) => {});
-    // this.eventBus.on("editor:dragXY", () => {
-    //   console.log("dragXY");
-    //   this.grid.setUniform("u_offset", [
-    //     this.interactionState.get("gridOffset").x,
-    //     this.interactionState.get("gridOffset").y,
-    //   ]);
-    // });
-    // this.eventBus.on("editor:dragX", () => {});
-    // this.eventBus.on("editor:dragY", () => {});
+    this.eventBus.on("editor:dragX", (amount) => {
+      this.state.get("dragOffset").x += amount * this.state.get("zoomFactor");
+
+      // Update grid offset uniform
+      this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+      this.renderer.render(this.stage);
+    });
+
+    this.eventBus.on("editor:dragY", (amount) => {
+      this.state.get("dragOffset").y += amount * this.state.get("zoomFactor");
+
+      // Update grid offset uniform
+      this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+      this.renderer.render(this.stage);
+    });
   }
 
   start() {
