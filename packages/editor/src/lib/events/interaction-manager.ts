@@ -6,6 +6,7 @@ export type InteractionState = {
   spaceDown: Signal<boolean>;
   leftMouseDown: Signal<boolean>;
   middleMouseDown: Signal<boolean>;
+  zoom: number;
 };
 
 export type BusState = {
@@ -22,6 +23,7 @@ export type BusState = {
   };
   "editor:dragX": number;
   "editor:dragY": number;
+  "editor:zoom": number;
 };
 
 export class InteractionManager {
@@ -37,6 +39,7 @@ export class InteractionManager {
       spaceDown: createSignal(false),
       leftMouseDown: createSignal(false),
       middleMouseDown: createSignal(false),
+      zoom: 1,
     };
     this.eventBus = eventBus;
 
@@ -51,7 +54,10 @@ export class InteractionManager {
     this.stage.on("mouseup", this.handleMouseUp.bind(this));
     document.addEventListener("mousemove", this.handleMouseMove.bind(this));
     document.addEventListener("contextmenu", (event) => event.preventDefault());
-    document.addEventListener("wheel", this.handleMouseWheel.bind(this));
+    document.addEventListener("wheel", this.handleMouseWheel.bind(this), { passive: false });
+    document.addEventListener("touchstart", this.handleTouchStart.bind(this));
+    document.addEventListener("touchmove", this.handleTouchMove.bind(this));
+    document.addEventListener("touchend", this.handleTouchEnd.bind(this));
   }
 
   initBusEvents() {
@@ -120,10 +126,46 @@ export class InteractionManager {
   }
 
   handleMouseWheel(event: WheelEvent) {
-    if (event.shiftKey) {
-      this.eventBus.emit("editor:dragX", -10 * (event.deltaX / 100));
-    } else {
-      this.eventBus.emit("editor:dragY", -10 * (event.deltaY / 100));
+    event.preventDefault();
+    // Taken from excalidraw
+    const { deltaX, deltaY } = event;
+
+    if (event.metaKey || event.ctrlKey) {
+      const sign = Math.sign(deltaY);
+      const MAX_STEP = 0.01 * 100;
+      const absDelta = Math.abs(deltaY);
+      let delta = deltaY;
+      if (absDelta > MAX_STEP) {
+        delta = MAX_STEP * sign;
+      }
+
+      let newZoom = this.state.zoom - delta / 100;
+      // increase zoom steps the more zoomed-in we are (applies to >100% only)
+      newZoom +=
+        Math.log10(Math.max(1, this.state.zoom)) *
+        -sign *
+        // reduced amplification for small deltas (small movements on a trackpad)
+        Math.min(1, absDelta / 20);
+
+      newZoom = deltaY > 0 ? deltaY / 100 : deltaY / 100;
+
+      this.eventBus.emit("editor:zoom", newZoom);
+      return;
     }
+
+    this.eventBus.emit("editor:dragX", -10 * (event.deltaX / 10));
+    this.eventBus.emit("editor:dragY", -10 * (event.deltaY / 10));
+  }
+
+  handleTouchStart(event: TouchEvent) {
+    event.preventDefault();
+  }
+
+  handleTouchMove(event: TouchEvent) {
+    event.preventDefault();
+  }
+
+  handleTouchEnd(event: TouchEvent) {
+    event.preventDefault();
   }
 }

@@ -56,19 +56,17 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.stage.eventMode = "static";
 
     // Handles all events and interactions with the editor
+    // The interaction manager emits events to the event bus
     this.interactionManager = new InteractionManager(this.stage, this.renderer, this.eventBus);
 
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
 
-    // Setup event handlers
     this.setupEvents();
   }
 
   setupEvents() {
-    // Event bus handlers
-    // After effects may happen here
     this.eventBus.on("keydown:space", (value) => {
       if (this.renderer.view.style) {
         this.renderer.view.style.cursor = value ? "grab" : "default";
@@ -92,7 +90,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       this.state.get("dragOffset").x += deltaX * this.state.get("zoomFactor");
       this.state.get("dragOffset").y += deltaY * this.state.get("zoomFactor");
 
-      // Update grid offset uniform
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
       this.renderer.render(this.stage);
 
@@ -103,7 +100,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.eventBus.on("editor:dragX", (amount) => {
       this.state.get("dragOffset").x += amount * this.state.get("zoomFactor");
 
-      // Update grid offset uniform
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
       this.renderer.render(this.stage);
     });
@@ -111,8 +107,22 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.eventBus.on("editor:dragY", (amount) => {
       this.state.get("dragOffset").y += amount * this.state.get("zoomFactor");
 
-      // Update grid offset uniform
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+      this.renderer.render(this.stage);
+    });
+
+    this.eventBus.on("editor:zoom", (amount) => {
+      this.state.set("zoomFactor", this.state.get("zoomFactor") + amount);
+
+      if (this.state.get("zoomFactor") < 0.5) {
+        this.state.set("zoomFactor", 0.5);
+      } else if (this.state.get("zoomFactor") > 5) {
+        this.state.set("zoomFactor", 5);
+      }
+
+      // console.log("Zoom");
+
+      this.grid.setUniform("u_zoom", this.state.get("zoomFactor"));
       this.renderer.render(this.stage);
     });
   }
