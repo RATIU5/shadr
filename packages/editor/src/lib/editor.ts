@@ -1,7 +1,7 @@
 import { Container, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
-import { Grid } from "./graphics/grid/grid";
 import { EventBus } from "./events/event-bus";
 import { BusState, InteractionManager } from "./events/interaction-manager";
+import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
 
 export type EditorConfig = {
@@ -63,10 +63,10 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
 
-    this.setupEvents();
+    this.#setupEvents();
   }
 
-  setupEvents() {
+  #setupEvents() {
     this.eventBus.on("keydown:space", (value) => {
       if (this.renderer.view.style) {
         this.renderer.view.style.cursor = value ? "grab" : "default";

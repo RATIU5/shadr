@@ -1,6 +1,6 @@
 import { Container, FederatedPointerEvent, IRenderer } from "pixi.js";
-import { EventBus } from "./event-bus";
 import { Signal, createSignal } from "../utils/signal";
+import { EventBus } from "./event-bus";
 
 export type InteractionState = {
   spaceDown: Signal<boolean>;

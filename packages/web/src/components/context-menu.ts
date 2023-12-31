@@ -18,9 +18,10 @@ export function initializeContextComponent(element: ICanvas, initialItems: Conte
   };
 }
 
-export function contextMenu(node: ICanvas, items: ContextItem[]) {
+export function contextMenu(node: ICanvas, initialItems: ContextItem[]) {
   let mouseX = 0;
   let mouseY = 0;
+  let items = initialItems;
 
   const menu = document.createElement("ul");
   menu.id = "context-menu";
