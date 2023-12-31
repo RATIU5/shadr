@@ -1,4 +1,4 @@
-import { Container, IRenderer } from "pixi.js";
+import { Container, FederatedPointerEvent, IRenderer } from "pixi.js";
 import { EventBus } from "./event-bus";
 import { Signal, createSignal } from "../utils/signal";
 
@@ -52,12 +52,9 @@ export class InteractionManager {
     document.addEventListener("keyup", this.handleKeyUp.bind(this));
     this.stage.on("mousedown", this.handleMouseDown.bind(this));
     this.stage.on("mouseup", this.handleMouseUp.bind(this));
-    document.addEventListener("mousemove", this.handleMouseMove.bind(this));
-    document.addEventListener("contextmenu", (event) => event.preventDefault());
+    this.stage.on("mousemove", this.handleMouseMove.bind(this));
+    this.stage.on("contextmenu", (event) => event.preventDefault());
     document.addEventListener("wheel", this.handleMouseWheel.bind(this), { passive: false });
-    document.addEventListener("touchstart", this.handleTouchStart.bind(this));
-    document.addEventListener("touchmove", this.handleTouchMove.bind(this));
-    document.addEventListener("touchend", this.handleTouchEnd.bind(this));
   }
 
   initBusEvents() {
@@ -153,19 +150,7 @@ export class InteractionManager {
       return;
     }
 
-    this.eventBus.emit("editor:dragX", -10 * (event.deltaX / 10));
-    this.eventBus.emit("editor:dragY", -10 * (event.deltaY / 10));
-  }
-
-  handleTouchStart(event: TouchEvent) {
-    event.preventDefault();
-  }
-
-  handleTouchMove(event: TouchEvent) {
-    event.preventDefault();
-  }
-
-  handleTouchEnd(event: TouchEvent) {
-    event.preventDefault();
+    this.eventBus.emit("editor:dragX", -10 * (deltaX / 10));
+    this.eventBus.emit("editor:dragY", -10 * (deltaY / 10));
   }
 }

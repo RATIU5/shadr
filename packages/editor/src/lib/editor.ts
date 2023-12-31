@@ -1,4 +1,4 @@
-import { Container, ICanvas, IRenderer, Renderer, autoDetectRenderer } from "pixi.js";
+import { Container, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
 import { Grid } from "./graphics/grid/grid";
 import { EventBus } from "./events/event-bus";
 import { BusState, InteractionManager } from "./events/interaction-manager";
@@ -119,8 +119,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       } else if (this.state.get("zoomFactor") > 5) {
         this.state.set("zoomFactor", 5);
       }
-
-      // console.log("Zoom");
 
       this.grid.setUniform("u_zoom", this.state.get("zoomFactor"));
       this.renderer.render(this.stage);
