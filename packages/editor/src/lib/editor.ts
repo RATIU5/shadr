@@ -113,16 +113,31 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
 
     this.eventBus.on("editor:zoom", (amount) => {
       this.state.set("zoomFactor", this.state.get("zoomFactor") + amount);
-
-      if (this.state.get("zoomFactor") < 0.5) {
-        this.state.set("zoomFactor", 0.5);
-      } else if (this.state.get("zoomFactor") > 5) {
-        this.state.set("zoomFactor", 5);
-      }
-
-      this.grid.setUniform("u_zoom", this.state.get("zoomFactor"));
-      this.renderer.render(this.stage);
+      this.setZoom(this.state.get("zoomFactor"));
     });
+  }
+
+  public setZoom(zoom: number) {
+    this.state.set("zoomFactor", zoom);
+
+    if (this.state.get("zoomFactor") < 0.5) {
+      this.state.set("zoomFactor", 0.5);
+    } else if (this.state.get("zoomFactor") > 5) {
+      this.state.set("zoomFactor", 5);
+    }
+
+    this.grid.setUniform("u_zoom", this.state.get("zoomFactor"));
+    this.renderer.render(this.stage);
+  }
+
+  public getZoom() {
+    return this.state.get("zoomFactor");
+  }
+
+  public setOffset(x: number, y: number) {
+    this.state.set("dragOffset", { x, y });
+    this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+    this.renderer.render(this.stage);
   }
 
   start() {

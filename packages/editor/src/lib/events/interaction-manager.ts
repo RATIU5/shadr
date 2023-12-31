@@ -53,7 +53,6 @@ export class InteractionManager {
     this.stage.on("mousedown", this.handleMouseDown.bind(this));
     this.stage.on("mouseup", this.handleMouseUp.bind(this));
     this.stage.on("mousemove", this.handleMouseMove.bind(this));
-    this.stage.on("contextmenu", (event) => event.preventDefault());
     document.addEventListener("wheel", this.handleMouseWheel.bind(this), { passive: false });
   }
 
