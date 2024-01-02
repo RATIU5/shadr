@@ -1,8 +1,9 @@
-import { Container, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
+import { Container, Graphics, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
 import { EventBus } from "./events/event-bus";
 import { BusState, InteractionManager } from "./events/interaction-manager";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
+import { EditorNodeType } from "./nodes/editor-node";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
@@ -29,6 +30,9 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   interactionManager: InteractionManager;
 
   constructor(config: EditorConfig) {
+    this.stage = new Container();
+    this.stage.eventMode = "static";
+
     this.state = new State<ApplicationState>({
       zoomFactor: 1,
       dragOffset: {
@@ -52,8 +56,11 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       backgroundColor: 0x1a1b1c,
       resolution: window.devicePixelRatio || 1,
     });
-    this.stage = new Container();
-    this.stage.eventMode = "static";
+
+    const nodesContainer = new Container();
+    nodesContainer.name = "nodes";
+
+    this.stage.addChild(nodesContainer);
 
     // Handles all events and interactions with the editor
     // The interaction manager emits events to the event bus
@@ -91,7 +98,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       this.state.get("dragOffset").y += deltaY * this.state.get("zoomFactor");
 
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-      this.renderer.render(this.stage);
 
       this.state.get("dragStart").x = coords.x;
       this.state.get("dragStart").y = coords.y;
@@ -101,14 +107,12 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       this.state.get("dragOffset").x += amount * this.state.get("zoomFactor");
 
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-      this.renderer.render(this.stage);
     });
 
     this.eventBus.on("editor:dragY", (amount) => {
       this.state.get("dragOffset").y += amount * this.state.get("zoomFactor");
 
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-      this.renderer.render(this.stage);
     });
 
     this.eventBus.on("editor:zoom", (amount) => {
@@ -127,7 +131,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     }
 
     this.grid.setUniform("u_zoom", this.state.get("zoomFactor"));
-    this.renderer.render(this.stage);
   }
 
   public getZoom() {
@@ -137,11 +140,35 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   public setOffset(x: number, y: number) {
     this.state.set("dragOffset", { x, y });
     this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-    this.renderer.render(this.stage);
+  }
+
+  public getOffset() {
+    return this.state.get("dragOffset");
+  }
+
+  public addNode(node: EditorNodeType) {
+    const container = new Container();
+
+    const rect = new Graphics();
+    rect.lineStyle(0.5, 0xffffff);
+    rect.beginFill(0x000000);
+    rect.drawRect(
+      node.position.x + this.state.get("dragOffset").x,
+      node.position.y + this.state.get("dragOffset").y,
+      node.size.width,
+      node.size.height,
+    );
+    rect.endFill();
+
+    container.addChild(rect);
+    const nodesContainer = this.stage.getChildByName<Container>("nodes");
+    nodesContainer?.addChild(container);
+    console.log(nodesContainer);
   }
 
   start() {
     // Actually render the stage to the canvas
     this.renderer.render(this.stage);
+    window.requestAnimationFrame(this.start.bind(this));
   }
 }

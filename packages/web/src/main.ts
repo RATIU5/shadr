@@ -14,7 +14,21 @@ initializeContextComponent(nodeEditor, [
       {
         type: "item",
         label: "Input&nbsp;node",
-        action: () => console.log("i"),
+        action: () => {
+          editor.addNode({
+            id: "input",
+            label: "Input",
+            type: "input",
+            position: {
+              x: 0,
+              y: 0,
+            },
+            size: {
+              width: 100,
+              height: 50,
+            },
+          });
+        },
       },
       {
         type: "item",
