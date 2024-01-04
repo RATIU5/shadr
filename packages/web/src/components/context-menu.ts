@@ -3,7 +3,7 @@ import { ICanvas } from "pixi.js";
 export type ContextItem = {
   type: "item" | "separator";
   label?: string;
-  action?: () => void;
+  action?: (mouse: { x: number; y: number }) => void;
   disabled?: boolean;
   items?: ContextItem[];
 };
@@ -106,8 +106,8 @@ function createItem(item: ContextItem, _: HTMLUListElement, rootMenu: HTMLUListE
   li.innerHTML = `${item.label ?? "undefined"}${item.items && item.items.length > 0 ? iconCheveronRight() : ""}`;
   if (!item.disabled) {
     if (item.action) {
-      li.addEventListener("click", () => {
-        item.action?.();
+      li.addEventListener("click", (e) => {
+        item.action?.({ x: e.clientX, y: e.clientY });
         rootMenu.style.display = "none";
       });
     } else if (item.items && item.items.length > 0) {

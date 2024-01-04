@@ -3,7 +3,7 @@ import { EventBus } from "./events/event-bus";
 import { BusState, InteractionManager } from "./events/interaction-manager";
 import { Grid } from "./graphics/grid/grid";
 import { State } from "./state/state";
-import { EditorNodeType } from "./nodes/editor-node";
+import { EditorNode, EditorNodeType } from "./nodes/editor-node";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
@@ -30,9 +30,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   interactionManager: InteractionManager;
 
   constructor(config: EditorConfig) {
-    this.stage = new Container();
-    this.stage.eventMode = "static";
-
     this.state = new State<ApplicationState>({
       zoomFactor: 1,
       dragOffset: {
@@ -56,6 +53,12 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       backgroundColor: 0x1a1b1c,
       resolution: window.devicePixelRatio || 1,
     });
+    this.stage = new Container();
+    this.stage.eventMode = "static";
+
+    // Setup grid background and add to stage
+    this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
+    this.stage.addChild(this.grid.getMesh());
 
     const nodesContainer = new Container();
     nodesContainer.name = "nodes";
@@ -65,10 +68,6 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     // Handles all events and interactions with the editor
     // The interaction manager emits events to the event bus
     this.interactionManager = new InteractionManager(this.stage, this.renderer, this.eventBus);
-
-    // Setup grid background and add to stage
-    this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
-    this.stage.addChild(this.grid.getMesh());
 
     this.#setupEvents();
   }
@@ -147,23 +146,8 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   }
 
   public addNode(node: EditorNodeType) {
-    const container = new Container();
-
-    const rect = new Graphics();
-    rect.lineStyle(0.5, 0xffffff);
-    rect.beginFill(0x000000);
-    rect.drawRect(
-      node.position.x + this.state.get("dragOffset").x,
-      node.position.y + this.state.get("dragOffset").y,
-      node.size.width,
-      node.size.height,
-    );
-    rect.endFill();
-
-    container.addChild(rect);
-    const nodesContainer = this.stage.getChildByName<Container>("nodes");
-    nodesContainer?.addChild(container);
-    console.log(nodesContainer);
+    const editorNode = new EditorNode(node);
+    this.stage.getChildByName<Container>("nodes")?.addChild(editorNode.get());
   }
 
   start() {

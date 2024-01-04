@@ -14,18 +14,18 @@ initializeContextComponent(nodeEditor, [
       {
         type: "item",
         label: "Input&nbsp;node",
-        action: () => {
+        action: (mouse) => {
           editor.addNode({
             id: "input",
             label: "Input",
             type: "input",
             position: {
-              x: 0,
-              y: 0,
+              x: mouse.x,
+              y: mouse.y,
             },
             size: {
               width: 100,
-              height: 50,
+              height: 200,
             },
           });
         },

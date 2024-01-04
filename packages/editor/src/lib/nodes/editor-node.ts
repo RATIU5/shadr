@@ -36,13 +36,15 @@ export class EditorNode {
     this.size = node.size;
 
     this.container = new Container();
+
+    this.createGraphics();
   }
 
   createGraphics() {
     const rect = new Graphics();
-    rect.lineStyle(2, 0xffffff);
-    rect.beginFill(0x000000);
-    rect.drawRect(this.position.x, this.position.y, this.size.width, this.size.height);
+    rect.lineStyle(0.5, 0x444444);
+    rect.beginFill(0x222222);
+    rect.drawRoundedRect(this.position.x, this.position.y, this.size.width, this.size.height, 5);
     rect.endFill();
     this.container.addChild(rect);
   }
