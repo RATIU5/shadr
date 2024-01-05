@@ -58,7 +58,7 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
 
     // Setup grid background and add to stage
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
-    this.stage.addChild(this.grid.getMesh());
+    // this.stage.addChild(this.grid.getMesh());
 
     const nodesContainer = new Container();
     nodesContainer.name = "nodes";
@@ -96,7 +96,15 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       this.state.get("dragOffset").x += deltaX * this.state.get("zoomFactor");
       this.state.get("dragOffset").y += deltaY * this.state.get("zoomFactor");
 
+      // Update grid position
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+
+      // Update nodes container position
+      const nodes = this.stage.getChildByName<Container>("nodes");
+      if (nodes) {
+        nodes.x += deltaX;
+        nodes.y += deltaY;
+      }
 
       this.state.get("dragStart").x = coords.x;
       this.state.get("dragStart").y = coords.y;
@@ -105,13 +113,26 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     this.eventBus.on("editor:dragX", (amount) => {
       this.state.get("dragOffset").x += amount * this.state.get("zoomFactor");
 
+      // Update grid position
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+
+      // Update nodes container position
+      const nodes = this.stage.getChildByName<Container>("nodes");
+      if (nodes) {
+        nodes.x += amount;
+      }
     });
 
     this.eventBus.on("editor:dragY", (amount) => {
       this.state.get("dragOffset").y += amount * this.state.get("zoomFactor");
 
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+
+      // Update nodes container position
+      const nodes = this.stage.getChildByName<Container>("nodes");
+      if (nodes) {
+        nodes.y += amount;
+      }
     });
 
     this.eventBus.on("editor:zoom", (amount) => {
@@ -130,6 +151,11 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
     }
 
     this.grid.setUniform("u_zoom", this.state.get("zoomFactor"));
+
+    this.stage
+      .getChildByName<Container>("nodes")
+      ?.pivot.set(this.renderer.view.width / 2, this.renderer.view.height / 2);
+    this.stage.getChildByName<Container>("nodes")?.scale.set(1 / this.state.get("zoomFactor"));
   }
 
   public getZoom() {
