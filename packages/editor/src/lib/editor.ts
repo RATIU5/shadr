@@ -54,21 +54,19 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       events: this.renderer.events,
     });
 
+    this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
+
     this.stage = new Container();
     this.stage.eventMode = "static";
-
-    // Setup grid background and add to stage
-    this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.stage.addChild(this.grid.getMesh());
-
     this.stage.addChild(this.viewport);
 
-    this.viewport.plugins.add("test", new CustomWheelDrag(this.viewport), 1);
+    // Viewport plugins
+    this.viewport.plugins.add("scroll", new CustomWheelDrag(this.viewport), 1);
     this.viewport.plugins.add("drag", new CustomDragPlugin(this.viewport), 2);
-
     this.viewport.clampZoom({
-      minScale: 0.5, // minimum scale
-      maxScale: 5, // minimum scale
+      minScale: 0.5,
+      maxScale: 5,
     });
 
     this.#setupEvents();
