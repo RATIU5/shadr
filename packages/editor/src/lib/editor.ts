@@ -1,48 +1,17 @@
 import { Container, Graphics, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
-import { EventBus } from "./events/event-bus";
-import { BusState, InteractionManager } from "./events/interaction-manager";
-import { Grid } from "./graphics/grid/grid";
-import { State } from "./state/state";
+
 import { EditorNode, EditorNodeType } from "./nodes/editor-node";
+import { Viewport } from "./viewport";
 
 export type EditorConfig = {
   canvas: HTMLCanvasElement;
 };
 
-export type ApplicationState = {
-  zoomFactor: number;
-  dragOffset: {
-    x: number;
-    y: number;
-  };
-  dragStart: {
-    x: number;
-    y: number;
-  };
-};
-
 export class Editor<VIEW extends ICanvas = ICanvas> {
   renderer: IRenderer<VIEW>;
-  stage: Container;
-  grid: Grid;
-  eventBus: EventBus<BusState>;
-  state: State<ApplicationState>;
-  interactionManager: InteractionManager;
+  viewport: Viewport;
 
   constructor(config: EditorConfig) {
-    this.state = new State<ApplicationState>({
-      zoomFactor: 1,
-      dragOffset: {
-        x: 0,
-        y: 0,
-      },
-      dragStart: {
-        x: 0,
-        y: 0,
-      },
-    });
-    this.eventBus = new EventBus();
-
     // Setup Pixi.js renderer and stage
     this.renderer = autoDetectRenderer<VIEW>({
       view: config.canvas,
@@ -53,132 +22,22 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
       backgroundColor: 0x1a1b1c,
       resolution: window.devicePixelRatio || 1,
     });
-    this.stage = new Container();
-    this.stage.eventMode = "static";
-
-    // Setup grid background and add to stage
-    this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
-    // this.stage.addChild(this.grid.getMesh());
+    this.viewport = new Viewport({
+      renderer: this.renderer,
+    });
 
     const nodesContainer = new Container();
     nodesContainer.name = "nodes";
-
-    this.stage.addChild(nodesContainer);
-
-    // Handles all events and interactions with the editor
-    // The interaction manager emits events to the event bus
-    this.interactionManager = new InteractionManager(this.stage, this.renderer, this.eventBus);
-
-    this.#setupEvents();
-  }
-
-  #setupEvents() {
-    this.eventBus.on("keydown:space", (value) => {
-      if (this.renderer.view.style) {
-        this.renderer.view.style.cursor = value ? "grab" : "default";
-      }
-    });
-
-    this.eventBus.on("mousedown:middle", (value) => {
-      if (this.renderer.view.style) {
-        this.renderer.view.style.cursor = value ? "grab" : "default";
-      }
-    });
-
-    this.eventBus.on("editor:dragDown", (coords) => {
-      this.state.get("dragStart").x = coords.x;
-      this.state.get("dragStart").y = coords.y;
-    });
-
-    this.eventBus.on("editor:dragXY", (coords) => {
-      const deltaX = coords.x - this.state.get("dragStart").x;
-      const deltaY = coords.y - this.state.get("dragStart").y;
-      this.state.get("dragOffset").x += deltaX * this.state.get("zoomFactor");
-      this.state.get("dragOffset").y += deltaY * this.state.get("zoomFactor");
-
-      // Update grid position
-      this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-
-      // Update nodes container position
-      const nodes = this.stage.getChildByName<Container>("nodes");
-      if (nodes) {
-        nodes.x += deltaX;
-        nodes.y += deltaY;
-      }
-
-      this.state.get("dragStart").x = coords.x;
-      this.state.get("dragStart").y = coords.y;
-    });
-
-    this.eventBus.on("editor:dragX", (amount) => {
-      this.state.get("dragOffset").x += amount * this.state.get("zoomFactor");
-
-      // Update grid position
-      this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-
-      // Update nodes container position
-      const nodes = this.stage.getChildByName<Container>("nodes");
-      if (nodes) {
-        nodes.x += amount;
-      }
-    });
-
-    this.eventBus.on("editor:dragY", (amount) => {
-      this.state.get("dragOffset").y += amount * this.state.get("zoomFactor");
-
-      this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-
-      // Update nodes container position
-      const nodes = this.stage.getChildByName<Container>("nodes");
-      if (nodes) {
-        nodes.y += amount;
-      }
-    });
-
-    this.eventBus.on("editor:zoom", (amount) => {
-      this.state.set("zoomFactor", this.state.get("zoomFactor") + amount);
-      this.setZoom(this.state.get("zoomFactor"));
-    });
-  }
-
-  public setZoom(zoom: number) {
-    this.state.set("zoomFactor", zoom);
-
-    if (this.state.get("zoomFactor") < 0.5) {
-      this.state.set("zoomFactor", 0.5);
-    } else if (this.state.get("zoomFactor") > 5) {
-      this.state.set("zoomFactor", 5);
-    }
-
-    this.grid.setUniform("u_zoom", this.state.get("zoomFactor"));
-
-    this.stage
-      .getChildByName<Container>("nodes")
-      ?.pivot.set(this.renderer.view.width / 2, this.renderer.view.height / 2);
-    this.stage.getChildByName<Container>("nodes")?.scale.set(1 / this.state.get("zoomFactor"));
-  }
-
-  public getZoom() {
-    return this.state.get("zoomFactor");
-  }
-
-  public setOffset(x: number, y: number) {
-    this.state.set("dragOffset", { x, y });
-    this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
-  }
-
-  public getOffset() {
-    return this.state.get("dragOffset");
+    this.viewport.get().addChild(nodesContainer);
   }
 
   public addNode(node: EditorNodeType) {
     const editorNode = new EditorNode(node);
-    this.stage.getChildByName<Container>("nodes")?.addChild(editorNode.get());
+    this.viewport.get().getChildByName<Container>("nodes")?.addChild(editorNode.get());
   }
 
   start() {
-    // Actually render the stage to the canvas
-    this.renderer.render(this.stage);
+    this.renderer.render(this.viewport.get());
     window.requestAnimationFrame(this.start.bind(this));
   }
 }
