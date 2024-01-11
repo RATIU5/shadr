@@ -11,9 +11,9 @@ export class CustomWheelDrag extends Plugin {
   }
 
   public override wheel(event: WheelEvent): boolean | undefined {
-    if (event.ctrlKey || event.metaKey) {
-      return this.wheelPlugin.wheel(event);
-    }
+    // if (event.ctrlKey || event.metaKey) {
+    //   return this.wheelPlugin.wheel(event);
+    // }
 
     return this.dragPlugin.wheel(event);
   }
