@@ -32,7 +32,7 @@ export class Viewport {
     this.renderer = config.renderer;
     this.container = new Container();
     this.container.name = "viewport";
-    this.container.eventMode = "static"
+    this.container.eventMode = "static";
     this.state = new State({
       zoomFactor: 1,
       dragOffset: {
@@ -51,7 +51,6 @@ export class Viewport {
     const stage = new Container();
     stage.name = "stage";
     this.container.addChild(stage);
-
 
     this.setupEvents();
   }
@@ -114,7 +113,7 @@ export class Viewport {
 
   get stage(): Container {
     // biome-ignore lint/style/noNonNullAssertion: <explanation>
-    return  this.container.getChildByName<Container>("stage")!;
+    return this.container.getChildByName<Container>("stage")!;
   }
 
   get viewport(): Container {
@@ -123,7 +122,7 @@ export class Viewport {
 
   get center(): { x: number; y: number } {
     return {
-      x: this.renderer.view.width/ 4 + this.state.get("dragOffset").x,
+      x: this.renderer.view.width / 4 + this.state.get("dragOffset").x,
       y: this.renderer.view.height / 4 + this.state.get("dragOffset").y,
     };
   }
