@@ -1,4 +1,4 @@
-import { Container, Graphics, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
+import { Container, ICanvas, IRenderer, autoDetectRenderer } from "pixi.js";
 
 import { EditorNode, EditorNodeType } from "./nodes/editor-node";
 import { Viewport } from "./viewport";

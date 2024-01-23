@@ -31,7 +31,7 @@ export class Viewport {
   constructor(config: ViewportConfig) {
     this.renderer = config.renderer;
     this.container = new Container();
-    this.state = new State<ApplicationState>({
+    this.state = new State({
       zoomFactor: 1,
       dragOffset: {
         x: 0,
@@ -47,6 +47,7 @@ export class Viewport {
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.container.addChild(this.grid.getMesh());
   }
+
   get() {
     return this.container;
   }
