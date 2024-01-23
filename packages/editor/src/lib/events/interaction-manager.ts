@@ -34,6 +34,7 @@ export class InteractionManager {
 
   constructor(stage: Container, renderer: IRenderer, eventBus: EventBus<BusState>) {
     this.stage = stage;
+    this.stage.eventMode = "static";
     this.renderer = renderer;
     this.state = {
       spaceDown: createSignal(false),
