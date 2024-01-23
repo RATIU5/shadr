@@ -32,7 +32,11 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   }
 
   public addNode(node: EditorNodeType) {
-    const editorNode = new EditorNode(node);
+    const editorNode = new EditorNode(
+      node,
+      { x: this.viewport.center.x - 150 / 2, y: this.viewport.center.y - 250 / 2 },
+      { width: 150, height: 250 },
+    );
     this.viewport.stage.getChildByName<Container>("nodes")?.addChild(editorNode.get());
   }
 

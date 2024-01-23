@@ -4,14 +4,6 @@ export type EditorNodeType = {
   id: string;
   label: string;
   type: string;
-  position: {
-    x: number;
-    y: number;
-  };
-  size: {
-    width: number;
-    height: number;
-  };
 };
 
 export class EditorNode {
@@ -28,12 +20,12 @@ export class EditorNode {
   };
   container: Container;
 
-  constructor(node: EditorNodeType) {
+  constructor(node: EditorNodeType, position: { x: number; y: number }, size: { width: number; height: number }) {
     this.id = node.id;
     this.label = node.label;
     this.type = node.type;
-    this.position = node.position;
-    this.size = node.size;
+    this.position = position;
+    this.size = size;
 
     this.container = new Container();
 

@@ -120,4 +120,11 @@ export class Viewport {
   get viewport(): Container {
     return this.container;
   }
+
+  get center(): { x: number; y: number } {
+    return {
+      x: this.renderer.view.width/ 4 + this.state.get("dragOffset").x,
+      y: this.renderer.view.height / 4 + this.state.get("dragOffset").y,
+    };
+  }
 }
