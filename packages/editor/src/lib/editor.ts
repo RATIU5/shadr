@@ -28,16 +28,16 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
 
     const nodesContainer = new Container();
     nodesContainer.name = "nodes";
-    this.viewport.get().addChild(nodesContainer);
+    this.viewport.stage.addChild(nodesContainer);
   }
 
   public addNode(node: EditorNodeType) {
     const editorNode = new EditorNode(node);
-    this.viewport.get().getChildByName<Container>("nodes")?.addChild(editorNode.get());
+    this.viewport.stage.getChildByName<Container>("nodes")?.addChild(editorNode.get());
   }
 
   start() {
-    this.renderer.render(this.viewport.get());
+    this.renderer.render(this.viewport.viewport);
     window.requestAnimationFrame(this.start.bind(this));
   }
 }

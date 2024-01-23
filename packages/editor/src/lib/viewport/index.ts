@@ -31,6 +31,8 @@ export class Viewport {
   constructor(config: ViewportConfig) {
     this.renderer = config.renderer;
     this.container = new Container();
+    this.container.name = "viewport";
+    this.container.eventMode = "static"
     this.state = new State({
       zoomFactor: 1,
       dragOffset: {
@@ -46,6 +48,9 @@ export class Viewport {
     this.interactionManager = new InteractionManager(this.container, this.renderer, this.eventBus);
     this.grid = new Grid(this.renderer.view.width, this.renderer.view.height);
     this.container.addChild(this.grid.getMesh());
+    const stage = new Container();
+    stage.name = "stage";
+    this.container.addChild(stage);
 
 
     this.setupEvents();
@@ -78,6 +83,10 @@ export class Viewport {
       // Update grid position
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
 
+      // Update container position
+      this.stage.position.x = this.state.get("dragOffset").x;
+      this.stage.position.y = this.state.get("dragOffset").y;
+
       this.state.get("dragStart").x = coords.x;
       this.state.get("dragStart").y = coords.y;
     });
@@ -87,16 +96,28 @@ export class Viewport {
 
       // Update grid position
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+
+      // Update container position
+      this.stage.position.x = this.state.get("dragOffset").x;
     });
 
     this.eventBus.on("editor:dragY", (amount) => {
       this.state.get("dragOffset").y += amount * this.state.get("zoomFactor");
 
+      // Update grid position
       this.grid.setUniform("u_offset", [this.state.get("dragOffset").x, this.state.get("dragOffset").y]);
+
+      // Update container position
+      this.stage.position.y = this.state.get("dragOffset").y;
     });
   }
 
-  get() {
+  get stage(): Container {
+    // biome-ignore lint/style/noNonNullAssertion: <explanation>
+    return  this.container.getChildByName<Container>("stage")!;
+  }
+
+  get viewport(): Container {
     return this.container;
   }
 }
