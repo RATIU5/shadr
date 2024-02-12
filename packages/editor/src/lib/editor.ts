@@ -32,9 +32,11 @@ export class Editor<VIEW extends ICanvas = ICanvas> {
   }
 
   public addNode(node: EditorNodeType) {
-    const x = -this.viewport.state.get("dragOffset").x + this.viewport.renderer.view.width / 4 - 75;
-    const y = -this.viewport.state.get("dragOffset").y + this.viewport.renderer.view.height / 4 - 125;
-    const editorNode = new EditorNode(node, { x, y }, { width: 150, height: 250 });
+    const width = 150;
+    const height = 250;
+    const x = -this.viewport.state.get("dragOffset").x + this.viewport.renderer.view.width / 4 - (width / 2);
+    const y = -this.viewport.state.get("dragOffset").y + this.viewport.renderer.view.height / 4 - (height / 2);
+    const editorNode = new EditorNode(node, { x, y }, { width, height });
     this.viewport.stage.getChildByName<Container>("nodes")?.addChild(editorNode.get());
   }
 

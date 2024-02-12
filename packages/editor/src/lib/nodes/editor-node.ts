@@ -28,6 +28,7 @@ export class EditorNode {
     this.size = size;
 
     this.container = new Container();
+    this.container.eventMode = "static"
 
     this.createGraphics();
   }

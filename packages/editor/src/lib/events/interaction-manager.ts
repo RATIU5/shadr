@@ -28,6 +28,7 @@ export type BusState = {
     x: number;
     y: number;
   };
+  "node:mouseDown": MouseEvent
 };
 
 export class InteractionManager {
@@ -81,6 +82,7 @@ export class InteractionManager {
   handleMouseDown(event: MouseEvent) {
     if (event.button === 0) {
       this.state.leftMouseDown.set(true);
+      this.eventBus.emit("node:mouseDown", event);
 
       if (this.state.spaceDown.get()) {
         this.eventBus.emit("editor:dragDown", {

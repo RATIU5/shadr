@@ -56,6 +56,10 @@ export class Viewport {
   }
 
   setupEvents() {
+    this.eventBus.on("node:mouseDown", (event) => {
+      console.log(event);
+      
+    })
     this.eventBus.on("keydown:space", (value) => {
       if (this.renderer.view.style) {
         this.renderer.view.style.cursor = value ? "grab" : "default";
