@@ -24,6 +24,10 @@ export type BusState = {
   "editor:dragX": number;
   "editor:dragY": number;
   "editor:zoom": number;
+  "node:dragXY": {
+    x: number;
+    y: number;
+  };
 };
 
 export class InteractionManager {
@@ -108,6 +112,12 @@ export class InteractionManager {
   }
 
   handleMouseMove(event: MouseEvent) {
+    if (this.state.leftMouseDown.get()) {
+      this.eventBus.emit("node:dragXY", {
+        x: event.clientX,
+        y: event.clientY,
+      });
+    }
     if (this.state.leftMouseDown.get() && this.state.spaceDown.get()) {
       this.eventBus.emit("editor:dragXY", {
         x: event.clientX,
