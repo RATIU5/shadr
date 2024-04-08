@@ -18,6 +18,6 @@ Then, run the development server:
 npm run dev
 ```
 
-
 ### License
+
 This content is released under the (http://opensource.org/licenses/MIT) MIT License.

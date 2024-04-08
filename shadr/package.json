@@ -1,5 +1,5 @@
 {
-  "name": "repo",
+  "name": "shadr",
   "private": true,
   "scripts": {
     "build": "turbo build",
