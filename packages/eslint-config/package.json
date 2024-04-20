@@ -1,5 +1,5 @@
 {
-  "name": "@shadr/eslint-config",
+  "name": "@repo/eslint-config",
   "version": "0.0.0",
   "private": true,
   "files": [
