@@ -6,9 +6,9 @@ export default defineConfig({
     {
       expression: [
         "allof",
-        ["not", ["dirname", "node_modules"]],
         ["not", ["dirname", "dist"]],
         ["dirname", "src"],
+        ["dirname", "node_modules"],
         ["match", "*.ts", "basename"],
       ],
       name: "build",

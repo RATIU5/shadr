@@ -24,6 +24,7 @@
     "pixi.js": "^8.1.0"
   },
   "devDependencies": {
+    "@shadr/typescript-config": "workspace:*",
     "turbowatch": "^2.29.4",
     "typescript": "^5.3.3"
   }

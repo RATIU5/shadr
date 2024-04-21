@@ -11,9 +11,6 @@ importers:
       '@biomejs/biome':
         specifier: 1.7.0
         version: 1.7.0
-      '@shadr/typescript-config':
-        specifier: workspace:*
-        version: link:packages/typescript-config
       turbo:
         specifier: latest
         version: 1.13.2
@@ -77,12 +74,28 @@ importers:
         specifier: ^5.3.3
         version: 5.4.5
 
+  examples/basic-editor:
+    dependencies:
+      '@shadr/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      '@shadr/typescript-config':
+        specifier: workspace:*
+        version: link:../../packages/typescript-config
+      typescript:
+        specifier: ^5.3.3
+        version: 5.4.5
+
   packages/core:
     dependencies:
       '@shadr/renderer':
         specifier: workspace:*
         version: link:../renderer
     devDependencies:
+      '@shadr/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       turbowatch:
         specifier: ^2.29.4
         version: 2.29.4
@@ -96,6 +109,9 @@ importers:
         specifier: ^8.1.0
         version: 8.1.0
     devDependencies:
+      '@shadr/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       turbowatch:
         specifier: ^2.29.4
         version: 2.29.4

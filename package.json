@@ -10,7 +10,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.7.0",
-    "@shadr/typescript-config": "workspace:*",
     "turbo": "latest"
   },
   "packageManager": "pnpm@8.9.0",
