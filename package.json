@@ -10,7 +10,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.7.0",
-    "@shadr/eslint-config": "workspace:*",
     "@shadr/typescript-config": "workspace:*",
     "turbo": "latest"
   },
