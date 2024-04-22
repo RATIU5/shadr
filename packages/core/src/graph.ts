@@ -2,9 +2,9 @@ import { Edge } from "./edge.js";
 import { CoreError } from "./error.js";
 import { Node } from "./node.js";
 
-export class Graph {
-  private nodes: Map<string, Node>;
-  private edges: Set<Edge>;
+export class Graph<T extends string> {
+  private nodes: Map<string, Node<T>>;
+  private edges: Set<Edge<T>>;
   private edgeCombinations: Set<string>;
 
   constructor() {
@@ -13,15 +13,15 @@ export class Graph {
     this.edgeCombinations = new Set();
   }
 
-  addNode(node: Node): void {
+  addNode(node: Node<T>): void {
     this.nodes.set(node.id, node);
   }
 
-  removeNode(node: Node): void {
+  removeNode(node: Node<T>): void {
     this.nodes.delete(node.id);
   }
 
-  addEdge(edge: Edge): void {
+  addEdge(edge: Edge<T>): void {
     const combination = `${edge.source.id}-${edge.target.id}`;
     if (this.edgeCombinations.has(combination)) {
       throw new CoreError(
@@ -33,7 +33,7 @@ export class Graph {
     this.edgeCombinations.add(combination);
   }
 
-  removeEdge(edge: Edge): void {
+  removeEdge(edge: Edge<T>): void {
     this.edges.delete(edge);
   }
 }

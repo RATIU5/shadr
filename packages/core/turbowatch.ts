@@ -5,11 +5,19 @@ export default defineConfig({
   triggers: [
     {
       expression: [
-        "allof",
-        ["not", ["dirname", "dist"]],
-        ["dirname", "src"],
-        ["dirname", "node_modules"],
-        ["match", "*.ts", "basename"],
+        "anyof",
+        [
+          "allof",
+          ["dirname", "node_modules"],
+          ["dirname", "dist"],
+          ["match", "*"],
+        ],
+        [
+          "allof",
+          ["not", ["dirname", "node_modules"]],
+          ["dirname", "src"],
+          ["match", "*"],
+        ],
       ],
       name: "build",
       onChange: async ({ spawn }) => {

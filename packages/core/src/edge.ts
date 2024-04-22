@@ -3,12 +3,12 @@ import { Input } from "./input.js";
 import { Output } from "./output.js";
 import { generateID } from "./utils.js";
 
-export class Edge {
+export class Edge<T extends string> {
   readonly id: string;
-  readonly source: Output;
-  readonly target: Input;
+  readonly source: Output<T>;
+  readonly target: Input<T>;
 
-  constructor(source: Output, target: Input) {
+  constructor(source: Output<T>, target: Input<T>) {
     this.id = generateID();
 
     if (source.nodeId === target.nodeId) {
