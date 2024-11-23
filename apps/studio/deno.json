@@ -1,0 +1,5 @@
+{
+  "name": "@shadr-app/app-studio",
+  "version": "0.0.1",
+  "exports": "./src/main.tsx"
+}
