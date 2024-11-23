@@ -1,18 +1,19 @@
 {
   "name": "shadr",
   "private": true,
-  "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "concurrently \"lerna run --scope @shadr/editor watch\" \"lerna run --scope @shadr/web dev\"",
-    "build": "lerna run build --stream",
-    "clean": "lerna run clean --stream",
-    "check": "npx @biomejs/biome check --apply .",
-    "publish": "lerna publish"
+    "preinstall": "npx only-allow pnpm",
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "biome check .",
+    "lint:fix": "biome check . --apply"
   },
   "devDependencies": {
-    "@biomejs/biome": "1.4.1",
-    "concurrently": "^8.2.2",
-    "lerna": "^8.0.0",
-    "rimraf": "^5.0.5"
+    "@biomejs/biome": "1.7.0",
+    "turbo": "latest"
+  },
+  "packageManager": "pnpm@8.9.0",
+  "engines": {
+    "node": ">=18"
   }
 }
