@@ -17,7 +17,7 @@
   },
   "tasks": {
     "dev:playground": "cd apps/playground && deno task dev",
-    "dev:studio": "deno run -A apps/studio/src/main.tsx",
+    "dev:studio": "cd apps/studio && deno task dev",
     "version": "deno run -A scripts/version.ts",
     "test": "deno test -A",
     "lint": "deno lint .",
