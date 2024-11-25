@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { ShadrApplication } from "@shadr/editor-app";
 
 const ShadrApp = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -55,7 +56,7 @@ const ShadrApp = () => {
       canvas.height = dimensions.height * dpr;
 
       if (ctx) {
-        ctx.scale(dpr, dpr);
+        shadrRenderer = ShadrApplication(canvas);
       }
     }
   }, [dimensions]);

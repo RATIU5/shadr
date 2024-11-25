@@ -1,0 +1,21 @@
+{
+  "name": "@shadr/editor-renderer",
+  "version": "0.0.1",
+  "private": true,
+  "exports": {
+    ".": "./dist/index.js",
+    "./dist": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src/",
+    "clean": "rm -rf node_modules && rm -rf dist"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.2"
+  },
+  "dependencies": {
+    "pixi.js": "^8.5.2"
+  }
+}
