@@ -1,10 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ShadrApplication } from "@shadr/editor-app";
 
+type EventMap = {
+  keydown: KeyboardEvent;
+  keyup: KeyboardEvent;
+  mousemove: MouseEvent;
+  mousedown: MouseEvent;
+  mouseup: MouseEvent;
+  wheel: WheelEvent;
+  contextmenu: Event;
+};
+
 const ShadrApp = () => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const resizeTimeoutRef = useRef<number>();
+  const appRef = useRef<ShadrApplication | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
   const updateDimensions = useCallback(() => {
@@ -14,68 +23,82 @@ const ShadrApp = () => {
     }
   }, []);
 
-  const debouncedUpdateDimensions = useCallback(() => {
-    // Clear any existing timeout
-    if (resizeTimeoutRef.current) {
-      window.clearTimeout(resizeTimeoutRef.current);
-    }
+  const debouncedResize = useCallback(() => {
+    let frame: number;
+    let timeout: NodeJS.Timeout;
 
-    // Set new timeout
-    resizeTimeoutRef.current = window.setTimeout(() => {
-      updateDimensions();
-    }, 250); // Wait 250ms after last resize event
+    return () => {
+      if (timeout) clearTimeout(timeout);
+      if (frame) cancelAnimationFrame(frame);
+
+      timeout = setTimeout(() => {
+        frame = requestAnimationFrame(() => {
+          updateDimensions();
+          appRef.current?.handleResize();
+        });
+      }, 250);
+    };
   }, [updateDimensions]);
 
   useEffect(() => {
-    // Initial size calculation
     updateDimensions();
-
-    const resizeObserver = new ResizeObserver(() => {
-      debouncedUpdateDimensions();
-    });
+    const resizeHandler = debouncedResize();
+    const resizeObserver = new ResizeObserver(resizeHandler);
 
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current);
     }
 
-    return () => {
-      if (resizeTimeoutRef.current) {
-        window.clearTimeout(resizeTimeoutRef.current);
-      }
-      resizeObserver.disconnect();
-    };
-  }, [debouncedUpdateDimensions]);
+    return () => resizeObserver.disconnect();
+  }, [debouncedResize]);
 
   useEffect(() => {
-    if (canvasRef.current) {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d");
+    if (!dimensions.width || !dimensions.height) return;
 
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = dimensions.width * dpr;
-      canvas.height = dimensions.height * dpr;
+    const app = new ShadrApplication({
+      width: dimensions.width * (window.devicePixelRatio || 1),
+      height: dimensions.height * (window.devicePixelRatio || 1),
+    });
 
-      if (ctx) {
-        shadrRenderer = ShadrApplication(canvas);
+    appRef.current = app;
+
+    const handlers: { [K in keyof EventMap]: (e: EventMap[K]) => void } = {
+      keydown: (e) => app.handleKeyDown(e),
+      keyup: (e) => app.handleKeyUp(e),
+      mousemove: (e) => app.handleMouseMove(e),
+      mousedown: (e) => app.handleMouseDown(e),
+      mouseup: (e) => app.handleMouseUp(e),
+      wheel: (e) => app.handleMouseWheel(e),
+      contextmenu: (e) => e.preventDefault(),
+    };
+
+    (Object.entries(handlers) as [keyof EventMap, (e: Event) => void][]).forEach(
+      ([event, handler]) => {
+        document.addEventListener(event, handler);
+      }
+    );
+
+    if (containerRef.current) {
+      try {
+        containerRef.current.appendChild(app.canvas());
+        app.run();
+      } catch (e) {
+        console.error(e);
       }
     }
+
+    // Cleanup
+    return () => {
+      (Object.entries(handlers) as [keyof EventMap, (e: Event) => void][]).forEach(
+        ([event, handler]) => {
+          document.removeEventListener(event, handler);
+        }
+      );
+      app.destroy();
+    };
   }, [dimensions]);
 
-  return (
-    <div
-      ref={containerRef}
-      style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
-    >
-      <canvas
-        ref={canvasRef}
-        style={{
-          width: dimensions.width,
-          height: dimensions.height,
-          display: "block",
-        }}
-      />
-    </div>
-  );
+  return <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />;
 };
 
 export default ShadrApp;

@@ -3,11 +3,15 @@
   "version": "0.0.1",
   "private": true,
   "exports": {
-    ".": "./dist/index.js",
-    "./dist": "./dist/index.js"
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
   },
   "scripts": {
     "build": "tsup",
+    "watch": "tsup --watch",
     "dev": "tsup --watch",
     "lint": "eslint src/",
     "clean": "rm -rf node_modules && rm -rf dist"
@@ -16,6 +20,7 @@
     "tsup": "^8.0.2"
   },
   "dependencies": {
-    "pixi.js": "^8.5.2"
+    "pixi.js": "^8.5.2",
+    "@shadr/common": "workspace:*"
   }
 }

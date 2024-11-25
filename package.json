@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "pnpm -r dev",
+    "watch": "pnpm --parallel watch",
     "dev:playground": "pnpm -r --filter @shadr/playground dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",

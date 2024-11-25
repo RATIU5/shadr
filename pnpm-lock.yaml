@@ -103,9 +103,39 @@ importers:
         specifier: ^5.4.10
         version: 5.4.11(@types/node@22.9.3)
 
-  packages/common: {}
+  packages/common:
+    dependencies:
+      '@shadr/editor-renderer':
+        specifier: workspace:*
+        version: link:../editor/renderer
+    devDependencies:
+      tsup:
+        specifier: ^8.0.2
+        version: 8.3.5(postcss@8.4.49)(typescript@5.7.2)
+
+  packages/editor/application:
+    dependencies:
+      '@shadr/common':
+        specifier: workspace:*
+        version: link:../../common
+      '@shadr/editor-events':
+        specifier: workspace:*
+        version: link:../events
+      '@shadr/editor-renderer':
+        specifier: workspace:*
+        version: link:../renderer
+    devDependencies:
+      tsup:
+        specifier: ^8.0.2
+        version: 8.3.5(postcss@8.4.49)(typescript@5.7.2)
 
   packages/editor/core:
+    devDependencies:
+      tsup:
+        specifier: ^8.0.2
+        version: 8.3.5(postcss@8.4.49)(typescript@5.7.2)
+
+  packages/editor/events:
     devDependencies:
       tsup:
         specifier: ^8.0.2
@@ -119,6 +149,9 @@ importers:
 
   packages/editor/react:
     dependencies:
+      '@shadr/editor-app':
+        specifier: workspace:*
+        version: link:../application
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -138,6 +171,9 @@ importers:
 
   packages/editor/renderer:
     dependencies:
+      '@shadr/common':
+        specifier: workspace:*
+        version: link:../../common
       pixi.js:
         specifier: ^8.5.2
         version: 8.5.2

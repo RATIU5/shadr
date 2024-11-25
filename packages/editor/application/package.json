@@ -1,5 +1,5 @@
 {
-  "name": "@shadr/common",
+  "name": "@shadr/editor-app",
   "version": "0.0.1",
   "private": true,
   "exports": {
@@ -17,7 +17,9 @@
     "clean": "rm -rf node_modules && rm -rf dist"
   },
   "dependencies": {
-    "@shadr/editor-renderer": "workspace:*"
+    "@shadr/editor-renderer": "workspace:*",
+    "@shadr/common": "workspace:*",
+    "@shadr/editor-events": "workspace:*"
   },
   "devDependencies": {
     "tsup": "^8.0.2"

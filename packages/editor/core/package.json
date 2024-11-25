@@ -3,11 +3,14 @@
   "version": "0.0.1",
   "private": true,
   "exports": {
-    ".": "./dist/index.js",
-    "./dist": "./dist/index.js"
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
   },
   "scripts": {
     "build": "tsup",
+    "watch": "tsup --watch",
     "dev": "tsup --watch",
     "lint": "eslint src/",
     "clean": "rm -rf node_modules && rm -rf dist"
