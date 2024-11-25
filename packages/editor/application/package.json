@@ -19,7 +19,8 @@
   "dependencies": {
     "@shadr/editor-renderer": "workspace:*",
     "@shadr/common": "workspace:*",
-    "@shadr/editor-events": "workspace:*"
+    "@shadr/editor-events": "workspace:*",
+    "@shadr/editor-grid": "workspace:*"
   },
   "devDependencies": {
     "tsup": "^8.0.2"

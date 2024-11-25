@@ -59,6 +59,9 @@ importers:
 
   apps/playground:
     dependencies:
+      '@shadr/editor-react':
+        specifier: workspace:*
+        version: link:../../packages/editor/react
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -69,9 +72,6 @@ importers:
       '@eslint/js':
         specifier: ^9.13.0
         version: 9.15.0
-      '@shadr/editor-react':
-        specifier: workspace:*
-        version: link:../../packages/editor/react
       '@types/react':
         specifier: ^18.3.12
         version: 18.3.12
@@ -109,6 +109,9 @@ importers:
         specifier: workspace:*
         version: link:../editor/renderer
     devDependencies:
+      pixi.js:
+        specifier: ^8.5.2
+        version: 8.5.2
       tsup:
         specifier: ^8.0.2
         version: 8.3.5(postcss@8.4.49)(typescript@5.7.2)
@@ -121,6 +124,9 @@ importers:
       '@shadr/editor-events':
         specifier: workspace:*
         version: link:../events
+      '@shadr/editor-grid':
+        specifier: workspace:*
+        version: link:../grid
       '@shadr/editor-renderer':
         specifier: workspace:*
         version: link:../renderer
@@ -137,12 +143,18 @@ importers:
 
   packages/editor/events:
     devDependencies:
+      '@shadr/common':
+        specifier: workspace:*
+        version: link:../../common
       tsup:
         specifier: ^8.0.2
         version: 8.3.5(postcss@8.4.49)(typescript@5.7.2)
 
   packages/editor/grid:
     devDependencies:
+      '@shadr/common':
+        specifier: workspace:*
+        version: link:../../common
       tsup:
         specifier: ^8.0.2
         version: 8.3.5(postcss@8.4.49)(typescript@5.7.2)

@@ -17,6 +17,7 @@
     "clean": "rm -rf node_modules && rm -rf dist"
   },
   "devDependencies": {
-    "tsup": "^8.0.2"
+    "tsup": "^8.0.2",
+    "@shadr/common": "workspace:*"
   }
 }

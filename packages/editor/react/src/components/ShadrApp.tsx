@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from "react";
-import { ShadrApplication } from "@shadr/editor-app";
+import { useEffect, useRef, useCallback } from "react";
+import { createApplication } from "@shadr/editor-app";
 
 type EventMap = {
   keydown: KeyboardEvent;
@@ -11,92 +11,142 @@ type EventMap = {
   contextmenu: Event;
 };
 
+type DocumentHandlers = {
+  [K in keyof Omit<EventMap, "keydown" | "keyup">]: (e: EventMap[K]) => void;
+};
+
+type WindowHandlers = {
+  [K in "keydown" | "keyup"]: (e: EventMap[K]) => void;
+};
+
 const ShadrApp = () => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const appRef = useRef<ShadrApplication | null>(null);
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const appRef = useRef<Awaited<ReturnType<typeof createApplication>> | null>(null);
+  const dimensionsRef = useRef({ width: 0, height: 0 });
+  const isAppCreatedRef = useRef(false);
+  const resizeTimeoutRef = useRef<NodeJS.Timeout>();
+  const resizeFrameRef = useRef<number>();
+
+  const handlersRef = useRef<{
+    document: DocumentHandlers;
+    window: WindowHandlers;
+  }>({
+    document: {} as DocumentHandlers,
+    window: {} as WindowHandlers,
+  });
 
   const updateDimensions = useCallback(() => {
-    if (containerRef.current) {
+    if (containerRef.current && appRef.current) {
       const { width, height } = containerRef.current.getBoundingClientRect();
-      setDimensions({ width, height });
+      const dpr = window.devicePixelRatio || 1;
+      const currentDimensions = dimensionsRef.current;
+
+      if (width !== currentDimensions.width || height !== currentDimensions.height) {
+        dimensionsRef.current = { width, height };
+        appRef.current.canvas!.width = width * dpr;
+        appRef.current.canvas!.height = height * dpr;
+        appRef.current.handleResize();
+      }
     }
   }, []);
 
-  const debouncedResize = useCallback(() => {
-    let frame: number;
-    let timeout: NodeJS.Timeout;
+  const handleResize = useCallback(() => {
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current);
+    }
+    if (resizeFrameRef.current) {
+      cancelAnimationFrame(resizeFrameRef.current);
+    }
 
-    return () => {
-      if (timeout) clearTimeout(timeout);
-      if (frame) cancelAnimationFrame(frame);
-
-      timeout = setTimeout(() => {
-        frame = requestAnimationFrame(() => {
-          updateDimensions();
-          appRef.current?.handleResize();
-        });
-      }, 250);
-    };
+    resizeTimeoutRef.current = setTimeout(() => {
+      resizeFrameRef.current = requestAnimationFrame(updateDimensions);
+    }, 250);
   }, [updateDimensions]);
 
   useEffect(() => {
-    updateDimensions();
-    const resizeHandler = debouncedResize();
-    const resizeObserver = new ResizeObserver(resizeHandler);
+    if (!containerRef.current || isAppCreatedRef.current) return;
 
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
+    const { width, height } = containerRef.current.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    dimensionsRef.current = { width, height };
 
-    return () => resizeObserver.disconnect();
-  }, [debouncedResize]);
+    const resizeObserver = new ResizeObserver(handleResize);
 
-  useEffect(() => {
-    if (!dimensions.width || !dimensions.height) return;
+    async function setupApp() {
+      if (isAppCreatedRef.current) return;
 
-    const app = new ShadrApplication({
-      width: dimensions.width * (window.devicePixelRatio || 1),
-      height: dimensions.height * (window.devicePixelRatio || 1),
-    });
+      isAppCreatedRef.current = true;
+      const app = await createApplication({
+        width: width * dpr,
+        height: height * dpr,
+      });
 
-    appRef.current = app;
-
-    const handlers: { [K in keyof EventMap]: (e: EventMap[K]) => void } = {
-      keydown: (e) => app.handleKeyDown(e),
-      keyup: (e) => app.handleKeyUp(e),
-      mousemove: (e) => app.handleMouseMove(e),
-      mousedown: (e) => app.handleMouseDown(e),
-      mouseup: (e) => app.handleMouseUp(e),
-      wheel: (e) => app.handleMouseWheel(e),
-      contextmenu: (e) => e.preventDefault(),
-    };
-
-    (Object.entries(handlers) as [keyof EventMap, (e: Event) => void][]).forEach(
-      ([event, handler]) => {
-        document.addEventListener(event, handler);
+      if (!app) {
+        console.error("Failed to create application");
+        return;
       }
-    );
 
-    if (containerRef.current) {
+      appRef.current = app;
+
+      handlersRef.current.document = {
+        mousemove: (e: MouseEvent) => app.handleMouseMove(e),
+        mousedown: (e: MouseEvent) => app.handleMouseDown(e),
+        mouseup: (e: MouseEvent) => app.handleMouseUp(e),
+        wheel: (e: WheelEvent) => app.handleMouseWheel(e),
+        contextmenu: (e: Event) => e.preventDefault(),
+      };
+
+      handlersRef.current.window = {
+        keydown: (e: KeyboardEvent) => app.handleKeyDown(e),
+        keyup: (e: KeyboardEvent) => app.handleKeyUp(e),
+      };
+
+      Object.entries(handlersRef.current.document).forEach(([event, handler]) => {
+        document.addEventListener(event, handler as EventListener);
+      });
+
+      Object.entries(handlersRef.current.window).forEach(([event, handler]) => {
+        window.addEventListener(event, handler as EventListener);
+      });
+
+      if (containerRef.current) {
+        containerRef.current.appendChild(app.canvas!);
+        resizeObserver.observe(containerRef.current);
+      }
+
       try {
-        containerRef.current.appendChild(app.canvas());
         app.run();
-      } catch (e) {
-        console.error(e);
+      } catch (err) {
+        console.error(err);
       }
     }
 
-    // Cleanup
+    setupApp();
+
     return () => {
-      (Object.entries(handlers) as [keyof EventMap, (e: Event) => void][]).forEach(
-        ([event, handler]) => {
-          document.removeEventListener(event, handler);
-        }
-      );
-      app.destroy();
+      if (resizeTimeoutRef.current) {
+        clearTimeout(resizeTimeoutRef.current);
+      }
+      if (resizeFrameRef.current) {
+        cancelAnimationFrame(resizeFrameRef.current);
+      }
+      resizeObserver.disconnect();
+
+      Object.entries(handlersRef.current.document).forEach(([event, handler]) => {
+        document.removeEventListener(event, handler as EventListener);
+      });
+
+      Object.entries(handlersRef.current.window).forEach(([event, handler]) => {
+        window.removeEventListener(event, handler as EventListener);
+      });
+
+      if (appRef.current) {
+        appRef.current.destroy();
+        appRef.current = null;
+        isAppCreatedRef.current = false;
+      }
     };
-  }, [dimensions]);
+  }, [handleResize]);
 
   return <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />;
 };

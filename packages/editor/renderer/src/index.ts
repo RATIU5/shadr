@@ -1,61 +1,60 @@
-import { types } from "@shadr/common";
-import { Application } from "pixi.js";
+import { types, utils } from "@shadr/common";
+import { Application, Container } from "pixi.js";
 
 /**
- * The core renderer for the Shadr editor.
- *
- * This class is responsible for rendering the the editor's 2D graphics, such as the grid and nodes.
- *
- * This class does not handle rendering UI elements, such as buttons or text.
- * For UI elements, please check out the `@shadr/ui` package.
+ * Create a new renderer for Shadr, using PIXI.js under the hood
+ * @param param0 options for setting up the renderer
+ * @returns
  */
-export class ShadrRenderer {
-  /**
-   * The PIXI.js application instance, used for rendering.
-   *
-   * This is not the same as the `Application` type from `@shadr/application`,
-   * although both packages work closely together.
-   */
-  #app: Application;
+export const createRenderer = async ({
+  width,
+  height,
+}: types.Editor.Renderer.SetupOptions): Promise<types.Editor.Renderer.Renderer> => {
+  let pixiApp: Application;
 
-  constructor({ width, height }: types.Renderer.SetupOptions) {
-    async function initPixi(app: Application) {
-      await app.init({});
-    }
-    this.#app = new Application();
-    try {
-      initPixi(this.#app);
-    } catch (e) {
-      console.error(e);
-    }
+  try {
+    pixiApp = new Application();
+    await pixiApp.init({
+      preference: "webgpu",
+      width,
+      height,
+      hello: false,
+      antialias: true,
+      powerPreference: "high-performance",
+      resolution: window.devicePixelRatio ?? 1,
+    });
+  } catch (err) {
+    throw err;
   }
 
-  /**
-   * Get the canvas element used by the renderer.
-   * @returns the canvas element used by the renderer
-   */
-  canvas() {
-    if (!this.#app) {
-      throw new Error("Application not initialized");
-    }
-    return this.#app.canvas;
-  }
+  return {
+    /**
+     * Get the canvas element of the pixi.js renderer.
+     */
+    get canvas() {
+      return pixiApp?.canvas;
+    },
 
-  /**
-   * Resize the renderer to the specified width, height, and resolution.
-   *
-   * This method calls `renderer.resize` from PIXI.js.
-   * @param param0 the width, height, and resolution of the renderer
-   */
-  resize({
-    width,
-    height,
-    resolution,
-  }: {
-    width: number;
-    height: number;
-    resolution?: number;
-  }) {
-    this.#app.renderer.resize(width, height, resolution);
-  }
-}
+    createContainer: (fnCallback, name) => {
+      const container = new Container();
+      container.label = name ?? utils.randomString();
+      fnCallback(container);
+      pixiApp.stage.addChild(container);
+    },
+
+    /**
+     * Resize the renderer to the specified dimensions.
+     * @param param0 the resize options
+     */
+    resize: ({ width, height, resolution }) => {
+      pixiApp.renderer.resize(width, height, resolution);
+    },
+
+    /**
+     * Destroy the renderer.
+     */
+    destroy: () => {
+      pixiApp.destroy();
+    },
+  };
+};

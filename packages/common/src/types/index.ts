@@ -1,4 +1,3 @@
-import * as Application from "./application";
-import * as Renderer from "./renderer";
+import * as Editor from "./editor";
 
-export { Application, Renderer };
+export { Editor };

@@ -4,9 +4,9 @@
   "private": true,
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     }
   },
   "scripts": {
@@ -20,6 +20,7 @@
     "@shadr/editor-renderer": "workspace:*"
   },
   "devDependencies": {
+    "pixi.js": "^8.5.2",
     "tsup": "^8.0.2"
   }
 }
