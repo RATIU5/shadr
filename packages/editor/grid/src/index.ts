@@ -6,7 +6,9 @@ export const createGrid = <T extends {}>(
   const renderer = options.renderer;
   const eventBus = options.eventBus;
 
-  renderer.createContainer((container) => {}, "gridContainer");
+  renderer.createContainer((container) => {
+    const grid = new Mesh();
+  }, "gridContainer");
 
   return {
     render() {},
