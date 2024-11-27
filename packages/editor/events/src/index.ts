@@ -31,12 +31,11 @@ export class EventBus<T extends EventType> {
   constructor() {}
 
   /**
-   * Adds a priority listener for a specific event. Priority listeners are executed before normal listeners
+   * Add a priority listener for a specific event. Priority listeners are executed before normal listeners
    * @param event The name of the event to emit
    * @param listener The callback function to execute when the event is emitted
    */
   onPriority<Event extends keyof T>(event: Event, listener: Callback<T[Event]>): void {
-    // Remove from normal listeners if it exists there
     const normalListeners = this.#eventListeners.get(event);
     if (normalListeners?.has(listener as Callback<T[keyof T]>)) {
       normalListeners.delete(listener as Callback<T[keyof T]>);
@@ -92,7 +91,7 @@ export class EventBus<T extends EventType> {
   }
 
   /**
-   * Removes a listener for a specific event
+   * Remove a listener for a specific event
    *
    * Add the listener to the dirty events set to update the cache
    *
@@ -118,7 +117,7 @@ export class EventBus<T extends EventType> {
   }
 
   /**
-   * Emits an event to all registered listeners
+   * Emit an event to all registered listeners
    *
    * Determine if any events are dirty and update the cache if necessary
    *
@@ -129,7 +128,7 @@ export class EventBus<T extends EventType> {
    */
   emit<Event extends keyof T>(event: Event, data: T[Event]) {
     const normalListeners = this.#eventListeners.get(event);
-    const priorityListeners = this.#eventListeners.get(event);
+    const priorityListeners = this.#priorityListeners.get(event);
 
     if (!priorityListeners?.size && !normalListeners?.size) return;
 
@@ -217,7 +216,7 @@ export class EventBus<T extends EventType> {
   }
 
   /**
-   * Returns the number of listeners for a specific event
+   * Return the number of listeners for a specific event
    * @param event The name of the event
    */
   listenerCount<Event extends keyof T>(event: Event) {
@@ -228,7 +227,7 @@ export class EventBus<T extends EventType> {
   }
 
   /**
-   * Removes all listeners for a specific event
+   * Remove all listeners for a specific event
    * @param event The name of the event
    */
   clear<Event extends keyof T>(event: Event) {
@@ -240,7 +239,7 @@ export class EventBus<T extends EventType> {
   }
 
   /**
-   * Removes all listeners for all events
+   * Remove all listeners for all events
    */
   clearAll() {
     this.#eventListeners.clear();
@@ -248,5 +247,29 @@ export class EventBus<T extends EventType> {
     this.#listenerArrayCache.clear();
     this.#priorityArrayCache.clear();
     this.#dirtyEvents.clear();
+  }
+
+  /**
+   * Remove all events that have no listeners
+   */
+  cleanupUnusedEvents() {
+    let len = this.#eventListeners.size;
+    for (let i = 0; i < len; i++) {
+      const listenerSize = this.#eventListeners.get(i)?.size;
+      if (!listenerSize) {
+        this.#eventListeners.delete(i);
+        this.#listenerArrayCache.delete(i);
+        this.#dirtyEvents.delete(i);
+      }
+    }
+    len = this.#priorityListeners.size;
+    for (let i = 0; i < len; i++) {
+      const listenerSize = this.#priorityListeners.get(i)?.size;
+      if (!listenerSize) {
+        this.#priorityListeners.delete(i);
+        this.#priorityArrayCache.delete(i);
+        this.#dirtyEvents.delete(i);
+      }
+    }
   }
 }

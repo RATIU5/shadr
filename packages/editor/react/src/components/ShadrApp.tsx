@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
-import { createApplication } from "@shadr/editor-app";
+import { Application } from "@shadr/editor-app";
 
 type EventMap = {
   keydown: KeyboardEvent;
@@ -20,8 +20,8 @@ type WindowHandlers = {
 };
 
 const ShadrApp = () => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const appRef = useRef<Awaited<ReturnType<typeof createApplication>> | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const appRef = useRef<Application | null>(null);
   const dimensionsRef = useRef({ width: 0, height: 0 });
   const isAppCreatedRef = useRef(false);
   const resizeTimeoutRef = useRef<NodeJS.Timeout>();
@@ -36,15 +36,15 @@ const ShadrApp = () => {
   });
 
   const updateDimensions = useCallback(() => {
-    if (containerRef.current && appRef.current) {
-      const { width, height } = containerRef.current.getBoundingClientRect();
+    if (canvasRef.current && appRef.current) {
+      const { width, height } = canvasRef.current.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       const currentDimensions = dimensionsRef.current;
 
       if (width !== currentDimensions.width || height !== currentDimensions.height) {
         dimensionsRef.current = { width, height };
-        appRef.current.canvas!.width = width * dpr;
-        appRef.current.canvas!.height = height * dpr;
+        canvasRef.current!.width = width * dpr;
+        canvasRef.current!.height = height * dpr;
         appRef.current.handleResize();
       }
     }
@@ -64,60 +64,49 @@ const ShadrApp = () => {
   }, [updateDimensions]);
 
   useEffect(() => {
-    if (!containerRef.current || isAppCreatedRef.current) return;
-
-    const { width, height } = containerRef.current.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    dimensionsRef.current = { width, height };
-
+    if (!canvasRef.current) return;
     const resizeObserver = new ResizeObserver(handleResize);
 
     async function setupApp() {
       if (isAppCreatedRef.current) return;
 
       isAppCreatedRef.current = true;
-      const app = await createApplication({
-        width: width * dpr,
-        height: height * dpr,
-      });
-
-      if (!app) {
-        console.error("Failed to create application");
-        return;
-      }
-
-      appRef.current = app;
-
-      handlersRef.current.document = {
-        mousemove: (e: MouseEvent) => app.handleMouseMove(e),
-        mousedown: (e: MouseEvent) => app.handleMouseDown(e),
-        mouseup: (e: MouseEvent) => app.handleMouseUp(e),
-        wheel: (e: WheelEvent) => app.handleMouseWheel(e),
-        contextmenu: (e: Event) => e.preventDefault(),
-      };
-
-      handlersRef.current.window = {
-        keydown: (e: KeyboardEvent) => app.handleKeyDown(e),
-        keyup: (e: KeyboardEvent) => app.handleKeyUp(e),
-      };
-
-      Object.entries(handlersRef.current.document).forEach(([event, handler]) => {
-        document.addEventListener(event, handler as EventListener);
-      });
-
-      Object.entries(handlersRef.current.window).forEach(([event, handler]) => {
-        window.addEventListener(event, handler as EventListener);
-      });
-
-      if (containerRef.current) {
-        containerRef.current.appendChild(app.canvas!);
-        resizeObserver.observe(containerRef.current);
-      }
-
       try {
+        const app = new Application();
+        await app.init(canvasRef.current!);
+
+        appRef.current = app;
+
+        handlersRef.current.document = {
+          mousemove: (e: MouseEvent) => app.handleMouseMove(e),
+          mousedown: (e: MouseEvent) => app.handleMouseDown(e),
+          mouseup: (e: MouseEvent) => app.handleMouseUp(e),
+          wheel: (e: WheelEvent) => app.handleMouseWheel(e),
+          contextmenu: (e: Event) => e.preventDefault(),
+        };
+
+        handlersRef.current.window = {
+          keydown: (e: KeyboardEvent) => app.handleKeyDown(e),
+          keyup: (e: KeyboardEvent) => app.handleKeyUp(e),
+        };
+
+        Object.entries(handlersRef.current.document).forEach(([event, handler]) => {
+          document.addEventListener(event, handler as EventListener);
+        });
+
+        Object.entries(handlersRef.current.window).forEach(([event, handler]) => {
+          window.addEventListener(event, handler as EventListener);
+        });
+
+        if (canvasRef.current) {
+          resizeObserver.observe(canvasRef.current);
+        }
+
         app.run();
       } catch (err) {
         console.error(err);
+        isAppCreatedRef.current = false;
+        return;
       }
     }
 
@@ -148,7 +137,11 @@ const ShadrApp = () => {
     };
   }, [handleResize]);
 
-  return <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />;
+  return (
+    <div style={{ position: "absolute", inset: 0 }}>
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%" }} />
+    </div>
+  );
 };
 
 export default ShadrApp;
