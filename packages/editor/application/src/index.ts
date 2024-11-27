@@ -1,32 +1,74 @@
 import { EventBus } from "@shadr/editor-events";
-import { RawEvents } from "./types";
+import { Grid } from "@shadr/editor-grid";
+import { Events } from "./types";
+import { Container, Application as PixiApplication } from "pixi.js";
 
 /**
  * The main application class for the Shadr editor.
  */
 export class Application {
-  #eventBus = new EventBus<RawEvents>();
-  #canvas: HTMLCanvasElement | null = null;
+  #eventBus = new EventBus<Events>();
+  #pixiApp = new PixiApplication();
+  #grid = new Grid();
 
   constructor() {}
 
   async init(canvas: HTMLCanvasElement) {
-    this.#canvas = canvas;
-    this.#canvas.getContext("webgl2");
+    await this.#pixiApp.init({
+      canvas,
+      resizeTo: canvas,
+      hello: false,
+      preference: "webgl",
+      preferWebGLVersion: 2,
+      powerPreference: "high-performance",
+      resolution: window.devicePixelRatio ?? 1,
+    });
+    this.#pixiApp.ticker.maxFPS = 60;
+    this.#pixiApp.ticker.minFPS = 30;
+    this.#grid.init(this.#eventBus, {
+      width: this.#pixiApp.renderer.width,
+      height: this.#pixiApp.renderer.height,
+    });
+    const gridContainer = new Container({
+      label: "GridContainer",
+    });
+    gridContainer.addChild(this.#grid.getMesh());
+
+    this.#pixiApp.stage.addChild(gridContainer);
   }
 
-  run() {}
+  run() {
+    const fpsCounter = { value: 0, frames: 0, lastUpdate: 0 };
 
-  destroy() {}
+    this.#pixiApp.ticker.add((deltaTime) => {
+      const currentTime = performance.now();
+      fpsCounter.frames++;
+
+      if (currentTime - fpsCounter.lastUpdate >= 1000) {
+        fpsCounter.value = fpsCounter.frames;
+        fpsCounter.frames = 0;
+        fpsCounter.lastUpdate = currentTime;
+      }
+
+      const delta = deltaTime.deltaTime / 60;
+
+      this.update(delta);
+    });
+  }
+
+  update(_: number) {
+    // Fixed timestep game logic here
+  }
+
+  destroy() {
+    this.#pixiApp?.destroy();
+  }
 
   /**
    * Handle the resize of the renderer
    */
   handleResize() {
-    // renderer.resize({
-    //   width: window.innerWidth,
-    //   height: window.innerHeight,
-    // });
+    this.#pixiApp.renderer.resize(window.innerWidth, window.innerHeight);
   }
 
   /**

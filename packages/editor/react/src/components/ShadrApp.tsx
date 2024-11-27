@@ -36,31 +36,27 @@ const ShadrApp = () => {
   });
 
   const updateDimensions = useCallback(() => {
-    if (canvasRef.current && appRef.current) {
-      const { width, height } = canvasRef.current.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const currentDimensions = dimensionsRef.current;
+    if (!canvasRef.current || !appRef.current) return;
 
-      if (width !== currentDimensions.width || height !== currentDimensions.height) {
-        dimensionsRef.current = { width, height };
-        canvasRef.current!.width = width * dpr;
-        canvasRef.current!.height = height * dpr;
-        appRef.current.handleResize();
-      }
+    const { width, height } = canvasRef.current.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const currentDimensions = dimensionsRef.current;
+
+    if (width !== currentDimensions.width || height !== currentDimensions.height) {
+      dimensionsRef.current = { width, height };
+      canvasRef.current.width = width * dpr;
+      canvasRef.current.height = height * dpr;
+
+      appRef.current.handleResize();
     }
   }, []);
 
   const handleResize = useCallback(() => {
-    if (resizeTimeoutRef.current) {
-      clearTimeout(resizeTimeoutRef.current);
-    }
     if (resizeFrameRef.current) {
       cancelAnimationFrame(resizeFrameRef.current);
     }
 
-    resizeTimeoutRef.current = setTimeout(() => {
-      resizeFrameRef.current = requestAnimationFrame(updateDimensions);
-    }, 250);
+    resizeFrameRef.current = requestAnimationFrame(updateDimensions);
   }, [updateDimensions]);
 
   useEffect(() => {

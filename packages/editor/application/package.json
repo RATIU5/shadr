@@ -17,10 +17,10 @@
     "clean": "rm -rf node_modules && rm -rf dist"
   },
   "dependencies": {
-    "@shadr/editor-renderer": "workspace:*",
     "@shadr/common": "workspace:*",
     "@shadr/editor-events": "workspace:*",
-    "@shadr/editor-grid": "workspace:*"
+    "@shadr/editor-grid": "workspace:*",
+    "pixi.js": "^8.5.2"
   },
   "devDependencies": {
     "tsup": "^8.0.2"

@@ -1,5 +1,7 @@
 import { EventType, Callback } from "./types";
 
+export type { EventType, Callback };
+
 /**
  * A simple event bus that allows for subscribing to and emitting events
  *

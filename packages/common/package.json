@@ -16,9 +16,7 @@
     "lint": "eslint src/",
     "clean": "rm -rf node_modules && rm -rf dist"
   },
-  "dependencies": {
-    "@shadr/editor-renderer": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
     "pixi.js": "^8.5.2",
     "tsup": "^8.0.2"
