@@ -1,3 +1,6 @@
 import { randomString } from "./randomString";
+import { createSignal } from "./signal";
 
-export { randomString };
+type Signal<T> = ReturnType<typeof createSignal<T>>;
+
+export { randomString, createSignal, type Signal };

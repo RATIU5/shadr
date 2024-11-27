@@ -1,13 +1,15 @@
 import { EventBus } from "@shadr/editor-events";
 import { Grid } from "@shadr/editor-grid";
-import { Events } from "./types";
 import { Container, Application as PixiApplication } from "pixi.js";
+import { EventManager } from "./lib/event-manager";
+import { Events } from "./lib/event-manager/types";
 
 /**
  * The main application class for the Shadr editor.
  */
 export class Application {
   #eventBus = new EventBus<Events>();
+  #eventManager = new EventManager(this.#eventBus);
   #pixiApp = new PixiApplication();
   #grid = new Grid();
 
@@ -25,6 +27,7 @@ export class Application {
     });
     this.#pixiApp.ticker.maxFPS = 60;
     this.#pixiApp.ticker.minFPS = 30;
+
     this.#grid.init(this.#eventBus, {
       width: this.#pixiApp.renderer.width,
       height: this.#pixiApp.renderer.height,
@@ -64,58 +67,14 @@ export class Application {
     this.#pixiApp?.destroy();
   }
 
+  public events() {
+    return this.#eventManager;
+  }
+
   /**
    * Handle the resize of the renderer
    */
   handleResize() {
     this.#pixiApp.renderer.resize(window.innerWidth, window.innerHeight);
-  }
-
-  /**
-   * Emits a `raw:keydown` event with the key event object.
-   * @param e key event
-   */
-  handleKeyDown(e: KeyboardEvent) {
-    this.#eventBus.emit("raw:keydown", e);
-  }
-
-  /**
-   * Emits a `raw:keyup` event with the key event object.
-   * @param e key event
-   */
-  handleKeyUp(e: KeyboardEvent) {
-    this.#eventBus.emit("raw:keyup", e);
-  }
-
-  /**
-   * Emits a `raw:mousemove` event with the mouse event object.
-   * @param e mouse event
-   */
-  handleMouseMove(e: MouseEvent) {
-    this.#eventBus.emit("raw:mousemove", e);
-  }
-
-  /**
-   *  Emits a `raw:mousedown` event with the mouse event object.
-   * @param e mouse event
-   */
-  handleMouseDown(e: MouseEvent) {
-    this.#eventBus.emit("raw:mousedown", e);
-  }
-
-  /**
-   * Emits a `raw:mouseup` event with the mouse event object.
-   * @param e mouse event
-   */
-  handleMouseUp(e: MouseEvent) {
-    this.#eventBus.emit("raw:mouseup", e);
-  }
-
-  /**
-   * Emits a `raw:mousewheel` event with the wheel event object.
-   * @param e wheel event
-   */
-  handleMouseWheel(e: WheelEvent) {
-    this.#eventBus.emit("raw:mousewheel", e);
   }
 }

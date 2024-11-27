@@ -2,7 +2,7 @@ import { Geometry, Mesh, Polygon, Shader } from "pixi.js";
 import { gridFragShader, gridVertShader } from "./shaders/grid";
 
 export type RequiredEvents = {
-  "grid:drag": { x: number; y: number };
+  "editor:drag": { x: number; y: number };
 };
 
 export class Grid<T extends RequiredEvents> {
@@ -34,7 +34,7 @@ export class Grid<T extends RequiredEvents> {
   #setupEventListeners(eventBus: {
     on<K extends keyof T & string>(event: K, callback: (payload: T[K]) => void): void;
   }) {
-    eventBus.on("grid:drag", (e) => {
+    eventBus.on("editor:drag", (e) => {
       this.setUniform("u_offset", new Float32Array([e.x, e.y]));
     });
   }

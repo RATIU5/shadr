@@ -4,6 +4,7 @@ precision mediump float;
 uniform float u_dotSize;
 uniform vec2 u_offset;
 uniform float u_zoom;
+uniform vec2 u_size;
 
 out vec4 finalColor;
 
@@ -13,7 +14,9 @@ const vec3 LIGHTER_DOT_COLOR = vec3(0.3);
 const float DOT_SPACING = 20.0;
 
 void main() {
-    vec2 pos = (gl_FragCoord.xy - u_offset) / (DOT_SPACING * u_zoom);
+    // Scale offset by screen size to match pixel movement
+    vec2 adjustedOffset = u_offset / u_size * 2.0;
+    vec2 pos = (gl_FragCoord.xy + vec2(-adjustedOffset.x * u_size.x, adjustedOffset.y * u_size.y)) / (DOT_SPACING * u_zoom);
     vec2 gridPos = fract(pos) - 0.5;
     
     float dotSize = u_dotSize * 0.1;

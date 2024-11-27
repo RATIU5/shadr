@@ -74,16 +74,16 @@ const ShadrApp = () => {
         appRef.current = app;
 
         handlersRef.current.document = {
-          mousemove: (e: MouseEvent) => app.handleMouseMove(e),
-          mousedown: (e: MouseEvent) => app.handleMouseDown(e),
-          mouseup: (e: MouseEvent) => app.handleMouseUp(e),
-          wheel: (e: WheelEvent) => app.handleMouseWheel(e),
+          mousemove: (e: MouseEvent) => app.events()?.handleMouseMove(e),
+          mousedown: (e: MouseEvent) => app.events()?.handleMouseDown(e),
+          mouseup: (e: MouseEvent) => app.events()?.handleMouseUp(e),
+          wheel: (e: WheelEvent) => app.events()?.handleMouseWheel(e),
           contextmenu: (e: Event) => e.preventDefault(),
         };
 
         handlersRef.current.window = {
-          keydown: (e: KeyboardEvent) => app.handleKeyDown(e),
-          keyup: (e: KeyboardEvent) => app.handleKeyUp(e),
+          keydown: (e: KeyboardEvent) => app.events()?.handleKeyDown(e),
+          keyup: (e: KeyboardEvent) => app.events()?.handleKeyUp(e),
         };
 
         Object.entries(handlersRef.current.document).forEach(([event, handler]) => {
