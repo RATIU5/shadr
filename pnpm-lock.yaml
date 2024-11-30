@@ -105,9 +105,6 @@ importers:
 
   packages/common:
     devDependencies:
-      pixi.js:
-        specifier: ^8.5.2
-        version: 8.5.2
       tsup:
         specifier: ^8.0.2
         version: 8.3.5(postcss@8.4.49)(typescript@5.7.2)
@@ -117,6 +114,9 @@ importers:
       '@shadr/common':
         specifier: workspace:*
         version: link:../../common
+      '@shadr/editor-core':
+        specifier: workspace:*
+        version: link:../core
       '@shadr/editor-events':
         specifier: workspace:*
         version: link:../events
@@ -148,6 +148,9 @@ importers:
 
   packages/editor/grid:
     dependencies:
+      '@shadr/editor-core':
+        specifier: workspace:*
+        version: link:../core
       '@shadr/editor-events':
         specifier: workspace:*
         version: link:../events

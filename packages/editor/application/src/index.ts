@@ -3,13 +3,15 @@ import { Grid } from "@shadr/editor-grid";
 import { Container, Application as PixiApplication } from "pixi.js";
 import { EventManager } from "./lib/event-manager";
 import { Events } from "./lib/event-manager/types";
+import { World } from "@shadr/editor-core";
 
 /**
  * The main application class for the Shadr editor.
  */
 export class Application {
+  #world = new World();
   #eventBus = new EventBus<Events>();
-  #eventManager = new EventManager(this.#eventBus);
+  #eventManager = new EventManager(this.#eventBus, this.#world);
   #pixiApp = new PixiApplication();
   #grid = new Grid();
 
@@ -28,10 +30,8 @@ export class Application {
     this.#pixiApp.ticker.maxFPS = 60;
     this.#pixiApp.ticker.minFPS = 30;
 
-    this.#grid.init(this.#eventBus, {
-      width: this.#pixiApp.renderer.width,
-      height: this.#pixiApp.renderer.height,
-    });
+    this.#world.resize(canvas.width, canvas.height);
+    this.#grid.init(this.#eventBus, this.#world);
     const gridContainer = new Container({
       label: "GridContainer",
     });

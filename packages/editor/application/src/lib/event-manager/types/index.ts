@@ -16,6 +16,10 @@ export type Events = {
   "raw:mousedown": MouseEvent;
   "raw:mouseup": MouseEvent;
   "raw:mousewheel": WheelEvent;
+  "raw:touchstart": TouchEvent;
+  "raw:touchmove": TouchEvent;
+  "raw:touchend": TouchEvent;
 
   "editor:drag": { x: number; y: number };
+  "editor:zoom": { scale: number; position: { x: number; y: number } };
 };

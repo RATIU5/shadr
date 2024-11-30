@@ -9,14 +9,22 @@ type EventMap = {
   mouseup: MouseEvent;
   wheel: WheelEvent;
   contextmenu: Event;
+  touchstart: TouchEvent;
+  touchmove: TouchEvent;
+  touchend: TouchEvent;
 };
 
 type DocumentHandlers = {
-  [K in keyof Omit<EventMap, "keydown" | "keyup">]: (e: EventMap[K]) => void;
+  [K in keyof Omit<
+    EventMap,
+    "keydown" | "keyup" | "touchstart" | "touchmove" | "touchend"
+  >]: (e: EventMap[K]) => void;
 };
 
 type WindowHandlers = {
-  [K in "keydown" | "keyup"]: (e: EventMap[K]) => void;
+  [K in "keydown" | "keyup" | "touchstart" | "touchmove" | "touchend"]: (
+    e: EventMap[K]
+  ) => void;
 };
 
 const ShadrApp = () => {
@@ -84,10 +92,19 @@ const ShadrApp = () => {
         handlersRef.current.window = {
           keydown: (e: KeyboardEvent) => app.events()?.handleKeyDown(e),
           keyup: (e: KeyboardEvent) => app.events()?.handleKeyUp(e),
+          touchstart: (e: TouchEvent) => app.events()?.handleTouchStart(e),
+          touchmove: (e: TouchEvent) => app.events()?.handleTouchMove(e),
+          touchend: (e: TouchEvent) => app.events()?.handleTouchEnd(e),
         };
 
         Object.entries(handlersRef.current.document).forEach(([event, handler]) => {
-          document.addEventListener(event, handler as EventListener);
+          if (event === "wheel") {
+            document.addEventListener(event, handler as EventListener, {
+              passive: false,
+            });
+          } else {
+            document.addEventListener(event, handler as EventListener);
+          }
         });
 
         Object.entries(handlersRef.current.window).forEach(([event, handler]) => {

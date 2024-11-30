@@ -1,32 +1,39 @@
 import { Geometry, Mesh, Polygon, Shader } from "pixi.js";
 import { gridFragShader, gridVertShader } from "./shaders/grid";
+import { World } from "@shadr/editor-core";
 
 export type RequiredEvents = {
   "editor:drag": { x: number; y: number };
+  "editor:zoom": {
+    scale: number;
+    position: { x: number; y: number };
+  };
 };
 
 export class Grid<T extends RequiredEvents> {
   #mesh: Mesh<Geometry, Shader> | null = null;
-  #dimensions = { width: 0, height: 0 };
-  #position = { x: 0, y: 0 };
-  #scale = { x: 1, y: -1 };
+  #world: World | null = null;
 
   init(
     eventBus: {
       on<K extends keyof T & string>(event: K, callback: (payload: T[K]) => void): void;
     },
-    { width, height }: { width: number; height: number }
+    world: World
   ) {
-    this.#dimensions = { width, height };
+    this.#world = world;
     this.#mesh = new Mesh({
       geometry: this.#createGeometry(),
       shader: this.#createShader(),
     });
 
+    const width = this.#world.getDimensions().x;
+    const height = this.#world.getDimensions().y;
+    const scale = this.#world.getScale();
+
     this.#mesh.hitArea = new Polygon([0, 0, width, 0, width, height, 0, height]);
 
     this.setPosition(-width / 2, -height / 2);
-    this.setScale(this.#scale.x, this.#scale.y);
+    this.setScale(scale.x, scale.y);
 
     this.#setupEventListeners(eventBus);
   }
@@ -37,34 +44,22 @@ export class Grid<T extends RequiredEvents> {
     eventBus.on("editor:drag", (e) => {
       this.setUniform("u_offset", new Float32Array([e.x, e.y]));
     });
+    eventBus.on("editor:zoom", (e) => {
+      this.setUniform("u_zoom", e.scale);
+      this.setUniform("u_zoomPosition", new Float32Array([e.position.x, e.position.y]));
+    });
   }
 
   setPosition(x: number, y: number) {
-    this.#position = { x, y };
     this.#mesh?.position.set(x, y);
   }
 
   setScale(x: number, y: number) {
-    this.#scale = { x, y };
     this.#mesh?.scale.set(x, y);
   }
 
-  screenToWorld(x: number, y: number) {
-    return {
-      x: (x - this.#position.x) / this.#scale.x,
-      y: (y - this.#position.y) / this.#scale.y,
-    };
-  }
-
-  worldToScreen(x: number, y: number) {
-    return {
-      x: x * this.#scale.x + this.#position.x,
-      y: y * this.#scale.y + this.#position.y,
-    };
-  }
-
   #createGeometry(): Geometry {
-    const { width, height } = this.#dimensions;
+    const { x: width, y: height } = this.#world?.getDimensions() ?? { x: 0, y: 0 };
     return new Geometry({
       attributes: {
         aPosition: new Float32Array([
@@ -86,11 +81,12 @@ export class Grid<T extends RequiredEvents> {
   }
 
   #createShader(): Shader {
-    const { width, height } = this.#dimensions;
+    const { x: width, y: height } = this.#world?.getDimensions() ?? { x: 0, y: 0 };
     return Shader.from({
       gl: { vertex: gridVertShader, fragment: gridFragShader },
       resources: {
         gridUniforms: {
+          u_zoomPosition: { type: "vec2<f32>", value: new Float32Array([0, 0]) },
           u_dotSize: { type: "f32", value: 1.0 },
           u_offset: { type: "vec2<f32>", value: new Float32Array([0, 0]) },
           u_size: { type: "vec2<f32>", value: new Float32Array([width, height]) },
@@ -106,7 +102,6 @@ export class Grid<T extends RequiredEvents> {
   }
 
   resize(width: number, height: number) {
-    this.#dimensions = { width, height };
     this.setUniform("u_size", new Float32Array([width, height]));
   }
 

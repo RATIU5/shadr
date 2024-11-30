@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@shadr/editor-events": "workspace:*",
+    "@shadr/editor-core": "workspace:*",
     "pixi.js": "^8.5.2"
   },
   "devDependencies": {
