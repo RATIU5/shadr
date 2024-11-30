@@ -1,39 +1,75 @@
 export const gridFragShader = `
-precision mediump float;
+#version 300 es
+precision highp float;
 
-uniform float u_dotSize;
-uniform vec2 u_offset;
+uniform vec2 u_resolution;
+uniform vec2 u_scroll_offset;
 uniform float u_zoom;
-uniform vec2 u_size;
-uniform vec2 u_zoomPosition;
+uniform vec4 u_grid_color;
+uniform vec4 u_grid_emphasis_color;
+uniform float u_line_width;
 
-out vec4 finalColor;
+out vec4 fragColor;
 
-const vec3 BACKGROUND_COLOR = vec3(0.1);
-const vec3 BASE_DOT_COLOR = vec3(0.3);
-const vec3 LIGHTER_DOT_COLOR = vec3(0.6);
-const float DOT_SPACING = 20.0;
+#define M_1_SQRTPI 0.5641895835477563
+#define DISC_RADIUS (M_1_SQRTPI * 1.05)
+#define GRID_LINE_SMOOTH_START (0.5 + DISC_RADIUS)
+#define GRID_LINE_SMOOTH_END (0.5 - DISC_RADIUS)
+
+float gridLine(float dist) {
+    return smoothstep(GRID_LINE_SMOOTH_START, GRID_LINE_SMOOTH_END, dist);
+}
+
+float linearstep(float edge0, float edge1, float x) {
+    return clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+}
+
+float getGrid(vec2 coord, vec2 size) {
+    vec2 half_size = size * 0.5;
+    vec2 grid_domain = abs(mod(coord + half_size, size) - half_size);
+    
+    // Scale by zoom to maintain constant line width
+    grid_domain *= u_zoom;
+    float line_dist = min(grid_domain.x, grid_domain.y);
+    return gridLine(line_dist - u_line_width);
+}
 
 void main() {
-    vec2 screenPos = gl_FragCoord.xy;
-    vec2 mouseScreenPos = u_zoomPosition * u_size;
-    vec2 adjustedOffset = u_offset / u_size * 2.0;
+    // Convert to world space
+    vec2 pos = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
+    pos *= u_resolution / min(u_resolution.x, u_resolution.y);
+    pos = pos * (1.0 / u_zoom) + u_scroll_offset;
+
+    // Grid scaling factors
+    float grid_res = 1.0 / u_zoom;
     
-    // Calculate zoomed position relative to mouse
-    vec2 relativePos = (screenPos - mouseScreenPos) / u_zoom + mouseScreenPos;
-    vec2 pos = relativePos / DOT_SPACING;
-    pos += vec2(-adjustedOffset.x * u_size.x, adjustedOffset.y * u_size.y) / DOT_SPACING;
-    
-    vec2 gridPos = fract(pos) - 0.5;
-    
-    float dotSize = u_dotSize * 0.1;
-    float antialiasEdge = 0.02 / u_zoom;
-    float dot = smoothstep(dotSize + antialiasEdge, dotSize, length(gridPos));
-    
-    vec2 gridIndex = floor(pos);
-    float highlight = float(mod(gridIndex.x, 5.0) == 2.0 && mod(gridIndex.y, 5.0) == 2.0);
-    
-    finalColor = vec4(mix(BACKGROUND_COLOR, mix(BASE_DOT_COLOR, LIGHTER_DOT_COLOR, highlight), dot), 1.0);
+    // Grid sizes for different detail levels
+    vec2 scaleA = vec2(20.0);
+    vec2 scaleB = vec2(100.0);
+    vec2 scaleC = vec2(500.0);
+
+    // Calculate blend factor between grid levels
+    float blend = 1.0 - linearstep(scaleA.x, scaleB.x, grid_res);
+    blend = blend * blend * blend;
+
+    // Calculate grids at different scales
+    float gridA = getGrid(pos, scaleA);
+    float gridB = getGrid(pos, scaleB);
+    float gridC = getGrid(pos, scaleC);
+
+    // Blend between grid levels
+    fragColor = u_grid_color;
+    fragColor.a *= gridA * blend;
+    fragColor = mix(fragColor, mix(u_grid_color, u_grid_emphasis_color, blend), gridB);
+    fragColor = mix(fragColor, u_grid_emphasis_color, gridC);
+
+    // Fade out based on zoom level
+    float fade = 1.0 - smoothstep(0.0, 0.5, abs(grid_res - 0.5));
+    fragColor.a *= fade;
+
+    // Distance fade
+    float dist = length(pos);
+    fragColor.a *= 1.0 - smoothstep(0.0, 2000.0, dist);
 }`;
 
 export const gridVertShader = `

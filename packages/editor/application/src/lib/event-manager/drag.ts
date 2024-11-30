@@ -23,12 +23,20 @@ export class DragHandler {
 
   #handleDrag(currentX: number, currentY: number) {
     const position = this.#world.getPosition();
-    const newX = position.x + (currentX - this.#lastPointerPosition.x);
-    const newY = position.y + (currentY - this.#lastPointerPosition.y);
+    const zoom = this.#world.getZoom();
+
+    // Calculate delta in screen space
+    const deltaX = currentX - this.#lastPointerPosition.x;
+    const deltaY = currentY - this.#lastPointerPosition.y;
+
+    // Apply zoom factor to maintain 1:1 movement in world space
+    const newX = position.x + deltaX / zoom;
+    const newY = position.y + deltaY / zoom;
 
     this.#lastPointerPosition = { x: currentX, y: currentY };
     this.#world.setPosition(newX, newY);
-    this.#eventBus.emit("editor:drag", { x: newX, y: newY });
+
+    this.#eventBus.emit("editor:drag", { x: -newX, y: newY });
   }
 
   handleMouseMove(e: MouseEvent) {

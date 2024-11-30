@@ -3,101 +3,87 @@ interface Point {
   y: number;
 }
 
+/**
+ * Handles viewport transformations and coordinate systems
+ */
+
 export class World {
-  #position: Point = { x: 0, y: 0 };
-  #scale: Point = { x: 1, y: 1 };
   #dimensions: Point = { x: 0, y: 0 };
-  #zoom = 1;
-  #minZoom = 0.8;
-  #maxZoom = 2;
-  #dragOffset: Point = { x: 0, y: 0 };
-  #center: Point = { x: 0, y: 0 };
+  #position: Point = { x: 0, y: 0 };
+  #zoom = 1.0;
+  #minZoom = 0.5;
+  #maxZoom = 1.0;
 
   constructor(dimensions?: { width: number; height: number }) {
-    if (dimensions) this.resize(dimensions.width, dimensions.height);
-    this.#updateCenter();
-  }
-
-  #updateCenter() {
-    this.#center = {
-      x: this.#dimensions.x / 2,
-      y: this.#dimensions.y / 2,
-    };
-  }
-
-  setZoom(zoom: number) {
-    const clampedZoom = Math.min(Math.max(zoom, this.#minZoom), this.#maxZoom);
-    if (clampedZoom === this.#zoom) return false;
-
-    this.#zoom = clampedZoom;
-    return true;
-  }
-
-  setZoomLimits(min: number, max: number) {
-    if (min > 0 && max > min) {
-      this.#minZoom = min;
-      this.#maxZoom = max;
-      this.#zoom = Math.min(Math.max(this.#zoom, min), max);
+    if (dimensions) {
+      this.resize(dimensions.width, dimensions.height);
     }
-  }
-
-  setDragOffset(x: number, y: number) {
-    this.#dragOffset = { x, y };
-  }
-
-  setPosition(x: number, y: number) {
-    this.#position = { x, y };
-  }
-
-  setScale(x: number, y: number) {
-    this.#scale = { x, y };
-  }
-
-  screenToWorld(x: number, y: number): Point {
-    return {
-      x: (x - this.#position.x - this.#dragOffset.x) / (this.#scale.x * this.#zoom),
-      y: (y - this.#position.y - this.#dragOffset.y) / (this.#scale.y * this.#zoom),
-    };
-  }
-
-  worldToScreen(x: number, y: number): Point {
-    return {
-      x: x * this.#scale.x * this.#zoom + this.#position.x + this.#dragOffset.x,
-      y: y * this.#scale.y * this.#zoom + this.#position.y + this.#dragOffset.y,
-    };
   }
 
   resize(width: number, height: number) {
     this.#dimensions = { x: width, y: height };
-    this.#updateCenter();
   }
 
-  centerView() {
-    this.setPosition(this.#center.x, this.#center.y);
-    this.setDragOffset(0, 0);
+  screenToWorld(screenX: number, screenY: number): Point {
+    const center = {
+      x: this.#dimensions.x / 2,
+      y: this.#dimensions.y / 2,
+    };
+
+    // Match the shader's transformation
+    const centerOffset = {
+      x: screenX - center.x,
+      y: screenY - center.y,
+    };
+
+    return {
+      x: centerOffset.x / this.#zoom + this.#position.x,
+      y: centerOffset.y / this.#zoom + this.#position.y,
+    };
   }
 
-  getPosition(): Point {
-    return { ...this.#position };
+  worldToScreen(worldX: number, worldY: number): Point {
+    const center = {
+      x: this.#dimensions.x / 2,
+      y: this.#dimensions.y / 2,
+    };
+
+    // Inverse of screenToWorld
+    const centered = {
+      x: (worldX - this.#position.x) * this.#zoom,
+      y: (worldY - this.#position.y) * this.#zoom,
+    };
+
+    return {
+      x: centered.x + center.x,
+      y: centered.y + center.y,
+    };
   }
 
-  getScale(): Point {
-    return { ...this.#scale };
+  // Zoom handling with constraints
+  setZoom(zoom: number): boolean {
+    const newZoom = Math.min(Math.max(zoom, this.#minZoom), this.#maxZoom);
+    if (newZoom === this.#zoom) return false;
+    this.#zoom = newZoom;
+    return true;
   }
 
-  getZoom(): number {
-    return this.#zoom;
+  // Pan position handling
+  setPosition(x: number, y: number) {
+    this.#position = { x, y };
   }
 
+  // Getters
   getDimensions(): Point {
     return { ...this.#dimensions };
   }
-
-  getZoomLimits(): { min: number; max: number } {
-    return { min: this.#minZoom, max: this.#maxZoom };
+  getPosition(): Point {
+    return { ...this.#position };
   }
-
-  getDragOffset(): Point {
-    return { ...this.#dragOffset };
+  getZoom(): number {
+    return this.#zoom;
+  }
+  getZoomLimits() {
+    return { min: this.#minZoom, max: this.#maxZoom };
   }
 }

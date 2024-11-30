@@ -31,7 +31,7 @@ export class Application {
     this.#pixiApp.ticker.minFPS = 30;
 
     this.#world.resize(canvas.width, canvas.height);
-    this.#grid.init(this.#eventBus, this.#world);
+    this.#grid.init(this.#world, this.#eventBus);
     const gridContainer = new Container({
       label: "GridContainer",
     });
