@@ -1,5 +1,5 @@
 {
-  "name": "@shadr/editor-core",
+  "name": "@shadr/editor-grid",
   "version": "0.0.1",
   "private": true,
   "exports": {
@@ -15,7 +15,13 @@
     "lint": "eslint src/",
     "clean": "rm -rf node_modules && rm -rf dist"
   },
+  "dependencies": {
+    "@shadr/editor-events": "workspace:*",
+    "@shadr/editor-core": "workspace:*",
+    "pixi.js": "^8.5.2"
+  },
   "devDependencies": {
-    "tsup": "^8.0.2"
+    "tsup": "^8.0.2",
+    "@shadr/common": "workspace:*"
   }
 }

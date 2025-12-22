@@ -1,3 +1,23 @@
 {
-  "name": "@shadr/common"
+  "name": "@shadr/common",
+  "version": "0.0.1",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "watch": "tsup --watch",
+    "dev": "tsup --watch",
+    "lint": "eslint src/",
+    "clean": "rm -rf node_modules && rm -rf dist"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "tsup": "^8.0.2"
+  }
 }

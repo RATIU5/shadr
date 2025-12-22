@@ -1,11 +1,15 @@
 {
-  "name": "@shadr/editor-core",
+  "name": "@shadr/editor-events",
   "version": "0.0.1",
   "private": true,
   "exports": {
     ".": {
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./types": {
+      "types": "./dist/index.d.ts"
     }
   },
   "scripts": {
@@ -16,6 +20,7 @@
     "clean": "rm -rf node_modules && rm -rf dist"
   },
   "devDependencies": {
-    "tsup": "^8.0.2"
+    "tsup": "^8.0.2",
+    "@shadr/common": "workspace:*"
   }
 }
