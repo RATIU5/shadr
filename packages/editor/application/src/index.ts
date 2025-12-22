@@ -9,11 +9,11 @@ import { World } from "@shadr/editor-core";
  * The main application class for the Shadr editor.
  */
 export class Application {
-  #world = new World();
+  #world = new World(0, 0);
   #eventBus = new EventBus<Events>();
   #eventManager = new EventManager(this.#eventBus, this.#world);
   #pixiApp = new PixiApplication();
-  #grid = new Grid();
+  #grid = new Grid(this.#world);
 
   constructor() {}
 
@@ -31,7 +31,6 @@ export class Application {
     this.#pixiApp.ticker.minFPS = 30;
 
     this.#world.resize(canvas.width, canvas.height);
-    this.#grid.init(this.#world, this.#eventBus);
     const gridContainer = new Container({
       label: "GridContainer",
     });
@@ -60,6 +59,7 @@ export class Application {
   }
 
   update(_: number) {
+    this.#grid.update();
     // Fixed timestep game logic here
   }
 

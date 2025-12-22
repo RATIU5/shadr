@@ -1,89 +1,111 @@
-interface Point {
+export interface Point {
   x: number;
   y: number;
 }
 
-/**
- * Handles viewport transformations and coordinate systems
- */
+export interface Viewport {
+  width: number;
+  height: number;
+  center: Point;
+  scale: number;
+}
 
 export class World {
-  #dimensions: Point = { x: 0, y: 0 };
+  #viewport: Viewport;
   #position: Point = { x: 0, y: 0 };
-  #zoom = 1.0;
-  #minZoom = 0.5;
-  #maxZoom = 1.0;
+  #scale = 1;
 
-  constructor(dimensions?: { width: number; height: number }) {
-    if (dimensions) {
-      this.resize(dimensions.width, dimensions.height);
-    }
+  readonly #minZoom = 0.5;
+  readonly #maxZoom = 1.0;
+
+  constructor(width: number, height: number) {
+    this.#viewport = {
+      width,
+      height,
+      center: { x: width / 2, y: height / 2 },
+      scale: 1,
+    };
+  }
+
+  panBy(delta: Point) {
+    // Convert screen space delta to world space
+    this.#position.x += delta.x / this.#scale;
+    this.#position.y += delta.y / this.#scale;
+  }
+
+  panTo(position: Point) {
+    this.#position = { ...position };
+  }
+
+  zoomTo(scale: number, origin: Point) {
+    const oldScale = this.#scale;
+    this.#scale = Math.min(Math.max(scale, this.#minZoom), this.#maxZoom);
+
+    // Convert screen space origin to world space
+    const worldOrigin = this.screenToWorld(origin);
+
+    // Adjust position to zoom from origin point
+    const scaleFactor = this.#scale / oldScale;
+    this.#position.x = worldOrigin.x - (worldOrigin.x - this.#position.x) * scaleFactor;
+    this.#position.y = worldOrigin.y - (worldOrigin.y - this.#position.y) * scaleFactor;
+  }
+
+  zoomBy(delta: number, origin: Point) {
+    this.zoomTo(this.#scale * Math.pow(2, delta), origin);
+  }
+
+  screenToWorld(point: Point): Point {
+    const centerOffset = {
+      x: point.x - this.#viewport.center.x,
+      y: point.y - this.#viewport.center.y,
+    };
+
+    return {
+      x: centerOffset.x / this.#scale + this.#position.x,
+      y: centerOffset.y / this.#scale + this.#position.y,
+    };
+  }
+
+  worldToScreen(point: Point): Point {
+    const worldOffset = {
+      x: point.x - this.#position.x,
+      y: point.y - this.#position.y,
+    };
+
+    return {
+      x: worldOffset.x * this.#scale + this.#viewport.center.x,
+      y: worldOffset.y * this.#scale + this.#viewport.center.y,
+    };
   }
 
   resize(width: number, height: number) {
-    this.#dimensions = { x: width, y: height };
-  }
-
-  screenToWorld(screenX: number, screenY: number): Point {
-    const center = {
-      x: this.#dimensions.x / 2,
-      y: this.#dimensions.y / 2,
+    const oldCenter = this.#viewport.center;
+    this.#viewport = {
+      ...this.#viewport,
+      width,
+      height,
+      center: { x: width / 2, y: height / 2 },
     };
 
-    // Match the shader's transformation
-    const centerOffset = {
-      x: screenX - center.x,
-      y: screenY - center.y,
+    // Adjust position to maintain world-space position of viewport center
+    const centerDelta = {
+      x: this.#viewport.center.x - oldCenter.x,
+      y: this.#viewport.center.y - oldCenter.y,
     };
 
-    return {
-      x: centerOffset.x / this.#zoom + this.#position.x,
-      y: centerOffset.y / this.#zoom + this.#position.y,
-    };
+    this.panBy(centerDelta);
   }
 
-  worldToScreen(worldX: number, worldY: number): Point {
-    const center = {
-      x: this.#dimensions.x / 2,
-      y: this.#dimensions.y / 2,
-    };
-
-    // Inverse of screenToWorld
-    const centered = {
-      x: (worldX - this.#position.x) * this.#zoom,
-      y: (worldY - this.#position.y) * this.#zoom,
-    };
-
-    return {
-      x: centered.x + center.x,
-      y: centered.y + center.y,
-    };
+  getScale() {
+    return this.#scale;
   }
-
-  // Zoom handling with constraints
-  setZoom(zoom: number): boolean {
-    const newZoom = Math.min(Math.max(zoom, this.#minZoom), this.#maxZoom);
-    if (newZoom === this.#zoom) return false;
-    this.#zoom = newZoom;
-    return true;
-  }
-
-  // Pan position handling
-  setPosition(x: number, y: number) {
-    this.#position = { x, y };
-  }
-
-  // Getters
-  getDimensions(): Point {
-    return { ...this.#dimensions };
-  }
-  getPosition(): Point {
+  getPosition() {
     return { ...this.#position };
   }
-  getZoom(): number {
-    return this.#zoom;
+  getViewport() {
+    return { ...this.#viewport };
   }
-  getZoomLimits() {
+  getZoomConstraints() {
     return { min: this.#minZoom, max: this.#maxZoom };
   }
 }

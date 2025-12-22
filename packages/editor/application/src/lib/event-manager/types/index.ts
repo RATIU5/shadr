@@ -1,5 +1,10 @@
 import type { utils } from "@shadr/common";
 
+export type Point = {
+  x: number;
+  y: number;
+};
+
 export type EventState = {
   spaceDown: utils.Signal<boolean>;
   leftMouseDown: utils.Signal<boolean>;
@@ -20,6 +25,8 @@ export type Events = {
   "raw:touchmove": TouchEvent;
   "raw:touchend": TouchEvent;
 
+  "editor:dragStart": { x: number; y: number };
+  "editor:dragEnd": { x: number; y: number };
   "editor:drag": { x: number; y: number };
-  "editor:zoom": { scale: number; position: { x: number; y: number } };
+  "editor:zoom": { scale: number; origin: { x: number; y: number } };
 };
