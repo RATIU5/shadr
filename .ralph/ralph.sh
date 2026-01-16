@@ -5,18 +5,23 @@
 #   .ralph/ralph.sh                      # Default: PROMPT.md, unlimited
 #   .ralph/ralph.sh --max 20             # Limit to 20 iterations
 #   .ralph/ralph.sh -p PROMPT_PLAN.md    # Use specific prompt
-#   .ralph/ralph.sh --timeout 30         # 30 min timeout per iteration
+#   .ralph/ralph.sh --provider codex     # Use OpenAI Codex
+#   .ralph/ralph.sh --provider claude    # Use Claude (default)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Defaults
-PROMPT_FILE="${SCRIPT_DIR}/PROMPT.md"
-MAX_ITERATIONS=0  # 0 = unlimited
-TIMEOUT_MINS=60   # 60 min default timeout
-MAX_NO_CHANGE=3   # Stop after N iterations with no git changes
+# Load config if exists
+[[ -f "${SCRIPT_DIR}/config.sh" ]] && source "${SCRIPT_DIR}/config.sh"
+
+# Defaults (config.sh can override these)
+PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/PROMPT.md}"
+MAX_ITERATIONS="${MAX_ITERATIONS:-0}"
+TIMEOUT_MINS="${TIMEOUT_MINS:-60}"
+MAX_NO_CHANGE="${MAX_NO_CHANGE:-3}"
+PROVIDER="${PROVIDER:-claude}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -25,12 +30,29 @@ while [[ $# -gt 0 ]]; do
         --max) MAX_ITERATIONS="$2"; shift 2 ;;
         --timeout) TIMEOUT_MINS="$2"; shift 2 ;;
         --no-change) MAX_NO_CHANGE="$2"; shift 2 ;;
+        --provider)
+            PROVIDER="$2"
+            if [[ "${PROVIDER}" != "claude" && "${PROVIDER}" != "codex" ]]; then
+                echo "Error: Provider must be 'claude' or 'codex'"
+                exit 1
+            fi
+            shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
+            echo ""
+            echo "Options:"
             echo "  -p, --prompt FILE    Prompt file (default: PROMPT.md)"
+            echo "  --provider NAME      AI provider: claude, codex (default: claude)"
             echo "  --max N              Max iterations, 0=unlimited (default: 0)"
             echo "  --timeout N          Timeout per iteration in minutes (default: 60)"
             echo "  --no-change N        Stop after N iterations with no changes (default: 3)"
+            echo ""
+            echo "Providers:"
+            echo "  claude    Claude Code CLI (requires ANTHROPIC_API_KEY)"
+            echo "  codex     OpenAI Codex CLI (requires OPENAI_API_KEY)"
+            echo ""
+            echo "Set default provider in .ralph/config.sh:"
+            echo "  PROVIDER=codex"
             exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -42,15 +64,42 @@ done
 
 cd "${PROJECT_ROOT}"
 
+# Build provider command
+build_ai_command() {
+    case "${PROVIDER}" in
+        claude)
+            echo "claude --dangerously-skip-permissions"
+            ;;
+        codex)
+            # OpenAI Codex CLI
+            # --full-auto: autonomous mode with workspace-write sandbox
+            # For fully unattended (no sandbox): add --dangerously-bypass-approvals-and-sandbox
+            echo "codex --full-auto"
+            ;;
+    esac
+}
+
+AI_CMD=$(build_ai_command)
+
+# Verify provider is available
+command -v "${AI_CMD%% *}" >/dev/null 2>&1 || {
+    echo "Error: ${PROVIDER} CLI not found. Install it first."
+    case "${PROVIDER}" in
+        claude) echo "  npm install -g @anthropic-ai/claude-code" ;;
+        codex)  echo "  npm install -g @openai/codex" ;;
+    esac
+    exit 1
+}
+
 # State
 iteration=0
 no_change_count=0
 last_git_hash=""
-session_id=""
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║                   RALPH WIGGUM LOOP                        ║"
 echo "╠════════════════════════════════════════════════════════════╣"
+echo "║  Provider: ${PROVIDER}"
 echo "║  Prompt: $(basename ${PROMPT_FILE})"
 echo "║  Max iterations: ${MAX_ITERATIONS:-unlimited}"
 echo "║  Timeout: ${TIMEOUT_MINS}m per iteration"
@@ -60,7 +109,7 @@ echo "║  Press Ctrl+C to stop                                      ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
-# Get current git state hash (more reliable than porcelain)
+# Get current git state hash
 get_git_hash() {
     (git rev-parse HEAD 2>/dev/null; git diff 2>/dev/null; git diff --staged 2>/dev/null) | md5sum | cut -d' ' -f1
 }
@@ -79,18 +128,12 @@ while true; do
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  ITERATION ${iteration}  |  $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  ITERATION ${iteration}  |  $(date '+%Y-%m-%d %H:%M:%S')  |  ${PROVIDER}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-    # Build claude command with session continuation
-    CLAUDE_CMD="claude --dangerously-skip-permissions"
-    if [[ -n "${session_id}" ]]; then
-        CLAUDE_CMD="${CLAUDE_CMD} --continue --session-id ${session_id}"
-    fi
 
     # Run with timeout
     start_time=$(date +%s)
-    if timeout $((TIMEOUT_MINS * 60)) bash -c "cat '${PROMPT_FILE}' | ${CLAUDE_CMD}"; then
+    if timeout $((TIMEOUT_MINS * 60)) bash -c "cat '${PROMPT_FILE}' | ${AI_CMD}"; then
         : # Success
     else
         exit_code=$?
