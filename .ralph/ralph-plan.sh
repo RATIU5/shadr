@@ -22,14 +22,22 @@ done
 
 cd "${PROJECT_ROOT}"
 
-# Build command
-case "${PROVIDER}" in
-    claude) AI_CMD="claude --dangerously-skip-permissions" ;;
-    codex)  AI_CMD="codex --full-auto" ;;
-    *) echo "Unknown provider: ${PROVIDER}"; exit 1 ;;
-esac
+PROMPT_FILE="${SCRIPT_DIR}/PROMPT_PLAN.md"
 
 echo "Running planning analysis with ${PROVIDER}..."
-cat "${SCRIPT_DIR}/PROMPT_PLAN.md" | ${AI_CMD}
+
+case "${PROVIDER}" in
+    claude)
+        cat "${PROMPT_FILE}" | claude --dangerously-skip-permissions
+        ;;
+    codex)
+        codex exec --full-auto "$(cat "${PROMPT_FILE}")"
+        ;;
+    *)
+        echo "Unknown provider: ${PROVIDER}"
+        exit 1
+        ;;
+esac
+
 echo ""
 echo "Done. Review fix_plan.md then run: .ralph/ralph.sh"

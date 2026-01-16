@@ -64,32 +64,23 @@ done
 
 cd "${PROJECT_ROOT}"
 
-# Build provider command
-build_ai_command() {
-    case "${PROVIDER}" in
-        claude)
-            echo "claude --dangerously-skip-permissions"
-            ;;
-        codex)
-            # OpenAI Codex CLI
-            # --full-auto: autonomous mode with workspace-write sandbox
-            # For fully unattended (no sandbox): add --dangerously-bypass-approvals-and-sandbox
-            echo "codex --full-auto"
-            ;;
-    esac
-}
-
-AI_CMD=$(build_ai_command)
-
-# Verify provider is available
-command -v "${AI_CMD%% *}" >/dev/null 2>&1 || {
-    echo "Error: ${PROVIDER} CLI not found. Install it first."
-    case "${PROVIDER}" in
-        claude) echo "  npm install -g @anthropic-ai/claude-code" ;;
-        codex)  echo "  npm install -g @openai/codex" ;;
-    esac
-    exit 1
-}
+# Verify provider CLI is available
+case "${PROVIDER}" in
+    claude)
+        command -v claude >/dev/null 2>&1 || {
+            echo "Error: claude CLI not found."
+            echo "  npm install -g @anthropic-ai/claude-code"
+            exit 1
+        }
+        ;;
+    codex)
+        command -v codex >/dev/null 2>&1 || {
+            echo "Error: codex CLI not found."
+            echo "  npm install -g @openai/codex"
+            exit 1
+        }
+        ;;
+esac
 
 # State
 iteration=0
@@ -131,9 +122,21 @@ while true; do
     echo "  ITERATION ${iteration}  |  $(date '+%Y-%m-%d %H:%M:%S')  |  ${PROVIDER}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # Run with timeout
+    # Run with timeout - different invocation per provider
     start_time=$(date +%s)
-    if timeout $((TIMEOUT_MINS * 60)) bash -c "cat '${PROMPT_FILE}' | ${AI_CMD}"; then
+
+    run_iteration() {
+        case "${PROVIDER}" in
+            claude)
+                cat "${PROMPT_FILE}" | claude --dangerously-skip-permissions
+                ;;
+            codex)
+                codex exec --full-auto "$(cat "${PROMPT_FILE}")"
+                ;;
+        esac
+    }
+
+    if timeout $((TIMEOUT_MINS * 60)) run_iteration; then
         : # Success
     else
         exit_code=$?
