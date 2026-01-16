@@ -124,26 +124,32 @@ while true; do
 
     # Run with timeout - different invocation per provider
     start_time=$(date +%s)
+    timeout_secs=$((TIMEOUT_MINS * 60))
 
-    run_iteration() {
-        case "${PROVIDER}" in
-            claude)
-                cat "${PROMPT_FILE}" | claude --dangerously-skip-permissions
-                ;;
-            codex)
-                codex exec --full-auto "$(cat "${PROMPT_FILE}")"
-                ;;
-        esac
-    }
-
-    if timeout $((TIMEOUT_MINS * 60)) run_iteration; then
-        : # Success
-    else
-        exit_code=$?
-        if [[ ${exit_code} -eq 124 ]]; then
-            echo "[!] Iteration timed out after ${TIMEOUT_MINS} minutes"
-        fi
-    fi
+    # Note: timeout cannot run bash functions directly, must run actual commands
+    case "${PROVIDER}" in
+        claude)
+            if timeout "${timeout_secs}" bash -c "cat '${PROMPT_FILE}' | claude --dangerously-skip-permissions"; then
+                : # Success
+            else
+                exit_code=$?
+                if [[ ${exit_code} -eq 124 ]]; then
+                    echo "[!] Iteration timed out after ${TIMEOUT_MINS} minutes"
+                fi
+            fi
+            ;;
+        codex)
+            prompt_content=$(cat "${PROMPT_FILE}")
+            if timeout "${timeout_secs}" codex exec --full-auto "${prompt_content}"; then
+                : # Success
+            else
+                exit_code=$?
+                if [[ ${exit_code} -eq 124 ]]; then
+                    echo "[!] Iteration timed out after ${TIMEOUT_MINS} minutes"
+                fi
+            fi
+            ;;
+    esac
     end_time=$(date +%s)
     duration=$((end_time - start_time))
     echo "[i] Iteration completed in ${duration}s"
