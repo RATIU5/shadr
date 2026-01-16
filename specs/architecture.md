@@ -30,6 +30,7 @@ Shared library.
 
 - Node-based editor on infinite grid
 - Pixi.js initialization
+- Editor helpers split into modules (`src/types.ts`, `src/templates.ts`, `src/serialization.ts`, `src/shader.ts`, `src/grid.ts`, `src/search.ts`, `src/const-editor.ts`)
 
 ## Data Flow
 

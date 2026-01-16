@@ -70,6 +70,9 @@ pnpm --filter @shadr/app build
 - Effect Language Service: run pnpm prepare if IDE shows type errors
 -->
 
+- Root typecheck should target `app/tsconfig.json` and `packages/editor/tsconfig.json` to respect per-package JSX settings.
+- When changing `@shadr/lib-editor` public types, rebuild it (`pnpm --filter @shadr/lib-editor build`) so app typecheck picks up updated `dist` types.
+
 ---
 
 ## Guardrails

@@ -1,18 +1,18 @@
 {
-  "name": "@shadr/app",
-  "type": "module",
-  "scripts": {
-    "dev": "vinxi dev",
-    "build": "vinxi build",
-    "start": "vinxi start"
-  },
-  "dependencies": {
-    "@shadr/lib-editor": "workspace:*",
-    "@solidjs/start": "^1.1.0",
-    "solid-js": "^1.9.5",
-    "vinxi": "^0.5.7"
-  },
-  "engines": {
-    "node": ">=22"
-  }
+	"name": "@shadr/app",
+	"type": "module",
+	"scripts": {
+		"dev": "vinxi dev",
+		"build": "vinxi build",
+		"start": "vinxi start"
+	},
+	"dependencies": {
+		"@shadr/lib-editor": "workspace:*",
+		"@solidjs/start": "^1.1.0",
+		"solid-js": "^1.9.5",
+		"vinxi": "^0.5.7"
+	},
+	"engines": {
+		"node": ">=22"
+	}
 }
