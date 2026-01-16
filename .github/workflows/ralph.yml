@@ -1,0 +1,112 @@
+name: Ralph Wiggum
+
+# This workflow runs Ralph Wiggum loops for automated development
+# It's designed to be triggered manually or on a schedule
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Ralph mode to run"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - develop
+          - test
+          - infra
+      max_iterations:
+        description: "Maximum iterations (0 for default)"
+        required: false
+        default: "5"
+        type: string
+      prompt_override:
+        description: "Custom prompt (optional, leave empty for default)"
+        required: false
+        type: string
+
+  # Optional: Run planning weekly to keep fix_plan.md updated
+  # schedule:
+  #   - cron: '0 0 * * 0'  # Every Sunday at midnight
+
+jobs:
+  ralph:
+    name: Ralph ${{ inputs.mode || 'plan' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # Requires ANTHROPIC_API_KEY secret to be set
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure Git
+        run: |
+          git config user.name "Ralph Wiggum"
+          git config user.email "ralph@shadr.dev"
+
+      - name: Make Ralph scripts executable
+        run: chmod +x .ralph/*.sh .ralph/utils/*.sh
+
+      - name: Run Ralph
+        run: |
+          MODE="${{ inputs.mode || 'plan' }}"
+          MAX_ITERS="${{ inputs.max_iterations || '5' }}"
+
+          case "$MODE" in
+            plan)
+              .ralph/ralph-plan.sh
+              ;;
+            develop)
+              .ralph/ralph.sh --max "$MAX_ITERS"
+              ;;
+            test)
+              .ralph/ralph-test.sh --max "$MAX_ITERS"
+              ;;
+            infra)
+              .ralph/ralph-infra.sh --max "$MAX_ITERS"
+              ;;
+          esac
+
+      - name: Push changes
+        if: success()
+        run: |
+          git add -A
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(ralph): automated updates from Ralph Wiggum"
+            git push
+          else
+            echo "No changes to commit"
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ralph-logs
+          path: .ralph/logs/
+          retention-days: 7

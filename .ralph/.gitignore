@@ -1,0 +1,11 @@
+# Ralph Wiggum local state (session-specific)
+state/*
+!state/.gitkeep
+
+# Logs (can be large)
+logs/*
+!logs/.gitkeep
+
+# Session files
+.ralph_session
+.ralph_session_history
