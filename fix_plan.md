@@ -1,35 +1,25 @@
-# Shadr Fix Plan
+# Fix Plan
 
 Last updated: 2026-01-16
 
-This file tracks tasks for the shadr project. Run `.ralph/ralph-plan.sh` to analyze the codebase and update this list.
+> Run `.ralph/ralph-plan.sh` to analyze the codebase and update this list.
 
-## Critical (blocking issues)
+## Critical
 
 - [ ] Initial analysis needed - run `.ralph/ralph-plan.sh`
 
-## High Priority (core features)
+## High Priority
 
-<!-- Add high priority items here -->
+<!-- Core features and functionality gaps -->
 
-## Medium Priority (improvements)
+## Medium Priority
 
-<!-- Add medium priority items here -->
+<!-- Improvements and refactoring -->
 
-## Low Priority (nice to have)
+## Low Priority
 
-<!-- Add low priority items here -->
+<!-- Nice-to-have enhancements -->
 
 ## Completed
 
 <!-- Move completed items here with date -->
-
----
-
-## How to Use This File
-
-1. **Run planning**: `.ralph/ralph-plan.sh` to analyze and populate this list
-2. **Pick a task**: Ralph will choose the most important uncompleted item
-3. **Mark progress**: Use `[x]` for completed items
-4. **Add discoveries**: If you find new issues, add them to the appropriate section
-5. **Clean up**: Periodically remove completed items or move to Completed section

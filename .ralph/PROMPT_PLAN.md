@@ -1,32 +1,63 @@
 # Shadr Planning Task
 
-Analyze the project and update `fix_plan.md`.
+## 0. Orientation
 
-## Steps
+0a. Study `AGENT.md` for build/run commands and previous learnings.
+0b. Study `specs/architecture.md` for current project structure.
+0c. Study existing `fix_plan.md` to understand previous state.
 
-1. Read `AGENT.md` and `specs/architecture.md`
-2. Study source in `app/` and `packages/`
-3. Run `pnpm typecheck && pnpm check`
-4. Look for TODOs, placeholders, gaps
+## 1. Analysis
 
-## Output
+Use up to 50 parallel subagents to analyze:
 
-Update `fix_plan.md`:
+1. **Source code**: Study `app/` and `packages/` directories
+2. **Build health**: Run `pnpm typecheck && pnpm check` (use 1 subagent)
+3. **Code gaps**: Search for TODO, FIXME, placeholder, minimal implementations
+4. **Missing tests**: Identify untested functionality
+5. **Type issues**: Find any `any` types or missing type definitions
+
+**Do NOT assume functionality is missing** - confirm with code search first.
+
+## 2. Output
+
+Update `fix_plan.md` with prioritized tasks:
 
 ```markdown
 # Fix Plan
 
+Last updated: [date]
+
 ## Critical
-- [ ] Type/build errors
+- [ ] Build/type errors that block development
 
-## High
-- [ ] Core features
+## High Priority
+- [ ] Core functionality gaps (with file paths)
 
-## Medium
-- [ ] Improvements
+## Medium Priority
+- [ ] Improvements and refactoring
+
+## Low Priority
+- [ ] Nice-to-have enhancements
 
 ## Completed
-- [x] Done items
+- [x] Done items (date)
 ```
 
-Include file paths. **Don't implement anything.**
+Be specific - include file paths and line numbers where relevant.
+
+## 3. Architecture Updates
+
+If the project structure has changed significantly from what's documented:
+- Update `specs/architecture.md` to reflect current state
+
+---
+
+## Guardrails
+
+99. **Do NOT implement anything** - this is planning only.
+
+999. Search before assuming something isn't implemented.
+
+9999. Be thorough but realistic about priorities.
+
+99999. Keep tasks specific and actionable.
