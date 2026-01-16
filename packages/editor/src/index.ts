@@ -1,14 +1,12 @@
-import tgpu from "typegpu";
+import { Application } from "pixi.js";
 
-export const initCanvas = async (canvas: HTMLCanvasElement) => {
-  const root = await tgpu.init();
-  const device = root.device;
-  const context = canvas.getContext("webgpu") as GPUCanvasContext;
-  const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+export async function initCanvas(canvas: HTMLCanvasElement) {
+	const app = new Application();
 
-  context?.configure({
-    device: device,
-    format: presentationFormat,
-    alphaMode: "premultiplied",
-  });
-};
+	await app.init({
+		canvas,
+		resizeTo: canvas.parentElement ?? undefined,
+	});
+
+	return app;
+}

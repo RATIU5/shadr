@@ -3,8 +3,9 @@
 ## 0. Orientation
 
 0a. Study `AGENT.md` for build/run commands and previous learnings.
-0b. Study `specs/architecture.md` for current project structure.
-0c. Study existing `fix_plan.md` to understand previous state.
+0b. Study `targets.md` for current goals and feature targets.
+0c. Study `specs/architecture.md` for current project structure.
+0d. Study existing `fix_plan.md` to understand previous state.
 
 ## 1. Analysis
 
@@ -20,7 +21,7 @@ Use up to 50 parallel subagents to analyze:
 
 ## 2. Output
 
-Update `fix_plan.md` with prioritized tasks:
+Update `fix_plan.md` with prioritized tasks that advance `targets.md` (one at a time):
 
 ```markdown
 # Fix Plan
@@ -28,26 +29,33 @@ Update `fix_plan.md` with prioritized tasks:
 Last updated: [date]
 
 ## Critical
+
 - [ ] Build/type errors that block development
 
 ## High Priority
+
 - [ ] Core functionality gaps (with file paths)
 
 ## Medium Priority
+
 - [ ] Improvements and refactoring
 
 ## Low Priority
+
 - [ ] Nice-to-have enhancements
 
 ## Completed
+
 - [x] Done items (date)
 ```
 
 Be specific - include file paths and line numbers where relevant.
+If `targets.md` lacks concrete targets, add a small set of specific, actionable targets. **Focus only on one target at a time**. When that target is completed, create tasks for the next target. Find the appropriate order for the targets: start small, build up complexity, and prioritize foundational tasks first.
 
 ## 3. Architecture Updates
 
 If the project structure has changed significantly from what's documented:
+
 - Update `specs/architecture.md` to reflect current state
 
 ---
@@ -60,4 +68,4 @@ If the project structure has changed significantly from what's documented:
 
 9999. Be thorough but realistic about priorities.
 
-99999. Keep tasks specific and actionable.
+99999. Keep tasks specific, concise, and actionable.

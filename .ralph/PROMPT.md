@@ -3,13 +3,15 @@
 ## 0. Orientation
 
 0a. Study `AGENT.md` to understand build/run commands and learnings.
-0b. Study `fix_plan.md` to understand current tasks and priorities.
-0c. Study `specs/architecture.md` to understand project structure.
-0d. Review recent changes: `git log --oneline -5`
+0b. Study `targets.md` to understand current goals and feature targets.
+0c. Study `fix_plan.md` to understand current tasks and priorities.
+0d. Study `specs/architecture.md` to understand project structure.
+0e. Review recent changes: `git log --oneline -5`
 
 ## 1. Task Selection
 
-Pick the SINGLE highest priority uncompleted item from `fix_plan.md`.
+Pick the SINGLE highest priority uncompleted item from `fix_plan.md` that advances `targets.md`.
+If no uncompleted item aligns with the targets, add a specific target-aligned task to `fix_plan.md` first, then select it.
 
 **Focus on ONE task only.** Complete it fully before moving on.
 
@@ -22,7 +24,7 @@ Before implementing, search the codebase using parallel subagents:
 
 ## 3. Implementation
 
-Implement the selected task following existing code patterns.
+Implement the selected task following existing code patterns. Research the internet for up to date information as needed.
 
 After implementing:
 - Run validation: `pnpm typecheck && pnpm check`
@@ -33,6 +35,7 @@ After implementing:
 
 When you make changes:
 - Update `fix_plan.md`: mark task complete `[x]` or add new discoveries
+- Update `targets.md` if scope, goals, or feature targets change
 - Update `specs/architecture.md` if you change project structure
 - Update `AGENT.md` Learnings section if you discover important patterns
 

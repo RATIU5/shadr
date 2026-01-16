@@ -4,7 +4,7 @@
 
 ## Overview
 
-WebGPU-based shader editor built with SolidStart + TypeGPU.
+Pixi.js-based shader editor built with SolidStart.
 
 ## Structure
 
@@ -14,10 +14,11 @@ shadr/
 │   └── src/
 │       ├── app.tsx       # Root component (lazy loads editor)
 │       └── components/   # UI components
-│           └── editor.client.tsx  # WebGPU editor (client-only)
+│           └── editor.client.tsx  # Pixi.js editor (client-only)
 ├── packages/editor/      # @shadr/lib-editor library
-│   └── src/index.ts      # WebGPU initialization
+│   └── src/index.ts      # Pixi.js initialization
 ├── specs/                # Architecture documentation
+├── targets.md            # Project goals and feature targets
 ├── fix_plan.md           # Task tracking
 └── .ralph/               # Automation scripts
 ```
@@ -65,7 +66,6 @@ pnpm --filter @shadr/app build
 > Add discoveries here that help future iterations avoid mistakes.
 
 <!-- Example:
-- WebGPU requires Chrome 113+ or Firefox Nightly with flag
 - Always build packages before app: pnpm --filter @shadr/lib-editor build
 - Effect Language Service: run pnpm prepare if IDE shows type errors
 -->

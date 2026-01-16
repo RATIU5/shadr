@@ -4,45 +4,47 @@
 
 ## Overview
 
-WebGPU-based shader/graphics editor.
+Pixi.js-based shader/graphics editor.
 
 ## Stack
 
-| Layer | Technology |
-|-------|------------|
-| UI | Solid.js / SolidStart |
-| GPU | WebGPU via TypeGPU |
-| Build | pnpm + Vinxi + tsup |
-| Quality | Biome + TypeScript strict |
+| Layer     | Technology                    |
+| --------- | ----------------------------- |
+| UI        | Solid.js / SolidStart         |
+| Rendering | Pixi.js (WebGL/WebGPU/Canvas) |
+| Build     | pnpm + Vinxi + tsup           |
+| Quality   | Biome + TypeScript strict     |
 
 ## Packages
 
 ### @shadr/app (app/)
 
 Main application.
+
 - `app.tsx` - Root, lazy loads editor
-- `components/editor.client.tsx` - WebGPU editor (client-only)
+- `components/editor.client.tsx` - Pixi.js editor (client-only)
 
 ### @shadr/lib-editor (packages/editor/)
 
 Shared library.
-- WebGPU initialization
-- TypeGPU integration
+
+- Node-based editor on infinite grid
+- Pixi.js initialization
 
 ## Data Flow
 
 1. Server renders HTML shell
 2. Client hydrates, lazy loads editor
-3. Editor initializes WebGPU on canvas
+3. Editor initializes Pixi.js on canvas
 4. (future) User edits shaders, GPU renders
 
 ## Constraints
 
-- WebGPU required (Chrome 113+, Edge 113+)
-- Node 22.x minimum
-- No WebGL fallback
+- WebGL/WebGPU-capable browser required
+- No Canvas 2D fallback
 
 ## Changelog
 
 <!-- Document major changes here -->
-- Initial architecture with SolidStart + TypeGPU
+
+- Initial architecture with SolidStart + Pixi.js

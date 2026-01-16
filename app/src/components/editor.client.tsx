@@ -1,11 +1,19 @@
 import { initCanvas } from "@shadr/lib-editor";
-import { onMount } from "solid-js";
+import { onCleanup, onMount } from "solid-js";
 
 export default function Editor() {
-	let canvasRef;
+	let canvasRef: HTMLCanvasElement | undefined;
 
 	onMount(async () => {
-		await initCanvas(canvasRef);
+		if (!canvasRef) {
+			return;
+		}
+
+		const app = await initCanvas(canvasRef);
+
+		onCleanup(() => {
+			app.destroy(true);
+		});
 	});
 
 	return <canvas ref={canvasRef} id="editor-canvas" />;

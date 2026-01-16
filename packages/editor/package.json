@@ -15,11 +15,10 @@
     "clean": "rm -rf node_modules && rm -rf dist"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.68",
     "tsup": "^8.5.1"
   },
   "dependencies": {
     "effect": "^3.19.13",
-    "typegpu": "^0.8.2"
+    "pixi.js": "^8.6.6"
   }
 }

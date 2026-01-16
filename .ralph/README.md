@@ -11,9 +11,11 @@ Autonomous AI development loops for the shadr project.
 # 2. Plan - analyze codebase, generate tasks
 .ralph/ralph-plan.sh
 
-# 3. Review fix_plan.md
+# 3. Review targets.md
 
-# 4. Build - run development loop
+# 4. Review fix_plan.md
+
+# 5. Build - run development loop
 .ralph/ralph.sh --max 20
 ```
 
@@ -91,6 +93,7 @@ Progress persists in **files and git**, not LLM context.
 | File | Purpose |
 |------|---------|
 | `AGENT.md` | Build/run commands + learnings + guardrails |
+| `targets.md` | Project goals and feature targets |
 | `fix_plan.md` | Prioritized task list |
 | `specs/architecture.md` | Project structure (update on major changes!) |
 
