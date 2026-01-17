@@ -1,9 +1,19 @@
+import { GRAPH_SCHEMA_VERSION } from "./graph-version";
+import { isMathOperationId } from "./math-ops";
+import { getDefaultNodeState, normalizeNodeState } from "./node-definitions";
+import {
+	isLegacyTemplateId,
+	isNodeFamilyId,
+	migrateLegacyTemplate,
+} from "./node-families";
 import type {
-	NodeData,
+	NodeFamilyId,
+	NodeState,
 	PortDirection,
 	PortType,
 	SerializableConnection,
 	SerializableGraph,
+	SerializableGroup,
 	SerializableNode,
 	SerializablePort,
 } from "./types";
@@ -11,8 +21,114 @@ import type {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null;
 
+const parseGraphVersion = (value: unknown): number | null => {
+	if (value === undefined) {
+		return 0;
+	}
+
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return null;
+	}
+
+	if (!Number.isInteger(value) || value < 0) {
+		return null;
+	}
+
+	return value;
+};
+
+type GraphParseReport = {
+	snapshot: SerializableGraph | null;
+	errors: string[];
+};
+
+type LegacyNodeData = {
+	value?: number;
+	color?: {
+		r: number;
+		g: number;
+		b: number;
+		a: number;
+	};
+	vector?: {
+		x: number;
+		y: number;
+		z?: number;
+		w?: number;
+	};
+	component?: "x" | "y" | "z" | "w";
+	mathOp?: string;
+	mathType?: "float" | "vec2" | "vec3" | "vec4";
+	vectorOp?: string;
+	vectorType?: "vec2" | "vec3" | "vec4";
+	colorOp?: string;
+	conversionOp?: string;
+	logicOp?: string;
+	textureOp?: string;
+	outputType?: "fragment" | "vertex";
+	constType?: "float" | "vec2" | "vec3" | "vec4" | "color";
+	inputType?: "number" | "range" | "checkbox" | "text" | "color" | "select";
+	inputValue?: number;
+	inputChecked?: boolean;
+	inputText?: string;
+	inputColor?: {
+		r: number;
+		g: number;
+		b: number;
+		a: number;
+	};
+	inputOptions?: string[];
+	inputSelection?: string;
+};
+
+const migrateGraphPayloadWithReport = (
+	value: Record<string, unknown>,
+): { normalized: Record<string, unknown> | null; errors: string[] } => {
+	const errors: string[] = [];
+	const rawVersion = parseGraphVersion(value.version);
+	if (rawVersion === null) {
+		errors.push("Graph version must be a non-negative integer.");
+		return { normalized: null, errors };
+	}
+
+	if (rawVersion > GRAPH_SCHEMA_VERSION) {
+		errors.push(
+			`Graph version ${rawVersion} is newer than supported version ${GRAPH_SCHEMA_VERSION}.`,
+		);
+		return { normalized: null, errors };
+	}
+
+	let version = rawVersion;
+	let migrated: Record<string, unknown> = value;
+
+	if (version === 0) {
+		migrated = { ...migrated, version: 1 };
+		version = 1;
+	}
+
+	if (version === 1) {
+		migrated = { ...migrated, version: 2 };
+		version = 2;
+	}
+
+	if (version === 2) {
+		migrated = { ...migrated, version: 3 };
+		version = 3;
+	}
+
+	if (version !== GRAPH_SCHEMA_VERSION) {
+		errors.push(
+			`Graph version ${rawVersion} could not be migrated to schema ${GRAPH_SCHEMA_VERSION}.`,
+		);
+		return { normalized: null, errors };
+	}
+
+	return { normalized: { ...migrated, version: GRAPH_SCHEMA_VERSION }, errors };
+};
+
 const isPortType = (value: unknown): value is PortType =>
 	value === "float" ||
+	value === "int" ||
 	value === "vec2" ||
 	value === "vec3" ||
 	value === "vec4" ||
@@ -40,12 +156,235 @@ const parsePort = (value: unknown): SerializablePort | null => {
 	return { id, name, type, direction };
 };
 
+const parseNodeParamValue = (
+	value: unknown,
+): NodeState["params"][string] | null => {
+	if (typeof value === "string" || typeof value === "boolean") {
+		return value;
+	}
+	if (typeof value === "number") {
+		return Number.isFinite(value) ? value : null;
+	}
+	if (Array.isArray(value)) {
+		if (value.every((item) => typeof item === "string")) {
+			return value;
+		}
+		return null;
+	}
+	if (!isRecord(value)) {
+		return null;
+	}
+
+	const hasColor =
+		typeof value.r === "number" &&
+		typeof value.g === "number" &&
+		typeof value.b === "number" &&
+		typeof value.a === "number";
+	if (hasColor) {
+		const color = value as { r: number; g: number; b: number; a: number };
+		return {
+			r: color.r,
+			g: color.g,
+			b: color.b,
+			a: color.a,
+		};
+	}
+
+	const hasVector = typeof value.x === "number" && typeof value.y === "number";
+	if (hasVector) {
+		const vectorValue = value as {
+			x: number;
+			y: number;
+			z?: number;
+			w?: number;
+		};
+		const vector: { x: number; y: number; z?: number; w?: number } = {
+			x: vectorValue.x,
+			y: vectorValue.y,
+		};
+		if (typeof vectorValue.z === "number") {
+			vector.z = vectorValue.z;
+		}
+		if (typeof vectorValue.w === "number") {
+			vector.w = vectorValue.w;
+		}
+		return vector;
+	}
+
+	return null;
+};
+
+const parseNodeState = (value: unknown): NodeState | null => {
+	if (!isRecord(value)) {
+		return null;
+	}
+
+	const paramsRaw = value.params;
+	if (!isRecord(paramsRaw)) {
+		return null;
+	}
+
+	const params: Record<string, NodeState["params"][string]> = {};
+	for (const [key, entry] of Object.entries(paramsRaw)) {
+		const parsed = parseNodeParamValue(entry);
+		if (parsed !== null) {
+			params[key] = parsed;
+		}
+	}
+
+	const version =
+		typeof value.version === "number" && Number.isFinite(value.version)
+			? value.version
+			: 1;
+	const uiRaw = value.ui;
+	const ui =
+		isRecord(uiRaw) && typeof uiRaw.lastTabId === "string"
+			? { lastTabId: uiRaw.lastTabId }
+			: undefined;
+	return { version, params, ...(ui ? { ui } : {}) };
+};
+
+const mapLegacyDataToState = (
+	typeId: string,
+	data: LegacyNodeData,
+): NodeState | null => {
+	const base = getDefaultNodeState(typeId);
+	if (!base) {
+		return null;
+	}
+	const params = { ...base.params };
+
+	if (typeId === "math") {
+		if (typeof data.mathOp === "string") {
+			params.operation = data.mathOp;
+		}
+		if (
+			data.mathType === "float" ||
+			data.mathType === "vec2" ||
+			data.mathType === "vec3" ||
+			data.mathType === "vec4"
+		) {
+			params.type = data.mathType;
+		}
+	}
+
+	if (typeId === "vector") {
+		if (typeof data.vectorOp === "string") {
+			params.operation = data.vectorOp;
+		}
+		if (
+			data.vectorType === "vec2" ||
+			data.vectorType === "vec3" ||
+			data.vectorType === "vec4"
+		) {
+			params.type = data.vectorType;
+		}
+		if (
+			data.component === "x" ||
+			data.component === "y" ||
+			data.component === "z" ||
+			data.component === "w"
+		) {
+			params.component = data.component;
+		}
+	}
+
+	if (typeId === "color" && typeof data.colorOp === "string") {
+		params.operation = data.colorOp;
+	}
+
+	if (typeId === "conversion" && typeof data.conversionOp === "string") {
+		params.operation = data.conversionOp;
+	}
+
+	if (typeId === "logic" && typeof data.logicOp === "string") {
+		params.operation = data.logicOp;
+	}
+
+	if (typeId === "texture-uv" && typeof data.textureOp === "string") {
+		params.operation = data.textureOp;
+	}
+
+	if (typeId === "output") {
+		if (data.outputType === "fragment" || data.outputType === "vertex") {
+			params.stage = data.outputType;
+		}
+	}
+
+	if (typeId === "constants") {
+		if (
+			data.constType === "float" ||
+			data.constType === "vec2" ||
+			data.constType === "vec3" ||
+			data.constType === "vec4" ||
+			data.constType === "color"
+		) {
+			params.type = data.constType;
+		}
+		if (typeof data.value === "number") {
+			params.floatValue = data.value;
+		}
+		if (data.vector) {
+			params.vectorValue = {
+				x: data.vector.x,
+				y: data.vector.y,
+				...(data.vector.z !== undefined ? { z: data.vector.z } : {}),
+				...(data.vector.w !== undefined ? { w: data.vector.w } : {}),
+			};
+		}
+		if (data.color) {
+			params.colorValue = data.color;
+		}
+	}
+
+	if (typeId === "inputs") {
+		if (
+			data.inputType === "number" ||
+			data.inputType === "range" ||
+			data.inputType === "checkbox" ||
+			data.inputType === "text" ||
+			data.inputType === "color" ||
+			data.inputType === "select"
+		) {
+			params.type = data.inputType;
+		}
+		if (typeof data.inputValue === "number") {
+			params.numberValue = data.inputValue;
+		}
+		if (typeof data.inputChecked === "boolean") {
+			params.checked = data.inputChecked;
+		}
+		if (typeof data.inputText === "string") {
+			params.textValue = data.inputText;
+		}
+		if (data.inputColor) {
+			params.colorValue = data.inputColor;
+		}
+		if (Array.isArray(data.inputOptions)) {
+			const filtered = data.inputOptions.filter(
+				(option): option is string => typeof option === "string",
+			);
+			if (filtered.length > 0) {
+				params.options = filtered.join(", ");
+				if (typeof data.inputSelection === "string") {
+					params.selection = data.inputSelection;
+				} else {
+					params.selection = filtered[0];
+				}
+			}
+		}
+	}
+
+	return normalizeNodeState(typeId, { ...base, params }) ?? base;
+};
+
 const parseNode = (value: unknown): SerializableNode | null => {
 	if (!isRecord(value)) {
 		return null;
 	}
 
-	const { id, title, x, y, ports, templateId, data } = value;
+	const { id, title, x, y, ports, familyId, templateId, data, typeId, state } =
+		value;
 	if (
 		typeof id !== "number" ||
 		!Number.isFinite(id) ||
@@ -59,70 +398,73 @@ const parseNode = (value: unknown): SerializableNode | null => {
 		return null;
 	}
 
-	const parsedTemplateId =
-		typeof templateId === "string" ? templateId : undefined;
-
 	const parsedPorts = ports.map(parsePort);
 	if (parsedPorts.some((port) => !port)) {
 		return null;
 	}
 
-	const parseNodeData = (
-		template: string | undefined,
-		payload: unknown,
-	): NodeData | undefined => {
-		if (!template || !isRecord(payload)) {
+	const parsedFamilyId =
+		typeof familyId === "string" && isNodeFamilyId(familyId)
+			? (familyId as NodeFamilyId)
+			: undefined;
+	const parsedTemplateId =
+		typeof templateId === "string" ? templateId : undefined;
+	const parsedTypeId = typeof typeId === "string" ? typeId : undefined;
+	const parsedState = parseNodeState(state);
+
+	const parseVector = (
+		payload: Record<string, unknown>,
+		components: Array<"x" | "y" | "z" | "w">,
+	) => {
+		const vector = payload.vector;
+		if (!isRecord(vector)) {
 			return undefined;
 		}
 
-		const parseVector = (components: Array<"x" | "y" | "z" | "w">) => {
-			const vector = payload.vector;
-			if (!isRecord(vector)) {
-				return undefined;
-			}
-
-			const values: { x: number; y: number; z?: number; w?: number } = {
-				x: 0,
-				y: 0,
-			};
-
-			for (const component of components) {
-				const value = vector[component];
-				if (typeof value !== "number" || !Number.isFinite(value)) {
-					return undefined;
-				}
-				values[component] = value;
-			}
-
-			return { vector: values };
+		const values: { x: number; y: number; z?: number; w?: number } = {
+			x: 0,
+			y: 0,
 		};
 
-		if (template === "const-float") {
+		for (const component of components) {
+			const value = vector[component];
+			if (typeof value !== "number" || !Number.isFinite(value)) {
+				return undefined;
+			}
+			values[component] = value;
+		}
+
+		return { vector: values };
+	};
+
+	const parseConstData = (
+		payload: Record<string, unknown>,
+	): LegacyNodeData | undefined => {
+		const constType = payload.constType;
+		if (constType === "float") {
 			const value = payload.value;
 			if (typeof value === "number" && Number.isFinite(value)) {
-				return { value };
+				return { constType: "float", value };
 			}
 			return undefined;
 		}
-
-		if (template === "const-vec2") {
-			return parseVector(["x", "y"]);
+		if (constType === "vec2") {
+			const parsed = parseVector(payload, ["x", "y"]);
+			return parsed ? { constType: "vec2", ...parsed } : undefined;
 		}
-
-		if (template === "const-vec3") {
-			return parseVector(["x", "y", "z"]);
+		if (constType === "vec3") {
+			const parsed = parseVector(payload, ["x", "y", "z"]);
+			return parsed ? { constType: "vec3", ...parsed } : undefined;
 		}
-
-		if (template === "const-vec4") {
-			return parseVector(["x", "y", "z", "w"]);
+		if (constType === "vec4") {
+			const parsed = parseVector(payload, ["x", "y", "z", "w"]);
+			return parsed ? { constType: "vec4", ...parsed } : undefined;
 		}
-
-		if (template === "const-color") {
+		if (constType === "color") {
 			const color = payload.color;
 			if (!isRecord(color)) {
 				return undefined;
 			}
-
 			const r = color.r;
 			const g = color.g;
 			const b = color.b;
@@ -137,14 +479,274 @@ const parseNode = (value: unknown): SerializableNode | null => {
 				typeof a === "number" &&
 				Number.isFinite(a)
 			) {
-				return { color: { r, g, b, a } };
+				return { constType: "color", color: { r, g, b, a } };
 			}
+			return undefined;
+		}
+
+		const value = payload.value;
+		if (typeof value === "number" && Number.isFinite(value)) {
+			return { constType: "float", value };
+		}
+		const color = payload.color;
+		if (isRecord(color)) {
+			const r = color.r;
+			const g = color.g;
+			const b = color.b;
+			const a = color.a;
+			if (
+				typeof r === "number" &&
+				Number.isFinite(r) &&
+				typeof g === "number" &&
+				Number.isFinite(g) &&
+				typeof b === "number" &&
+				Number.isFinite(b) &&
+				typeof a === "number" &&
+				Number.isFinite(a)
+			) {
+				return { constType: "color", color: { r, g, b, a } };
+			}
+		}
+		return undefined;
+	};
+
+	const parseInputData = (
+		payload: Record<string, unknown>,
+	): LegacyNodeData | undefined => {
+		const inputType = payload.inputType;
+		if (
+			inputType !== "number" &&
+			inputType !== "range" &&
+			inputType !== "checkbox" &&
+			inputType !== "text" &&
+			inputType !== "color" &&
+			inputType !== "select"
+		) {
+			return undefined;
+		}
+
+		if (inputType === "number" || inputType === "range") {
+			const inputValue = payload.inputValue;
+			if (typeof inputValue === "number" && Number.isFinite(inputValue)) {
+				return { inputType, inputValue };
+			}
+			return { inputType, inputValue: 0 };
+		}
+
+		if (inputType === "checkbox") {
+			const inputChecked = payload.inputChecked;
+			if (typeof inputChecked === "boolean") {
+				return { inputType: "checkbox", inputChecked };
+			}
+			return { inputType: "checkbox", inputChecked: false };
+		}
+
+		if (inputType === "text") {
+			const inputText = payload.inputText;
+			if (typeof inputText === "string") {
+				return { inputType: "text", inputText };
+			}
+			return { inputType: "text", inputText: "" };
+		}
+
+		if (inputType === "color") {
+			const color = payload.inputColor;
+			if (!isRecord(color)) {
+				return undefined;
+			}
+			const r = color.r;
+			const g = color.g;
+			const b = color.b;
+			const a = color.a;
+			if (
+				typeof r === "number" &&
+				Number.isFinite(r) &&
+				typeof g === "number" &&
+				Number.isFinite(g) &&
+				typeof b === "number" &&
+				Number.isFinite(b) &&
+				typeof a === "number" &&
+				Number.isFinite(a)
+			) {
+				return { inputType: "color", inputColor: { r, g, b, a } };
+			}
+			return undefined;
+		}
+
+		const options = payload.inputOptions;
+		if (!Array.isArray(options) || options.length === 0) {
+			return undefined;
+		}
+		const parsedOptions = options.filter(
+			(option): option is string => typeof option === "string",
+		);
+		if (parsedOptions.length === 0) {
+			return undefined;
+		}
+		const inputSelection = payload.inputSelection;
+		return {
+			inputType: "select",
+			inputOptions: parsedOptions,
+			...(typeof inputSelection === "string" ? { inputSelection } : {}),
+		};
+	};
+
+	const parseFamilyData = (
+		family: NodeFamilyId | undefined,
+		payload: unknown,
+	): LegacyNodeData | undefined => {
+		if (!family || !isRecord(payload)) {
+			return undefined;
+		}
+		if (family === "constants") {
+			return parseConstData(payload);
+		}
+		if (family === "inputs") {
+			return parseInputData(payload);
+		}
+		if (family === "math") {
+			const mathOp = payload.mathOp;
+			const mathType = payload.mathType;
+			const next: LegacyNodeData = {};
+			if (isMathOperationId(mathOp)) {
+				next.mathOp = mathOp;
+			}
+			if (
+				mathType === "float" ||
+				mathType === "vec2" ||
+				mathType === "vec3" ||
+				mathType === "vec4"
+			) {
+				next.mathType = mathType;
+			}
+			return Object.keys(next).length > 0 ? next : undefined;
+		}
+		if (family === "vector") {
+			const next: LegacyNodeData = {};
+			if (typeof payload.vectorOp === "string") {
+				next.vectorOp = payload.vectorOp;
+			}
+			if (
+				payload.vectorType === "vec2" ||
+				payload.vectorType === "vec3" ||
+				payload.vectorType === "vec4"
+			) {
+				next.vectorType = payload.vectorType;
+			}
+			if (
+				payload.component === "x" ||
+				payload.component === "y" ||
+				payload.component === "z" ||
+				payload.component === "w"
+			) {
+				next.component = payload.component;
+			}
+			return Object.keys(next).length > 0 ? next : undefined;
+		}
+		if (family === "color") {
+			const colorOp = payload.colorOp;
+			if (typeof colorOp === "string") {
+				return { colorOp };
+			}
+			return undefined;
+		}
+		if (family === "conversion") {
+			const conversionOp = payload.conversionOp;
+			if (typeof conversionOp === "string") {
+				return { conversionOp };
+			}
+			return undefined;
+		}
+		if (family === "logic") {
+			const logicOp = payload.logicOp;
+			if (typeof logicOp === "string") {
+				return { logicOp };
+			}
+			return undefined;
+		}
+		if (family === "texture-uv") {
+			const textureOp = payload.textureOp;
+			if (typeof textureOp === "string") {
+				return { textureOp };
+			}
+			return undefined;
+		}
+		if (family === "output") {
+			const outputType = payload.outputType;
+			if (outputType === "fragment" || outputType === "vertex") {
+				return { outputType };
+			}
+			return undefined;
+		}
+		return undefined;
+	};
+
+	const parseLegacyNodeData = (
+		template: string | undefined,
+		payload: unknown,
+	): LegacyNodeData | undefined => {
+		if (!template || !isRecord(payload)) {
+			return undefined;
+		}
+
+		if (template.startsWith("const-")) {
+			return parseConstData(payload);
+		}
+
+		if (template === "vector-component") {
+			const component = payload.component;
+			if (
+				component === "x" ||
+				component === "y" ||
+				component === "z" ||
+				component === "w"
+			) {
+				return { component };
+			}
+			return undefined;
+		}
+
+		if (template.startsWith("math-")) {
+			const mathOp = payload.mathOp;
+			if (isMathOperationId(mathOp)) {
+				return { mathOp };
+			}
+			return undefined;
 		}
 
 		return undefined;
 	};
 
-	const parsedData = parseNodeData(parsedTemplateId, data);
+	let legacyData = parseFamilyData(parsedFamilyId, data);
+
+	let resolvedTypeId = parsedTypeId ?? parsedFamilyId;
+	let resolvedState = parsedState;
+
+	if (
+		!resolvedTypeId &&
+		parsedTemplateId &&
+		isLegacyTemplateId(parsedTemplateId)
+	) {
+		const legacyPayload = parseLegacyNodeData(parsedTemplateId, data);
+		const migrated = migrateLegacyTemplate(parsedTemplateId, legacyPayload);
+		if (migrated) {
+			resolvedTypeId = migrated.familyId;
+			legacyData = migrated.data;
+		}
+	}
+
+	if (!resolvedState && resolvedTypeId && legacyData) {
+		resolvedState = mapLegacyDataToState(resolvedTypeId, legacyData);
+	}
+
+	if (!resolvedState && resolvedTypeId) {
+		resolvedState = getDefaultNodeState(resolvedTypeId);
+	}
+
+	if (resolvedState && resolvedTypeId) {
+		resolvedState =
+			normalizeNodeState(resolvedTypeId, resolvedState) ?? resolvedState;
+	}
 
 	return {
 		id,
@@ -154,8 +756,8 @@ const parseNode = (value: unknown): SerializableNode | null => {
 		ports: parsedPorts.filter(
 			(port): port is SerializablePort => port !== null,
 		),
-		...(parsedData ? { data: parsedData } : {}),
-		...(parsedTemplateId ? { templateId: parsedTemplateId } : {}),
+		...(resolvedState ? { state: resolvedState } : {}),
+		...(resolvedTypeId ? { typeId: resolvedTypeId } : {}),
 	};
 };
 
@@ -192,6 +794,41 @@ const parseConnection = (value: unknown): SerializableConnection | null => {
 	};
 };
 
+const parseGroup = (value: unknown): SerializableGroup | null => {
+	if (!isRecord(value)) {
+		return null;
+	}
+
+	const { id, title, nodeIds, collapsed, x, y } = value;
+	if (
+		typeof id !== "number" ||
+		!Number.isFinite(id) ||
+		typeof title !== "string" ||
+		!Array.isArray(nodeIds) ||
+		typeof collapsed !== "boolean" ||
+		typeof x !== "number" ||
+		!Number.isFinite(x) ||
+		typeof y !== "number" ||
+		!Number.isFinite(y)
+	) {
+		return null;
+	}
+
+	const filteredNodeIds = nodeIds.filter(
+		(nodeId): nodeId is number =>
+			typeof nodeId === "number" && Number.isFinite(nodeId),
+	);
+
+	return {
+		id,
+		title,
+		nodeIds: filteredNodeIds,
+		collapsed,
+		x,
+		y,
+	};
+};
+
 const parseCamera = (
 	value: unknown,
 ): SerializableGraph["camera"] | undefined => {
@@ -214,23 +851,34 @@ const parseCamera = (
 	return { pivotX, pivotY, scale };
 };
 
-export const parseGraph = (value: unknown): SerializableGraph | null => {
+export const parseGraphWithReport = (value: unknown): GraphParseReport => {
+	const errors: string[] = [];
 	if (!isRecord(value)) {
-		return null;
+		errors.push("Graph data must be a JSON object.");
+		return { snapshot: null, errors };
 	}
 
-	const { version, nodes, connections, camera } = value;
-	if (version !== undefined && version !== 1) {
-		return null;
+	const { normalized, errors: migrationErrors } =
+		migrateGraphPayloadWithReport(value);
+	if (!normalized) {
+		errors.push(...migrationErrors);
+		if (errors.length === 0) {
+			errors.push("Graph version is unsupported.");
+		}
+		return { snapshot: null, errors };
 	}
 
+	const { nodes, connections, camera, groups } = normalized;
 	if (!Array.isArray(nodes) || !Array.isArray(connections)) {
-		return null;
+		errors.push("Graph data is missing required nodes or connections arrays.");
+		return { snapshot: null, errors };
 	}
 
 	const parsedNodes = nodes.map(parseNode);
-	if (parsedNodes.some((node) => !node)) {
-		return null;
+	const invalidNodeCount = parsedNodes.filter((node) => !node).length;
+	if (invalidNodeCount > 0) {
+		errors.push(`Graph contains ${invalidNodeCount} invalid node(s).`);
+		return { snapshot: null, errors };
 	}
 
 	const parsedConnections = connections
@@ -240,8 +888,13 @@ export const parseGraph = (value: unknown): SerializableGraph | null => {
 		);
 
 	const parsedCamera = parseCamera(camera);
+	const parsedGroups = Array.isArray(groups)
+		? groups
+				.map(parseGroup)
+				.filter((group): group is SerializableGroup => group !== null)
+		: [];
 	const snapshot: SerializableGraph = {
-		version: 1,
+		version: GRAPH_SCHEMA_VERSION,
 		nodes: parsedNodes.filter(
 			(node): node is SerializableNode => node !== null,
 		),
@@ -251,6 +904,14 @@ export const parseGraph = (value: unknown): SerializableGraph | null => {
 	if (parsedCamera) {
 		snapshot.camera = parsedCamera;
 	}
+	if (parsedGroups.length > 0) {
+		snapshot.groups = parsedGroups;
+	}
 
+	return { snapshot, errors };
+};
+
+export const parseGraph = (value: unknown): SerializableGraph | null => {
+	const { snapshot } = parseGraphWithReport(value);
 	return snapshot;
 };

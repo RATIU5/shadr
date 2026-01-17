@@ -23,6 +23,7 @@ Main application.
 
 - `app.tsx` - Root, lazy loads editor
 - `components/editor.client.tsx` - Pixi.js editor (client-only)
+- `components/editor/*` - UI subcomponents (overlays, modals, action bar, preview)
 
 ### @shadr/lib-editor (packages/editor/)
 
@@ -30,7 +31,7 @@ Shared library.
 
 - Node-based editor on infinite grid
 - Pixi.js initialization
-- Editor helpers split into modules (`src/types.ts`, `src/templates.ts`, `src/serialization.ts`, `src/shader.ts`, `src/grid.ts`, `src/search.ts`, `src/const-editor.ts`)
+- Editor helpers split into modules (`src/types.ts`, `src/visual-settings.ts`, `src/templates.ts`, `src/node-families.ts`, `src/math-ops.ts`, `src/serialization.ts`, `src/shader.ts`, `src/grid.ts`, `src/search.ts`, `src/const-editor.ts`, `src/dropdown-editor.ts`, `src/editor-state.ts`, `src/nodes.ts`, `src/groups.ts`, `src/connections.ts`, `src/history.ts`, `src/debug.ts`)
 
 ## Data Flow
 

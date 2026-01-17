@@ -1,192 +1,339 @@
-import { parseGraph } from "../serialization";
-import type { SerializableGraph } from "../types";
+import { describe, expect, it } from "vitest";
+import { GRAPH_SCHEMA_VERSION } from "../graph-version";
+import { parseGraph, parseGraphWithReport } from "../serialization";
 
-type TestCase = {
-	name: string;
-	run: () => void;
-};
-
-const assert = (condition: boolean, message: string) => {
-	if (!condition) {
-		throw new Error(message);
-	}
-};
-
-const runTest = ({ name, run }: TestCase) => {
-	try {
-		run();
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`${name} failed: ${message}`);
-	}
-};
-
-export const runSerializationTests = () => {
-	runTest({
-		name: "parses a valid snapshot with camera and node data",
-		run: () => {
-			const snapshot: SerializableGraph = {
-				version: 1,
-				nodes: [
-					{
-						id: 1,
-						title: "Constant Float",
-						x: 12,
-						y: -8,
-						templateId: "const-float",
-						data: { value: 0.75 },
-						ports: [
-							{
-								id: "out",
-								name: "Out",
-								type: "float",
-								direction: "output",
-							},
-						],
-					},
-				],
-				connections: [],
-				camera: {
-					pivotX: 5,
-					pivotY: -3,
-					scale: 1.5,
+describe("graph serialization", () => {
+	it("parses a valid snapshot with camera and node data", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 1,
+					title: "Constant Float",
+					x: 12,
+					y: -8,
+					familyId: "constants",
+					data: { constType: "float", value: 0.75 },
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "float",
+							direction: "output",
+						},
+					],
 				},
-			};
+			],
+			connections: [],
+			camera: {
+				pivotX: 5,
+				pivotY: -3,
+				scale: 1.5,
+			},
+		};
 
-			const parsed = parseGraph(snapshot);
+		const parsed = parseGraph(snapshot);
 
-			assert(parsed !== null, "expected snapshot to parse");
-			assert(parsed?.camera?.scale === 1.5, "expected camera scale");
-			assert(parsed?.nodes.length === 1, "expected one node");
-			assert(
-				parsed?.nodes[0]?.data?.value === 0.75,
-				"expected node data value",
-			);
-		},
+		expect(parsed).not.toBeNull();
+		expect(parsed?.camera?.scale).toBe(1.5);
+		expect(parsed?.nodes.length).toBe(1);
+		expect(parsed?.nodes[0]?.typeId).toBe("constants");
+		expect(parsed?.nodes[0]?.state?.params.floatValue).toBe(0.75);
 	});
 
-	runTest({
-		name: "drops invalid node data payloads instead of failing",
-		run: () => {
-			const snapshot: SerializableGraph = {
-				version: 1,
-				nodes: [
-					{
-						id: 2,
-						title: "Constant Vec2",
-						x: 0,
-						y: 0,
-						templateId: "const-vec2",
-						data: { vector: { x: 0.5, y: Number.NaN } },
-						ports: [
-							{
-								id: "out",
-								name: "Out",
-								type: "vec2",
-								direction: "output",
-							},
-						],
-					},
-				],
-				connections: [],
-			};
+	it("drops invalid node data payloads instead of failing", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 2,
+					title: "Constant Vec2",
+					x: 0,
+					y: 0,
+					familyId: "constants",
+					data: { constType: "vec2", vector: { x: 0.5, y: Number.NaN } },
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "vec2",
+							direction: "output",
+						},
+					],
+				},
+			],
+			connections: [],
+		};
 
-			const parsed = parseGraph(snapshot);
+		const parsed = parseGraph(snapshot);
 
-			assert(parsed !== null, "expected snapshot to parse");
-			assert(
-				parsed?.nodes[0]?.data === undefined,
-				"expected invalid data to be removed",
-			);
-		},
+		expect(parsed).not.toBeNull();
+		expect(parsed?.nodes[0]?.state?.params.type).toBe("float");
 	});
 
-	runTest({
-		name: "rejects snapshots with invalid port types",
-		run: () => {
-			const snapshot = {
-				version: 1,
-				nodes: [
-					{
-						id: 3,
-						title: "Bad Node",
-						x: 0,
-						y: 0,
-						ports: [
-							{
-								id: "out",
-								name: "Out",
-								type: "mat4",
-								direction: "output",
-							},
-						],
-					},
-				],
-				connections: [],
-			};
+	it("parses groups and filters invalid node references", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 7,
+					title: "Constant Float",
+					x: 0,
+					y: 0,
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "float",
+							direction: "output",
+						},
+					],
+				},
+			],
+			connections: [],
+			groups: [
+				{
+					id: 1,
+					title: "Group 1",
+					nodeIds: [7, 99],
+					collapsed: true,
+					x: 12,
+					y: -6,
+				},
+			],
+		};
 
-			const parsed = parseGraph(snapshot);
+		const parsed = parseGraph(snapshot);
 
-			assert(parsed === null, "expected snapshot to be rejected");
-		},
+		expect(parsed).not.toBeNull();
+		expect(parsed?.groups?.length).toBe(1);
+		expect(parsed?.groups?.[0]?.nodeIds).toEqual([7]);
+		expect(parsed?.groups?.[0]?.collapsed).toBe(true);
 	});
 
-	runTest({
-		name: "filters out invalid connections while keeping the snapshot",
-		run: () => {
-			const snapshot = {
-				version: 1,
-				nodes: [
-					{
-						id: 4,
-						title: "Constant Float",
-						x: 10,
-						y: 20,
-						ports: [
-							{
-								id: "out",
-								name: "Out",
-								type: "float",
-								direction: "output",
-							},
-						],
-					},
-					{
-						id: 5,
-						title: "Fragment Output",
-						x: 50,
-						y: 50,
-						ports: [
-							{
-								id: "color",
-								name: "Color",
-								type: "float",
-								direction: "input",
-							},
-						],
-					},
-				],
-				connections: [
-					{
-						from: { nodeId: 4, portId: "out" },
-						to: { nodeId: 5, portId: "color" },
-						type: "float",
-					},
-					{
-						from: { nodeId: 99, portId: 12 },
-						to: { nodeId: 5, portId: "color" },
-						type: "float",
-					},
-				],
-			};
+	it("keeps dropdown component data for vector component nodes", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 6,
+					title: "Component",
+					x: 0,
+					y: 0,
+					familyId: "vector",
+					data: { vectorOp: "component", component: "z" },
+					ports: [
+						{
+							id: "in",
+							name: "Vector",
+							type: "vec4",
+							direction: "input",
+						},
+						{
+							id: "out",
+							name: "Out",
+							type: "vec4",
+							direction: "output",
+						},
+					],
+				},
+			],
+			connections: [],
+		};
 
-			const parsed = parseGraph(snapshot);
+		const parsed = parseGraph(snapshot);
 
-			assert(parsed !== null, "expected snapshot to parse");
-			assert(
-				parsed?.connections.length === 1,
-				"expected only valid connections",
-			);
-		},
+		expect(parsed).not.toBeNull();
+		expect(parsed?.nodes[0]?.typeId).toBe("vector");
+		expect(parsed?.nodes[0]?.state?.params.operation).toBe("component");
+		expect(parsed?.nodes[0]?.state?.params.component).toBe("z");
 	});
-};
+
+	it("keeps math operation data for math family nodes", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 8,
+					title: "Math",
+					x: 0,
+					y: 0,
+					familyId: "math",
+					data: { mathOp: "multiply", mathType: "vec2" },
+					ports: [
+						{
+							id: "a",
+							name: "A",
+							type: "vec2",
+							direction: "input",
+						},
+						{
+							id: "b",
+							name: "B",
+							type: "vec2",
+							direction: "input",
+						},
+						{
+							id: "out",
+							name: "Out",
+							type: "vec2",
+							direction: "output",
+						},
+					],
+				},
+			],
+			connections: [],
+		};
+
+		const parsed = parseGraph(snapshot);
+
+		expect(parsed).not.toBeNull();
+		expect(parsed?.nodes[0]?.typeId).toBe("math");
+		expect(parsed?.nodes[0]?.state?.params.operation).toBe("multiply");
+		expect(parsed?.nodes[0]?.state?.params.type).toBe("vec2");
+	});
+
+	it("migrates legacy template ids into node families", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 10,
+					title: "Legacy Float",
+					x: 0,
+					y: 0,
+					templateId: "const-float",
+					data: { value: 0.5 },
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "float",
+							direction: "output",
+						},
+					],
+				},
+				{
+					id: 11,
+					title: "Legacy Math",
+					x: 0,
+					y: 0,
+					templateId: "math-add-vec3",
+					data: { mathOp: "add" },
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "vec3",
+							direction: "output",
+						},
+					],
+				},
+			],
+			connections: [],
+		};
+
+		const parsed = parseGraph(snapshot);
+
+		expect(parsed).not.toBeNull();
+		expect(parsed?.nodes[0]?.typeId).toBe("constants");
+		expect(parsed?.nodes[0]?.state?.params.type).toBe("float");
+		expect(parsed?.nodes[0]?.state?.params.floatValue).toBe(0.5);
+		expect(parsed?.nodes[1]?.typeId).toBe("math");
+		expect(parsed?.nodes[1]?.state?.params.type).toBe("vec3");
+	});
+
+	it("rejects snapshots with invalid port types", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 3,
+					title: "Bad Node",
+					x: 0,
+					y: 0,
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "mat4",
+							direction: "output",
+						},
+					],
+				},
+			],
+			connections: [],
+		};
+
+		const parsed = parseGraph(snapshot);
+
+		expect(parsed).toBeNull();
+	});
+
+	it("filters out invalid connections while keeping the snapshot", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 4,
+					title: "Constant Float",
+					x: 10,
+					y: 20,
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "float",
+							direction: "output",
+						},
+					],
+				},
+				{
+					id: 5,
+					title: "Fragment Output",
+					x: 50,
+					y: 50,
+					ports: [
+						{
+							id: "color",
+							name: "Color",
+							type: "float",
+							direction: "input",
+						},
+					],
+				},
+			],
+			connections: [
+				{
+					from: { nodeId: 4, portId: "out" },
+					to: { nodeId: 5, portId: "color" },
+					type: "float",
+				},
+				{
+					from: { nodeId: 99, portId: 12 },
+					to: { nodeId: 5, portId: "color" },
+					type: "float",
+				},
+			],
+		};
+
+		const parsed = parseGraph(snapshot);
+
+		expect(parsed).not.toBeNull();
+		expect(parsed?.connections.length).toBe(1);
+		expect(parsed?.connections[0]?.from.nodeId).toBe(4);
+	});
+
+	it("reports errors for unsupported graph versions", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION + 1,
+			nodes: [],
+			connections: [],
+		};
+
+		const result = parseGraphWithReport(snapshot);
+
+		expect(result.snapshot).toBeNull();
+		expect(result.errors[0]).toContain("newer");
+	});
+});

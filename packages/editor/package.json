@@ -12,13 +12,14 @@
 		"build": "tsup",
 		"watch": "tsup --watch",
 		"dev": "tsup --watch",
+		"test": "vitest run",
 		"clean": "rm -rf node_modules && rm -rf dist"
 	},
 	"devDependencies": {
-		"tsup": "^8.5.1"
+		"tsup": "^8.5.1",
+		"vitest": "^2.1.9"
 	},
 	"dependencies": {
-		"effect": "^3.19.13",
 		"pixi.js": "^8.6.6"
 	}
 }

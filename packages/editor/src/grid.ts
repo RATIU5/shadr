@@ -1,17 +1,5 @@
 import type { Application, Container, Graphics } from "pixi.js";
-
-type GridSettings = {
-	minorStep: number;
-	majorStep: number;
-	minScreenSpacing: number;
-	maxScreenSpacing: number;
-	minorColor: number;
-	majorColor: number;
-	axisColor: number;
-	minorAlpha: number;
-	majorAlpha: number;
-	axisAlpha: number;
-};
+import { defaultVisualSettings, type GridSettings } from "./visual-settings";
 
 type GridState = {
 	width: number;
@@ -19,65 +7,69 @@ type GridState = {
 	pivotX: number;
 	pivotY: number;
 	scale: number;
+	settingsKey: string;
 };
 
-const defaultGridSettings: GridSettings = {
-	minorStep: 32,
-	majorStep: 160,
-	minScreenSpacing: 12,
-	maxScreenSpacing: 96,
-	minorColor: 0xd6d6d6,
-	majorColor: 0xb0b0b0,
-	axisColor: 0x8a8a8a,
-	minorAlpha: 0.35,
-	majorAlpha: 0.6,
-	axisAlpha: 0.9,
-};
+const defaultGridSettings: GridSettings = defaultVisualSettings.grid;
 
 export const createGridRenderer = ({
 	app,
 	camera,
 	grid,
-	settings,
+	getSettings,
 }: {
 	app: Application;
 	camera: Container;
 	grid: Graphics;
-	settings?: Partial<GridSettings>;
+	getSettings?: () => Partial<GridSettings>;
 }) => {
-	const resolvedSettings = { ...defaultGridSettings, ...settings };
 	const gridState: GridState = {
 		width: 0,
 		height: 0,
 		pivotX: 0,
 		pivotY: 0,
 		scale: 1,
+		settingsKey: "",
 	};
 
-	const getScaledSteps = (scale: number) => {
-		const ratio = resolvedSettings.majorStep / resolvedSettings.minorStep;
-		let minorStep = resolvedSettings.minorStep;
-		let majorStep = resolvedSettings.majorStep;
-		let screenSpacing = minorStep * scale;
+	const resolveSettings = () => ({
+		...defaultGridSettings,
+		...(getSettings ? getSettings() : {}),
+	});
 
-		while (screenSpacing < resolvedSettings.minScreenSpacing) {
-			minorStep *= 2;
-			majorStep = minorStep * ratio;
-			screenSpacing = minorStep * scale;
-		}
+	const buildSettingsKey = (settings: GridSettings) =>
+		[
+			settings.minorStep,
+			settings.majorStep,
+			settings.minScreenSpacing,
+			settings.maxScreenSpacing,
+			settings.minorColor,
+			settings.majorColor,
+			settings.axisColor,
+			settings.minorAlpha,
+			settings.majorAlpha,
+			settings.axisAlpha,
+		].join("|");
 
-		while (screenSpacing > resolvedSettings.maxScreenSpacing && minorStep > 1) {
-			minorStep /= 2;
-			majorStep = minorStep * ratio;
-			screenSpacing = minorStep * scale;
-		}
-
-		return { minorStep, majorStep };
+	const getMinorFade = (scale: number, settings: GridSettings) => {
+		const screenSpacing = settings.minorStep * scale;
+		const range = settings.maxScreenSpacing - settings.minScreenSpacing;
+		const clamped =
+			range > 0
+				? Math.min(
+						1,
+						Math.max(0, (screenSpacing - settings.minScreenSpacing) / range),
+					)
+				: 1;
+		const minFade = 0.15;
+		return minFade + (1 - minFade) * clamped;
 	};
 
-	const drawGrid = (width: number, height: number) => {
+	const drawGrid = (width: number, height: number, settings: GridSettings) => {
 		const scale = camera.scale.x || 1;
-		const { minorStep, majorStep } = getScaledSteps(scale);
+		const minorStep = settings.minorStep;
+		const majorStep = settings.majorStep;
+		const minorFade = getMinorFade(scale, settings);
 		const halfWidth = width / (2 * scale);
 		const halfHeight = height / (2 * scale);
 		const left = camera.pivot.x - halfWidth;
@@ -98,8 +90,10 @@ export const createGridRenderer = ({
 
 		grid.setStrokeStyle({
 			width: 1 / scale,
-			color: resolvedSettings.minorColor,
-			alpha: resolvedSettings.minorAlpha,
+			color: settings.minorColor,
+			alpha: settings.minorAlpha * minorFade,
+			cap: "round",
+			join: "round",
 		});
 
 		for (let x = minorStartX; x <= minorEndX; x += minorStep) {
@@ -116,8 +110,10 @@ export const createGridRenderer = ({
 
 		grid.setStrokeStyle({
 			width: 1 / scale,
-			color: resolvedSettings.majorColor,
-			alpha: resolvedSettings.majorAlpha,
+			color: settings.majorColor,
+			alpha: settings.majorAlpha,
+			cap: "round",
+			join: "round",
 		});
 
 		for (let x = majorStartX; x <= majorEndX; x += majorStep) {
@@ -134,8 +130,10 @@ export const createGridRenderer = ({
 
 		grid.setStrokeStyle({
 			width: 2 / scale,
-			color: resolvedSettings.axisColor,
-			alpha: resolvedSettings.axisAlpha,
+			color: settings.axisColor,
+			alpha: settings.axisAlpha,
+			cap: "round",
+			join: "round",
 		});
 		grid.moveTo(0, top);
 		grid.lineTo(0, bottom);
@@ -149,6 +147,8 @@ export const createGridRenderer = ({
 		const width = screen.width;
 		const height = screen.height;
 		const scale = camera.scale.x || 1;
+		const settings = resolveSettings();
+		const settingsKey = buildSettingsKey(settings);
 
 		if (width !== gridState.width || height !== gridState.height) {
 			camera.position.set(width / 2, height / 2);
@@ -159,14 +159,16 @@ export const createGridRenderer = ({
 			height !== gridState.height ||
 			camera.pivot.x !== gridState.pivotX ||
 			camera.pivot.y !== gridState.pivotY ||
-			scale !== gridState.scale
+			scale !== gridState.scale ||
+			settingsKey !== gridState.settingsKey
 		) {
 			gridState.width = width;
 			gridState.height = height;
 			gridState.pivotX = camera.pivot.x;
 			gridState.pivotY = camera.pivot.y;
 			gridState.scale = scale;
-			drawGrid(width, height);
+			gridState.settingsKey = settingsKey;
+			drawGrid(width, height, settings);
 		}
 	};
 

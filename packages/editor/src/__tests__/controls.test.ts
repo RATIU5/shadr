@@ -1,14 +1,10 @@
+import { describe, expect, it } from "vitest";
 import { applyPan, applyZoom } from "../controls";
 
 type CameraState = {
 	pivotX: number;
 	pivotY: number;
 	scale: number;
-};
-
-type TestCase = {
-	name: string;
-	run: () => void;
 };
 
 const createState = (overrides: Partial<CameraState> = {}): CameraState => ({
@@ -29,100 +25,65 @@ const worldFromScreen = (
 	y: state.pivotY + (cursorY - screenHeight / 2) / state.scale,
 });
 
-const assert = (condition: boolean, message: string) => {
-	if (!condition) {
-		throw new Error(message);
-	}
-};
+describe("camera controls", () => {
+	it("pans by delta adjusted for scale", () => {
+		const next = applyPan(createState({ pivotX: 12, pivotY: -8, scale: 2 }), {
+			deltaX: 10,
+			deltaY: -20,
+		});
 
-const assertClose = (
-	value: number,
-	expected: number,
-	epsilon: number,
-	message: string,
-) => {
-	if (Math.abs(value - expected) > epsilon) {
-		throw new Error(message);
-	}
-};
-
-const runTest = ({ name, run }: TestCase) => {
-	try {
-		run();
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`${name} failed: ${message}`);
-	}
-};
-
-export const runCameraControlTests = () => {
-	runTest({
-		name: "pans by delta adjusted for scale",
-		run: () => {
-			const next = applyPan(createState({ pivotX: 12, pivotY: -8, scale: 2 }), {
-				deltaX: 10,
-				deltaY: -20,
-			});
-
-			assert(next.pivotX === 7, "expected pivotX to be 7");
-			assert(next.pivotY === 2, "expected pivotY to be 2");
-			assert(next.scale === 2, "expected scale to remain unchanged");
-		},
+		expect(next.pivotX).toBe(7);
+		expect(next.pivotY).toBe(2);
+		expect(next.scale).toBe(2);
 	});
 
-	runTest({
-		name: "clamps zoom to configured limits",
-		run: () => {
-			const state = createState({ scale: 4, pivotX: 3, pivotY: 4 });
-			const next = applyZoom(state, {
-				cursorX: 400,
-				cursorY: 300,
-				deltaY: -9999,
-				screenHeight: 600,
-				screenWidth: 800,
-				limits: { min: 0.25, max: 4 },
-			});
+	it("clamps zoom to configured limits", () => {
+		const state = createState({ scale: 4, pivotX: 3, pivotY: 4 });
+		const next = applyZoom(state, {
+			cursorX: 400,
+			cursorY: 300,
+			deltaY: -9999,
+			screenHeight: 600,
+			screenWidth: 800,
+			limits: { min: 0.25, max: 4 },
+		});
 
-			assert(next.scale === 4, "expected scale to remain at max");
-			assert(next.pivotX === state.pivotX, "expected pivotX to remain");
-			assert(next.pivotY === state.pivotY, "expected pivotY to remain");
-		},
+		expect(next.scale).toBe(4);
+		expect(next.pivotX).toBe(state.pivotX);
+		expect(next.pivotY).toBe(state.pivotY);
 	});
 
-	runTest({
-		name: "keeps the cursor world point steady while zooming",
-		run: () => {
-			const state = createState({ pivotX: 10, pivotY: -6, scale: 1.5 });
-			const screenWidth = 900;
-			const screenHeight = 700;
-			const cursorX = 120;
-			const cursorY = 480;
+	it("keeps the cursor world point steady while zooming", () => {
+		const state = createState({ pivotX: 10, pivotY: -6, scale: 1.5 });
+		const screenWidth = 900;
+		const screenHeight = 700;
+		const cursorX = 120;
+		const cursorY = 480;
 
-			const before = worldFromScreen(
-				state,
-				cursorX,
-				cursorY,
-				screenWidth,
-				screenHeight,
-			);
-			const next = applyZoom(state, {
-				cursorX,
-				cursorY,
-				deltaY: -120,
-				screenHeight,
-				screenWidth,
-				limits: { min: 0.25, max: 4 },
-			});
-			const after = worldFromScreen(
-				next,
-				cursorX,
-				cursorY,
-				screenWidth,
-				screenHeight,
-			);
+		const before = worldFromScreen(
+			state,
+			cursorX,
+			cursorY,
+			screenWidth,
+			screenHeight,
+		);
+		const next = applyZoom(state, {
+			cursorX,
+			cursorY,
+			deltaY: -120,
+			screenHeight,
+			screenWidth,
+			limits: { min: 0.25, max: 4 },
+		});
+		const after = worldFromScreen(
+			next,
+			cursorX,
+			cursorY,
+			screenWidth,
+			screenHeight,
+		);
 
-			assertClose(after.x, before.x, 1e-6, "expected world X stable");
-			assertClose(after.y, before.y, 1e-6, "expected world Y stable");
-		},
+		expect(after.x).toBeCloseTo(before.x, 6);
+		expect(after.y).toBeCloseTo(before.y, 6);
 	});
-};
+});

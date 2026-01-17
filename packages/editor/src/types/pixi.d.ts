@@ -22,6 +22,8 @@ declare module "pixi.js" {
 		cursor?: string;
 		hitArea?: Rectangle;
 		addChild<T extends Container>(child: T): T;
+		removeChild<T extends Container>(child: T): T;
+		removeAllListeners(): void;
 		toGlobal(
 			position: { x: number; y: number },
 			point?: Point,
@@ -65,6 +67,7 @@ declare module "pixi.js" {
 			text?: string;
 			style?: TextStyleOptions;
 		});
+		style: TextStyleOptions;
 		text: string;
 		width: number;
 		height: number;
@@ -79,6 +82,8 @@ declare module "pixi.js" {
 	}
 
 	export interface Renderer {
+		resolution: number;
+		resize(width: number, height: number): void;
 		screen: {
 			width: number;
 			height: number;
@@ -104,6 +109,8 @@ declare module "pixi.js" {
 		width?: number;
 		color?: number;
 		alpha?: number;
+		cap?: "round" | "square" | "butt";
+		join?: "round" | "bevel" | "miter";
 	}
 
 	export interface FillStyleOptions {
@@ -115,5 +122,8 @@ declare module "pixi.js" {
 		fill?: number;
 		fontFamily?: string;
 		fontSize?: number;
+		lineHeight?: number;
+		letterSpacing?: number;
+		resolution?: number;
 	}
 }

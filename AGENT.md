@@ -72,6 +72,7 @@ pnpm --filter @shadr/app build
 
 - Root typecheck should target `app/tsconfig.json` and `packages/editor/tsconfig.json` to respect per-package JSX settings.
 - When changing `@shadr/lib-editor` public types, rebuild it (`pnpm --filter @shadr/lib-editor build`) so app typecheck picks up updated `dist` types.
+- Git operations may fail because `.git` is not writable (cannot create `.git/index.lock`) in this environment.
 
 ---
 

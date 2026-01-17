@@ -3,47 +3,134 @@ import {
 	Container,
 	type FederatedPointerEvent,
 	Graphics,
-	Rectangle,
-	Text,
+	type Text,
 } from "pixi.js";
-import { createConstEditor } from "./const-editor";
+import { createConnectionSystem } from "./connections";
 import { applyPan, applyZoom } from "./controls";
+import { createDebugOverlay } from "./debug";
+import {
+	arePortTypesCompatible,
+	createEditorState,
+	nodeDimensions,
+	portStyles,
+	resolveConnectionType,
+	zoomLimits,
+} from "./editor-state";
+import { GRAPH_SCHEMA_VERSION } from "./graph-version";
 import { createGridRenderer } from "./grid";
+import { createGroupSystem } from "./groups";
+import { createHistoryManager } from "./history";
+import {
+	getDefaultNodeState,
+	getDefinitionPorts,
+	normalizeNodeState,
+} from "./node-definitions";
+import { createNodeSystem } from "./nodes";
 import { portTypeColors } from "./ports";
 import { createSearchPalette, type SearchEntry } from "./search";
-import { parseGraph } from "./serialization";
+import { parseGraph, parseGraphWithReport } from "./serialization";
 import { compileGraphToGlsl } from "./shader";
 import { defaultPorts, nodeTemplates } from "./templates";
 import type {
 	Connection,
-	ConnectionDrag,
 	ContextMenuItem,
 	ContextMenuState,
 	EditorApp,
+	EditorHoverState,
+	EditorSelectionState,
 	InitCanvasOptions,
-	NodeData,
-	NodePort,
+	NodeParamValue,
+	NodeRenameState,
+	NodeState,
 	NodeTemplate,
 	NodeView,
-	PortRef,
-	PortType,
-	SerializableConnection,
+	SelectedConnection,
+	SelectedNode,
 	SerializableGraph,
 	SerializablePort,
+	UiMessageTone,
 } from "./types";
+import {
+	defaultVisualSettings,
+	type EditorVisualSettings,
+} from "./visual-settings";
 
+export {
+	getMathOperationId,
+	getMathOperationLabel,
+	isMathTemplateId,
+	mathOperationEntries,
+} from "./math-ops";
+export {
+	getDefaultNodeState,
+	getInputSelection,
+	getInputSelectOptions,
+	getNodeDefinition,
+	getNodeDefinitions,
+} from "./node-definitions";
 export { portTypeColors, portTypeLabels, portTypeOrder } from "./ports";
 export type {
 	ContextMenuItem,
 	ContextMenuState,
 	EditorApp,
+	EditorHoverState,
+	EditorSelectionState,
+	NodeDefinition,
+	NodeParamSpec,
+	NodeParamValue,
+	NodeRenameState,
+	NodeState,
+	SelectedConnection,
+	SelectedGroup,
+	SelectedNode,
 	ShaderCompileResult,
+	UiMessage,
+	UiMessageTone,
 } from "./types";
+export type { EditorVisualSettings } from "./visual-settings";
+export { defaultVisualSettings } from "./visual-settings";
 
 export async function initCanvas(
 	canvas: HTMLCanvasElement,
 	options: InitCanvasOptions = {},
 ): Promise<EditorApp> {
+	const mergeVisualSettings = (
+		base: EditorVisualSettings,
+		overrides?: Partial<EditorVisualSettings>,
+	): EditorVisualSettings => {
+		const resolvedOverrides = overrides ?? {};
+		return {
+			backgroundColor:
+				typeof resolvedOverrides.backgroundColor === "number"
+					? resolvedOverrides.backgroundColor
+					: base.backgroundColor,
+			debugOverlay:
+				typeof resolvedOverrides.debugOverlay === "boolean"
+					? resolvedOverrides.debugOverlay
+					: base.debugOverlay,
+			grid: { ...base.grid, ...(resolvedOverrides.grid ?? {}) },
+			nodes: { ...base.nodes, ...(resolvedOverrides.nodes ?? {}) },
+			groups: { ...base.groups, ...(resolvedOverrides.groups ?? {}) },
+			connections: {
+				...base.connections,
+				...(resolvedOverrides.connections ?? {}),
+			},
+		};
+	};
+
+	const initialDefaults = {
+		...defaultVisualSettings,
+		debugOverlay:
+			typeof options.debugOverlay === "boolean"
+				? options.debugOverlay
+				: defaultVisualSettings.debugOverlay,
+	};
+
+	let visualSettings = mergeVisualSettings(
+		initialDefaults,
+		options.visualSettings,
+	);
+
 	const app = new Application();
 
 	const resizeTo = canvas.parentElement ?? undefined;
@@ -59,530 +146,479 @@ export async function initCanvas(
 
 	await app.init(initOptions);
 
+	let currentResolution = resolution;
+	const backgroundState = {
+		width: 0,
+		height: 0,
+		color: visualSettings.backgroundColor,
+	};
+
+	const updateBackground = () => {
+		const screen = app.renderer.screen;
+		const width = screen.width;
+		const height = screen.height;
+		if (
+			width !== backgroundState.width ||
+			height !== backgroundState.height ||
+			visualSettings.backgroundColor !== backgroundState.color
+		) {
+			backgroundState.width = width;
+			backgroundState.height = height;
+			backgroundState.color = visualSettings.backgroundColor;
+			backgroundLayer.clear();
+			backgroundLayer
+				.rect(0, 0, width, height)
+				.fill({ color: visualSettings.backgroundColor, alpha: 1 });
+		}
+	};
+
 	const camera = new Container();
+	const backgroundLayer = new Graphics();
 	const grid = new Graphics();
 	const connectionsLayer = new Graphics();
+	const groupLayer = new Container();
 	const nodesLayer = new Container();
+	const selectionLayer = new Graphics();
 
 	camera.addChild(grid);
 	camera.addChild(connectionsLayer);
+	camera.addChild(groupLayer);
 	camera.addChild(nodesLayer);
+	camera.addChild(selectionLayer);
+	app.stage.addChild(backgroundLayer);
 	app.stage.addChild(camera);
+
+	const textObjects = new Set<Text>();
+	const maxTextResolution = 4;
+	const clampTextResolution = (value: number) =>
+		Math.min(maxTextResolution, Math.max(1, value));
+	const getTextResolution = () => {
+		const baseResolution = app.renderer.resolution || 1;
+		const zoom = camera.scale.x || 1;
+		return clampTextResolution(baseResolution * Math.max(1, zoom));
+	};
+	let currentTextResolution = getTextResolution();
+
+	const registerText = (text: Text) => {
+		textObjects.add(text);
+		text.style = { ...text.style, resolution: currentTextResolution };
+		return text;
+	};
+
+	const syncTextResolution = () => {
+		const nextResolution = getTextResolution();
+		if (nextResolution === currentTextResolution) {
+			return;
+		}
+		currentTextResolution = nextResolution;
+		textObjects.forEach((text) => {
+			text.style = { ...text.style, resolution: nextResolution };
+		});
+	};
+
+	let lastCameraScale = camera.scale.x || 1;
+	app.ticker.add(() => {
+		const scale = camera.scale.x || 1;
+		if (Math.abs(scale - lastCameraScale) < 0.001) {
+			return;
+		}
+		lastCameraScale = scale;
+		syncTextResolution();
+	});
 
 	const { updateScene } = createGridRenderer({
 		app,
 		camera,
 		grid,
+		getSettings: () => visualSettings.grid,
 	});
 
-	const interactionState = {
-		isPanning: false,
-		pointerId: null as number | null,
-		lastX: 0,
-		lastY: 0,
-		startPivotX: 0,
-		startPivotY: 0,
-	};
+	const {
+		interactionState,
+		dragState,
+		nodeState,
+		groupState,
+		connectionState,
+		historyState,
+		contextMenuState,
+	} = createEditorState();
 
-	const dragState = {
-		isDragging: false,
-		pointerId: null as number | null,
-		anchorId: null as number | null,
-		offsetX: 0,
-		offsetY: 0,
-		startPositions: new Map<number, { x: number; y: number }>(),
-	};
+	let lastSelectionSerialized = "";
+	let suppressSelectionEmit = false;
+	let lastHoverSerialized = "";
+	let hoveredNodeId: number | null = null;
+	let hoveredConnectionId: string | null = null;
 
-	const zoomLimits = {
-		min: 0.25,
-		max: 4,
-	};
+	const isVectorValue = (
+		value: NodeParamValue,
+	): value is { x: number; y: number; z?: number; w?: number } =>
+		typeof value === "object" && value !== null && "x" in value && "y" in value;
 
-	const nodeDimensions = {
-		width: 180,
-		height: 72,
-	};
+	const isColorValue = (
+		value: NodeParamValue,
+	): value is { r: number; g: number; b: number; a: number } =>
+		typeof value === "object" &&
+		value !== null &&
+		"r" in value &&
+		"g" in value &&
+		"b" in value &&
+		"a" in value;
 
-	const defaultConstColor = { r: 1, g: 1, b: 1, a: 1 };
-	const defaultConstVector = { x: 0, y: 0, z: 0, w: 0 };
-	const getDefaultNodeData = (templateId?: string): NodeData | undefined => {
-		if (templateId === "const-float") {
-			return { value: 0 };
+	const cloneNodeState = (state: NodeState): NodeState => {
+		const params: Record<string, NodeState["params"][string]> = {};
+		for (const [key, value] of Object.entries(state.params ?? {})) {
+			if (Array.isArray(value)) {
+				params[key] = [...value];
+			} else if (isVectorValue(value)) {
+				params[key] = {
+					x: value.x,
+					y: value.y,
+					...(value.z !== undefined ? { z: value.z } : {}),
+					...(value.w !== undefined ? { w: value.w } : {}),
+				};
+			} else if (isColorValue(value)) {
+				params[key] = {
+					r: value.r,
+					g: value.g,
+					b: value.b,
+					a: value.a,
+				};
+			} else {
+				params[key] = value as NodeState["params"][string];
+			}
 		}
-		if (templateId === "const-vec2") {
-			return { vector: { x: defaultConstVector.x, y: defaultConstVector.y } };
+		const cloned: NodeState = {
+			version: state.version,
+			params,
+		};
+		if (state.ui) {
+			cloned.ui = { ...state.ui };
 		}
-		if (templateId === "const-vec3") {
+		return cloned;
+	};
+
+	const buildSelectedNode = (node: NodeView): SelectedNode => {
+		const selectedNode: SelectedNode = {
+			id: node.id,
+			title: node.title.text,
+			ports: node.ports.map((port) => ({
+				id: port.id,
+				name: port.name,
+				type: port.type,
+				direction: port.direction,
+			})),
+		};
+		if (node.typeId) {
+			selectedNode.typeId = node.typeId;
+		}
+		if (node.state) {
+			selectedNode.state = cloneNodeState(node.state);
+		}
+		return selectedNode;
+	};
+
+	const buildSelectedConnection = (
+		connection: Connection,
+	): SelectedConnection => ({
+		id: connection.id,
+		from: connection.from,
+		to: connection.to,
+		type: connection.type,
+	});
+
+	const buildSelectionState = (): EditorSelectionState => {
+		const selectedNodes = Array.from(nodeState.selectedIds).sort(
+			(a, b) => a - b,
+		);
+		const selectedGroups = Array.from(groupState.selectedIds).sort(
+			(a, b) => a - b,
+		);
+		const selectedConnections = Array.from(connectionState.selectedIds).sort();
+		const total =
+			selectedNodes.length + selectedGroups.length + selectedConnections.length;
+
+		if (total === 0) {
+			return { kind: "none" };
+		}
+
+		if (
+			total > 1 ||
+			selectedNodes.length > 1 ||
+			selectedGroups.length > 1 ||
+			selectedConnections.length > 1
+		) {
 			return {
-				vector: {
-					x: defaultConstVector.x,
-					y: defaultConstVector.y,
-					z: defaultConstVector.z,
+				kind: "multi",
+				nodes: selectedNodes,
+				groups: selectedGroups,
+				connections: selectedConnections,
+			};
+		}
+
+		if (selectedNodes.length === 1) {
+			const node = nodeState.nodes.get(selectedNodes[0]);
+			if (!node) {
+				return { kind: "none" };
+			}
+			return {
+				kind: "node",
+				node: buildSelectedNode(node),
+			};
+		}
+
+		if (selectedGroups.length === 1) {
+			const group = groupState.groups.get(selectedGroups[0]);
+			if (!group) {
+				return { kind: "none" };
+			}
+			return {
+				kind: "group",
+				group: {
+					id: group.id,
+					title: group.label,
+					nodeIds: Array.from(group.nodeIds),
+					collapsed: group.collapsed,
 				},
 			};
 		}
-		if (templateId === "const-vec4") {
-			return { vector: { ...defaultConstVector } };
+
+		if (selectedConnections.length === 1) {
+			const connection = connectionState.connections.get(
+				selectedConnections[0],
+			);
+			if (!connection) {
+				return { kind: "none" };
+			}
+			return {
+				kind: "connection",
+				connection: buildSelectedConnection(connection),
+			};
 		}
-		if (templateId === "const-color") {
-			return { color: { ...defaultConstColor } };
+
+		return { kind: "none" };
+	};
+
+	const emitSelectionChange = () => {
+		if (suppressSelectionEmit) {
+			return;
 		}
-		return undefined;
+		const onSelectionChange = options.onSelectionChange;
+		if (!onSelectionChange) {
+			return;
+		}
+		const next = buildSelectionState();
+		const serialized = JSON.stringify(next);
+		if (serialized === lastSelectionSerialized) {
+			return;
+		}
+		lastSelectionSerialized = serialized;
+		onSelectionChange(next);
 	};
 
-	const portStyles = {
-		radius: 5,
-		hoverRadius: 7,
-		hoverStroke: 2,
-		dragStrokeValid: 0x3bb54a,
-		dragStrokeInvalid: 0xe05a5a,
-		dragStrokeAlpha: 0.9,
-		startY: 34,
-		spacing: 18,
-		labelOffset: 10,
-		outputLabelOffset: 72,
+	const buildHoverState = (): EditorHoverState => {
+		if (hoveredNodeId !== null) {
+			const node = nodeState.nodes.get(hoveredNodeId);
+			if (node) {
+				return { kind: "node", node: buildSelectedNode(node) };
+			}
+		}
+
+		if (hoveredConnectionId) {
+			const connection = connectionState.connections.get(hoveredConnectionId);
+			if (connection) {
+				return {
+					kind: "connection",
+					connection: buildSelectedConnection(connection),
+				};
+			}
+		}
+
+		return { kind: "none" };
 	};
 
-	const arePortTypesCompatible = (first: PortType, second: PortType) =>
-		first === second ||
-		(first === "color" && second === "vec4") ||
-		(first === "vec4" && second === "color");
-
-	const resolveConnectionType = (
-		first: PortType,
-		second: PortType,
-	): PortType => (first === "color" || second === "color" ? "color" : first);
-
-	const connectionStyles = {
-		width: 2,
-		hoverWidth: 4,
-		hoverDistance: 10,
-		hoverSegments: 12,
-		ghostAlpha: 0.45,
-		invalidColor: 0xe05a5a,
-		invalidAlpha: 0.6,
+	const emitHoverChange = () => {
+		const onHoverChange = options.onHoverChange;
+		if (!onHoverChange) {
+			return;
+		}
+		const next = buildHoverState();
+		const serialized = JSON.stringify(next);
+		if (serialized === lastHoverSerialized) {
+			return;
+		}
+		lastHoverSerialized = serialized;
+		onHoverChange(next);
 	};
 
-	const nodeState = {
-		nextId: 1,
-		nodes: new Map<number, NodeView>(),
-		selectedIds: new Set<number>(),
-		suppressPanPointerId: null as number | null,
-	};
+	const debugOverlay = createDebugOverlay({
+		app,
+		camera,
+		nodeState,
+		groupState,
+		connectionState,
+		interactionState,
+		dragState,
+		registerText,
+	});
+	debugOverlay.setEnabled(visualSettings.debugOverlay);
 
-	const connectionState = {
-		connections: new Map<string, Connection>(),
-		active: null as ConnectionDrag | null,
-		hoverId: null as string | null,
-	};
-
-	const historyState = {
-		past: [] as SerializableGraph[],
-		current: null as SerializableGraph | null,
-		future: [] as SerializableGraph[],
-		currentSerialized: "",
-	};
-
-	let updateShaderFromSnapshot = (_snapshot: SerializableGraph) => {};
 	let lastShaderSnapshot = "";
 	let pendingShaderFrame: number | null = null;
 	let pendingShaderSnapshot: SerializableGraph | null = null;
 
-	const contextMenuState = {
-		isOpen: false,
-		screenX: 0,
-		screenY: 0,
-		worldX: 0,
-		worldY: 0,
-	};
-
 	let commitHistory = () => {};
+	let renderConnections = () => {};
+	let updateNodePorts = (
+		_nodeId: number,
+		_ports: SerializablePort[],
+		_options?: { preserveNames?: boolean },
+	) => false;
+	let nodeRenameState: NodeRenameState | null = null;
+	let startConnectionDrag: (
+		event: FederatedPointerEvent,
+		nodeId: number,
+		portId: string,
+	) => void = () => {};
+	let cancelConnectionDrag = () => {};
+	let startNodeDrag: (event: FederatedPointerEvent, id: number) => void =
+		() => {};
+	let startGroupDrag: (event: FederatedPointerEvent, id: number) => void =
+		() => {};
 
-	const constEditor = createConstEditor({
-		container: canvas.parentElement ?? document.body,
-		canvas,
-		getNodeById: (id) => nodeState.nodes.get(id),
-		onCommit: () => commitHistory(),
+	const nodeSystem = createNodeSystem({
+		nodesLayer,
+		connectionsLayer,
+		nodeState,
+		connectionState,
+		nodeDimensions,
+		portStyles,
+		defaultPorts,
+		portTypeColors,
+		getNodeStyles: () => visualSettings.nodes,
+		registerText,
+		onStartNodeDrag: (event, nodeId) => startNodeDrag(event, nodeId),
+		onStartConnectionDrag: (event, nodeId, portId) =>
+			startConnectionDrag(event, nodeId, portId),
+		onCancelConnectionDrag: () => cancelConnectionDrag(),
+		onSelectionChange: emitSelectionChange,
+		onNodeHoverChange: (nodeId) => {
+			hoveredNodeId = nodeId;
+			emitHoverChange();
+		},
+		onConnectionsPruned: (count) => {
+			emitUiMessage(
+				"warning",
+				`Port updates removed ${count} incompatible connection(s).`,
+			);
+		},
 	});
 
-	const renderNode = (node: NodeView, isSelected: boolean) => {
-		const isHover = node.isHover && !isSelected;
-		const borderColor = isSelected ? 0x2f6fed : isHover ? 0x4a4a4a : 0x6b6b6b;
-		const fillColor = isHover ? 0xfafafa : 0xf4f4f4;
+	const {
+		renderFooterLabel,
+		renderBodyLabel,
+		renderPort,
+		getPortWorldPosition,
+		getNodePort,
+		clearSelection,
+		updateSelection,
+		toggleSelection,
+		ensureSelectedForDrag,
+		updateNodeTitle,
+		createNode,
+		clearGraph,
+		deleteSelectedNode,
+		renderAllNodes,
+	} = nodeSystem;
+	updateNodePorts = nodeSystem.updateNodePorts;
 
-		node.background.clear();
-		node.background.setStrokeStyle({
-			width: 2,
-			color: borderColor,
-			alpha: 1,
-		});
-		node.background.rect(0, 0, node.width, node.height);
-		node.background.fill({ color: fillColor, alpha: 1 });
-		node.background.stroke();
-	};
+	let selectGroup: (groupId: number, append: boolean) => void = () => {};
 
-	const renderConstValue = (node: NodeView) => {
-		constEditor.renderValue(node);
-	};
-
-	const closeConstEditor = () => {
-		constEditor.close();
-	};
-
-	const openConstEditor = (node: NodeView) => {
-		constEditor.open(node);
-	};
-
-	const renderPorts = (node: NodeView) => {
-		const inputs = node.ports.filter((port) => port.direction === "input");
-		const outputs = node.ports.filter((port) => port.direction === "output");
-
-		inputs.forEach((port, index) => {
-			const y = portStyles.startY + index * portStyles.spacing;
-			const shouldStroke = port.isHover || port.isDragTarget;
-			const radius = shouldStroke ? portStyles.hoverRadius : portStyles.radius;
-			port.graphics.clear();
-			if (shouldStroke) {
-				port.graphics.setStrokeStyle({
-					width: portStyles.hoverStroke,
-					color: port.isDragTarget
-						? port.isDragValid
-							? portStyles.dragStrokeValid
-							: portStyles.dragStrokeInvalid
-						: 0xffffff,
-					alpha: port.isDragTarget ? portStyles.dragStrokeAlpha : 0.9,
-				});
+	const groupSystem = createGroupSystem({
+		groupLayer,
+		nodeState,
+		groupState,
+		nodeDimensions,
+		portStyles,
+		portTypeColors,
+		getGroupStyles: () => visualSettings.groups,
+		registerText,
+		onStartGroupDrag: (event, groupId) => startGroupDrag(event, groupId),
+		onStartConnectionDrag: (event, nodeId, portId) =>
+			startConnectionDrag(event, nodeId, portId),
+		onSelectGroup: (groupId, event) => {
+			const clientEvent = event as unknown as PointerEvent;
+			if (!clientEvent.shiftKey) {
+				clearSelection();
 			}
-			port.graphics.circle(0, y, radius);
-			port.graphics.fill({ color: portTypeColors[port.type], alpha: 1 });
-			if (shouldStroke) {
-				port.graphics.stroke();
-			}
-			port.label.text = `${port.name}: ${port.type}`;
-			port.label.position.set(
-				portStyles.radius + portStyles.labelOffset,
-				y - portStyles.radius,
-			);
-		});
+			selectGroup(groupId, clientEvent.shiftKey);
+		},
+	});
 
-		outputs.forEach((port, index) => {
-			const y = portStyles.startY + index * portStyles.spacing;
-			const shouldStroke = port.isHover || port.isDragTarget;
-			const radius = shouldStroke ? portStyles.hoverRadius : portStyles.radius;
-			port.graphics.clear();
-			if (shouldStroke) {
-				port.graphics.setStrokeStyle({
-					width: portStyles.hoverStroke,
-					color: port.isDragTarget
-						? port.isDragValid
-							? portStyles.dragStrokeValid
-							: portStyles.dragStrokeInvalid
-						: 0xffffff,
-					alpha: port.isDragTarget ? portStyles.dragStrokeAlpha : 0.9,
-				});
-			}
-			port.graphics.circle(node.width, y, radius);
-			port.graphics.fill({ color: portTypeColors[port.type], alpha: 1 });
-			if (shouldStroke) {
-				port.graphics.stroke();
-			}
-			port.label.text = `${port.name}: ${port.type}`;
-			port.label.position.set(node.width - portStyles.outputLabelOffset, y - 6);
-		});
+	const {
+		createGroup,
+		updateAllGroupLayouts,
+		setGroupCollapsed,
+		clearGroupSelection,
+		selectGroup: selectGroupImpl,
+		clearGroups,
+		deleteGroups,
+		ungroupGroups,
+		removeNodesFromGroups,
+		getGroupForNode,
+		isNodeHidden,
+		getGroupPortForRef,
+		getGroupPortWorldPosition,
+		findGroupPortAt,
+		renderAllGroups,
+	} = groupSystem;
+	const selectGroupWithEmit = (groupId: number, append: boolean) => {
+		selectGroupImpl(groupId, append);
+		emitSelectionChange();
 	};
-
-	const getPortWorldPosition = (node: NodeView, port: NodePort) => {
-		const ports = node.ports.filter(
-			(candidate) => candidate.direction === port.direction,
-		);
-		const index = Math.max(
-			0,
-			ports.findIndex((candidate) => candidate.id === port.id),
-		);
-		const y = portStyles.startY + index * portStyles.spacing;
-		const x = port.direction === "input" ? 0 : node.width;
-
-		return {
-			x: node.container.position.x + x,
-			y: node.container.position.y + y,
-		};
-	};
-
-	const getNodePort = (ref: PortRef) => {
-		const node = nodeState.nodes.get(ref.nodeId);
-		if (!node) {
-			return null;
-		}
-
-		const port = node.ports.find((candidate) => candidate.id === ref.portId);
-		if (!port) {
-			return null;
-		}
-
-		return { node, port };
-	};
-
-	const getConnectionControls = (fromX: number, toX: number) => {
-		const deltaX = toX - fromX;
-		const absDeltaX = Math.abs(deltaX);
-		const curve = Math.max(40, absDeltaX * 0.5);
-		const controlX1 = fromX + (deltaX >= 0 ? curve : -curve);
-		const controlX2 = toX - (deltaX >= 0 ? curve : -curve);
-
-		return { controlX1, controlX2 };
-	};
-
-	const drawConnection = (
-		fromX: number,
-		fromY: number,
-		toX: number,
-		toY: number,
-		color: number,
-		alpha: number,
-		width: number = connectionStyles.width,
-	) => {
-		const scale = camera.scale.x || 1;
-		const { controlX1, controlX2 } = getConnectionControls(fromX, toX);
-
-		connectionsLayer.setStrokeStyle({
-			width: width / scale,
-			color,
-			alpha,
-		});
-		connectionsLayer.moveTo(fromX, fromY);
-		connectionsLayer.bezierCurveTo(controlX1, fromY, controlX2, toY, toX, toY);
-		connectionsLayer.stroke();
-	};
-
-	const distanceToSegmentSquared = (
-		px: number,
-		py: number,
-		ax: number,
-		ay: number,
-		bx: number,
-		by: number,
-	) => {
-		const dx = bx - ax;
-		const dy = by - ay;
-		if (dx === 0 && dy === 0) {
-			const deltaX = px - ax;
-			const deltaY = py - ay;
-			return deltaX * deltaX + deltaY * deltaY;
-		}
-		const t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
-		const clamped = Math.max(0, Math.min(1, t));
-		const closestX = ax + clamped * dx;
-		const closestY = ay + clamped * dy;
-		const deltaX = px - closestX;
-		const deltaY = py - closestY;
-		return deltaX * deltaX + deltaY * deltaY;
-	};
-
-	const bezierPoint = (
-		t: number,
-		p0: number,
-		p1: number,
-		p2: number,
-		p3: number,
-	) => {
-		const inv = 1 - t;
-		return (
-			inv * inv * inv * p0 +
-			3 * inv * inv * t * p1 +
-			3 * inv * t * t * p2 +
-			t * t * t * p3
-		);
-	};
-
-	const distanceToConnectionSquared = (
-		px: number,
-		py: number,
-		fromX: number,
-		fromY: number,
-		toX: number,
-		toY: number,
-	) => {
-		const { controlX1, controlX2 } = getConnectionControls(fromX, toX);
-		const samples = Math.max(4, connectionStyles.hoverSegments);
-		let minDistance = Number.POSITIVE_INFINITY;
-		let lastX = fromX;
-		let lastY = fromY;
-
-		for (let i = 1; i <= samples; i += 1) {
-			const t = i / samples;
-			const nextX = bezierPoint(t, fromX, controlX1, controlX2, toX);
-			const nextY = bezierPoint(t, fromY, fromY, toY, toY);
-			const segmentDistance = distanceToSegmentSquared(
-				px,
-				py,
-				lastX,
-				lastY,
-				nextX,
-				nextY,
-			);
-			if (segmentDistance < minDistance) {
-				minDistance = segmentDistance;
-			}
-			lastX = nextX;
-			lastY = nextY;
-		}
-
-		return minDistance;
-	};
-
-	const findHoveredConnection = (worldX: number, worldY: number) => {
-		const scale = camera.scale.x || 1;
-		const threshold = connectionStyles.hoverDistance / scale;
-		const thresholdSquared = threshold * threshold;
-		let closestId: string | null = null;
-		let closestDistance = thresholdSquared;
-
-		connectionState.connections.forEach((connection) => {
-			const from = getNodePort(connection.from);
-			const to = getNodePort(connection.to);
-			if (!from || !to) {
-				return;
-			}
-
-			const fromPos = getPortWorldPosition(from.node, from.port);
-			const toPos = getPortWorldPosition(to.node, to.port);
-			const distance = distanceToConnectionSquared(
-				worldX,
-				worldY,
-				fromPos.x,
-				fromPos.y,
-				toPos.x,
-				toPos.y,
-			);
-			if (distance <= closestDistance) {
-				closestDistance = distance;
-				closestId = connection.id;
-			}
-		});
-
-		return closestId;
-	};
-
-	const renderConnections = () => {
-		const removals: string[] = [];
-
-		connectionsLayer.clear();
-
-		connectionState.connections.forEach((connection) => {
-			const from = getNodePort(connection.from);
-			const to = getNodePort(connection.to);
-			if (!from || !to) {
-				removals.push(connection.id);
-				return;
-			}
-
-			const fromPos = getPortWorldPosition(from.node, from.port);
-			const toPos = getPortWorldPosition(to.node, to.port);
-			const isHovered = connection.id === connectionState.hoverId;
-			drawConnection(
-				fromPos.x,
-				fromPos.y,
-				toPos.x,
-				toPos.y,
-				portTypeColors[connection.type],
-				1,
-				isHovered ? connectionStyles.hoverWidth : connectionStyles.width,
-			);
-		});
-
-		removals.forEach((id) => {
-			connectionState.connections.delete(id);
-		});
-
-		if (connectionState.active) {
-			const start = getNodePort(connectionState.active.start);
-			if (!start) {
-				return;
-			}
-
-			const startPos = getPortWorldPosition(start.node, start.port);
-			let ghostColor = portTypeColors[connectionState.active.type];
-			let ghostAlpha = connectionStyles.ghostAlpha;
-
-			if (connectionState.active.target) {
-				const target = getNodePort(connectionState.active.target);
-				if (target) {
-					if (connectionState.active.isValid) {
-						ghostColor =
-							portTypeColors[
-								resolveConnectionType(start.port.type, target.port.type)
-							];
-					} else {
-						ghostColor = connectionStyles.invalidColor;
-						ghostAlpha = connectionStyles.invalidAlpha;
-					}
-				}
-			}
-
-			drawConnection(
-				startPos.x,
-				startPos.y,
-				connectionState.active.x,
-				connectionState.active.y,
-				ghostColor,
-				ghostAlpha,
-			);
+	const clearGroupSelectionWithEmit = () => {
+		const hadSelection = groupState.selectedIds.size > 0;
+		clearGroupSelection();
+		if (hadSelection) {
+			emitSelectionChange();
 		}
 	};
+	selectGroup = selectGroupWithEmit;
 
-	const updateSelection = (next: Set<number>) => {
-		nodeState.selectedIds.forEach((id) => {
-			if (!next.has(id)) {
-				const node = nodeState.nodes.get(id);
-				if (node) {
-					renderNode(node, false);
-				}
-			}
-		});
-
-		next.forEach((id) => {
-			if (!nodeState.selectedIds.has(id)) {
-				const node = nodeState.nodes.get(id);
-				if (node) {
-					renderNode(node, true);
-				}
-			}
-		});
-
-		nodeState.selectedIds = next;
+	const clearGraphWithGroups = () => {
+		clearGroups();
+		clearGraph();
+		hoveredNodeId = null;
+		hoveredConnectionId = null;
+		emitHoverChange();
 	};
 
-	const clearSelection = () => {
-		if (nodeState.selectedIds.size === 0) {
+	const clearConnectionSelection = () => {
+		if (connectionState.selectedIds.size === 0) {
 			return;
 		}
-
-		updateSelection(new Set());
+		connectionState.selectedIds.clear();
+		emitSelectionChange();
 	};
 
-	const selectSingle = (id: number) => {
-		if (nodeState.selectedIds.size === 1 && nodeState.selectedIds.has(id)) {
-			return;
+	const selectSingleConnection = (id: string) => {
+		if (connectionState.selectedIds.size === 1) {
+			const [selected] = connectionState.selectedIds;
+			if (selected === id) {
+				return;
+			}
 		}
-
-		updateSelection(new Set([id]));
+		connectionState.selectedIds.clear();
+		connectionState.selectedIds.add(id);
+		emitSelectionChange();
 	};
 
-	const toggleSelection = (id: number) => {
-		const next = new Set(nodeState.selectedIds);
-		if (next.has(id)) {
-			next.delete(id);
+	const toggleConnectionSelection = (id: string) => {
+		if (connectionState.selectedIds.has(id)) {
+			connectionState.selectedIds.delete(id);
 		} else {
-			next.add(id);
+			connectionState.selectedIds.add(id);
 		}
-
-		updateSelection(next);
-	};
-
-	const ensureSelectedForDrag = (id: number) => {
-		if (!nodeState.selectedIds.has(id)) {
-			selectSingle(id);
-		}
+		emitSelectionChange();
 	};
 
 	const getSpawnPosition = () => {
@@ -605,238 +641,372 @@ export async function initCanvas(
 		};
 	};
 
-	const findPortAt = (worldX: number, worldY: number) => {
-		const threshold = portStyles.radius + 4;
-		const thresholdSquared = threshold * threshold;
+	const getScreenFromWorld = (worldX: number, worldY: number) => {
+		const screen = app.renderer.screen;
+		const scale = camera.scale.x || 1;
+		return {
+			x: (worldX - camera.pivot.x) * scale + screen.width / 2,
+			y: (worldY - camera.pivot.y) * scale + screen.height / 2,
+		};
+	};
 
-		for (const node of nodeState.nodes.values()) {
-			for (const port of node.ports) {
-				const position = getPortWorldPosition(node, port);
-				const deltaX = worldX - position.x;
-				const deltaY = worldY - position.y;
-				if (deltaX * deltaX + deltaY * deltaY <= thresholdSquared) {
-					return {
-						ref: { nodeId: node.id, portId: port.id },
-						port,
-					};
+	const selectionState = {
+		isActive: false,
+		pointerId: null as number | null,
+		startX: 0,
+		startY: 0,
+		endX: 0,
+		endY: 0,
+		append: false,
+	};
+
+	const isPointInRect = (
+		pointX: number,
+		pointY: number,
+		rect: { minX: number; minY: number; maxX: number; maxY: number },
+	) =>
+		pointX >= rect.minX &&
+		pointX <= rect.maxX &&
+		pointY >= rect.minY &&
+		pointY <= rect.maxY;
+
+	const isRectOverlap = (
+		a: { minX: number; minY: number; maxX: number; maxY: number },
+		b: { minX: number; minY: number; maxX: number; maxY: number },
+	) =>
+		a.minX <= b.maxX &&
+		a.maxX >= b.minX &&
+		a.minY <= b.maxY &&
+		a.maxY >= b.minY;
+
+	const getSelectionRect = () => {
+		const minX = Math.min(selectionState.startX, selectionState.endX);
+		const maxX = Math.max(selectionState.startX, selectionState.endX);
+		const minY = Math.min(selectionState.startY, selectionState.endY);
+		const maxY = Math.max(selectionState.startY, selectionState.endY);
+		return { minX, minY, maxX, maxY };
+	};
+
+	const getConnectionControls = (fromX: number, toX: number) => {
+		const deltaX = toX - fromX;
+		const absDeltaX = Math.abs(deltaX);
+		const curve = Math.max(40, absDeltaX * 0.5);
+		return {
+			controlX1: fromX + (deltaX >= 0 ? curve : -curve),
+			controlX2: toX - (deltaX >= 0 ? curve : -curve),
+		};
+	};
+
+	const bezierPoint = (
+		t: number,
+		p0: number,
+		p1: number,
+		p2: number,
+		p3: number,
+	) => {
+		const inv = 1 - t;
+		return (
+			inv * inv * inv * p0 +
+			3 * inv * inv * t * p1 +
+			3 * inv * t * t * p2 +
+			t * t * t * p3
+		);
+	};
+
+	const isConnectionInRect = (
+		from: { x: number; y: number },
+		to: { x: number; y: number },
+		rect: { minX: number; minY: number; maxX: number; maxY: number },
+	) => {
+		if (isPointInRect(from.x, from.y, rect)) {
+			return true;
+		}
+		if (isPointInRect(to.x, to.y, rect)) {
+			return true;
+		}
+
+		const style = visualSettings.connections.style;
+		const samples = 12;
+		if (style === "straight") {
+			for (let i = 1; i <= samples; i += 1) {
+				const t = i / samples;
+				const pointX = from.x + (to.x - from.x) * t;
+				const pointY = from.y + (to.y - from.y) * t;
+				if (isPointInRect(pointX, pointY, rect)) {
+					return true;
 				}
 			}
+			return false;
 		}
 
-		return null;
-	};
-
-	const setPortDragTarget = (
-		ref: PortRef,
-		isTarget: boolean,
-		isValid: boolean,
-	) => {
-		const data = getNodePort(ref);
-		if (!data) {
-			return;
-		}
-
-		data.port.isDragTarget = isTarget;
-		data.port.isDragValid = isValid;
-		renderPorts(data.node);
-	};
-
-	const clearActiveDragTarget = () => {
-		const active = connectionState.active;
-		if (!active?.target) {
-			return;
-		}
-
-		setPortDragTarget(active.target, false, false);
-	};
-
-	const updateActiveConnectionTarget = (worldX: number, worldY: number) => {
-		const active = connectionState.active;
-		if (!active) {
-			return;
-		}
-
-		const startData = getNodePort(active.start);
-		if (!startData) {
-			return;
-		}
-
-		const target = findPortAt(worldX, worldY);
-		const prevTarget = active.target;
-		const prevValid = active.isValid;
-		let nextTarget: PortRef | null = null;
-		let nextValid = false;
-
-		if (target) {
-			nextTarget = target.ref;
-			const isSamePort =
-				target.ref.nodeId === active.start.nodeId &&
-				target.ref.portId === active.start.portId;
-			nextValid =
-				!isSamePort &&
-				arePortTypesCompatible(startData.port.type, target.port.type) &&
-				startData.port.direction !== target.port.direction;
-		}
-
-		const sameTarget =
-			prevTarget &&
-			nextTarget &&
-			prevTarget.nodeId === nextTarget.nodeId &&
-			prevTarget.portId === nextTarget.portId;
-
-		if (!sameTarget || prevValid !== nextValid) {
-			if (prevTarget) {
-				setPortDragTarget(prevTarget, false, false);
-			}
-			if (nextTarget) {
-				setPortDragTarget(nextTarget, true, nextValid);
+		const { controlX1, controlX2 } = getConnectionControls(from.x, to.x);
+		for (let i = 1; i <= samples; i += 1) {
+			const t = i / samples;
+			const pointX = bezierPoint(t, from.x, controlX1, controlX2, to.x);
+			const pointY = bezierPoint(t, from.y, from.y, to.y, to.y);
+			if (isPointInRect(pointX, pointY, rect)) {
+				return true;
 			}
 		}
-
-		active.target = nextTarget;
-		active.isValid = nextValid;
+		return false;
 	};
 
-	const startConnectionDrag = (
-		event: FederatedPointerEvent,
-		nodeId: number,
-		portId: string,
-	) => {
-		clearActiveDragTarget();
-		const node = nodeState.nodes.get(nodeId);
-		if (!node) {
+	const applySelectionFromRect = () => {
+		const rect = getSelectionRect();
+		suppressSelectionEmit = true;
+		const nextNodeSelection = new Set(
+			selectionState.append ? nodeState.selectedIds : [],
+		);
+		nodeState.nodes.forEach((node, id) => {
+			if (isNodeHidden(id)) {
+				return;
+			}
+			const bounds = {
+				minX: node.container.position.x,
+				minY: node.container.position.y,
+				maxX: node.container.position.x + node.width,
+				maxY: node.container.position.y + node.height,
+			};
+			if (isRectOverlap(rect, bounds)) {
+				nextNodeSelection.add(id);
+			}
+		});
+		updateSelection(nextNodeSelection);
+
+		const nextGroupSelection = new Set(
+			selectionState.append ? groupState.selectedIds : [],
+		);
+		groupState.groups.forEach((group) => {
+			const bounds = {
+				minX: group.container.position.x,
+				minY: group.container.position.y,
+				maxX: group.container.position.x + group.width,
+				maxY: group.container.position.y + group.height,
+			};
+			if (isRectOverlap(rect, bounds)) {
+				nextGroupSelection.add(group.id);
+			}
+		});
+		clearGroupSelectionWithEmit();
+		nextGroupSelection.forEach((id) => {
+			selectGroup(id, true);
+		});
+
+		const nextConnectionSelection = new Set(
+			selectionState.append ? connectionState.selectedIds : [],
+		);
+		connectionState.connections.forEach((connection) => {
+			const from = getNodePort(connection.from);
+			const to = getNodePort(connection.to);
+			if (!from || !to) {
+				return;
+			}
+			if (isNodeHidden(from.node.id) || isNodeHidden(to.node.id)) {
+				return;
+			}
+			const fromPos = getPortWorldPosition(from.node, from.port);
+			const toPos = getPortWorldPosition(to.node, to.port);
+			if (isConnectionInRect(fromPos, toPos, rect)) {
+				nextConnectionSelection.add(connection.id);
+			}
+		});
+		connectionState.selectedIds = nextConnectionSelection;
+		suppressSelectionEmit = false;
+		emitSelectionChange();
+	};
+
+	const renderSelectionBox = () => {
+		selectionLayer.clear();
+		if (!selectionState.isActive) {
 			return;
 		}
 
-		const port = node.ports.find((candidate) => candidate.id === portId);
-		if (!port) {
-			return;
+		const rect = getSelectionRect();
+		const scale = camera.scale.x || 1;
+		selectionLayer.setStrokeStyle({
+			width: 1 / scale,
+			color: 0x6aa8ff,
+			alpha: 0.9,
+			cap: "round",
+			join: "round",
+		});
+		selectionLayer.rect(
+			rect.minX,
+			rect.minY,
+			rect.maxX - rect.minX,
+			rect.maxY - rect.minY,
+		);
+		selectionLayer.fill({ color: 0x6aa8ff, alpha: 0.12 });
+		selectionLayer.stroke();
+	};
+
+	const touchState = {
+		points: new Map<number, { id: number; clientX: number; clientY: number }>(),
+		gesture: {
+			isActive: false,
+			startDistance: 0,
+			startScale: 1,
+			startPivotX: 0,
+			startPivotY: 0,
+			lastCenterX: 0,
+			lastCenterY: 0,
+		},
+	};
+
+	const updateTouchPoint = (event: PointerEvent) => {
+		touchState.points.set(event.pointerId, {
+			id: event.pointerId,
+			clientX: event.clientX,
+			clientY: event.clientY,
+		});
+	};
+
+	const removeTouchPoint = (event: PointerEvent) => {
+		touchState.points.delete(event.pointerId);
+	};
+
+	const getTouchPoints = () => Array.from(touchState.points.values());
+
+	const getTouchCenter = (points: { clientX: number; clientY: number }[]) => ({
+		x: (points[0].clientX + points[1].clientX) / 2,
+		y: (points[0].clientY + points[1].clientY) / 2,
+	});
+
+	const getTouchDistance = (
+		first: { clientX: number; clientY: number },
+		second: { clientX: number; clientY: number },
+	) =>
+		Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+
+	const cancelActiveInteractions = () => {
+		if (connectionState.active) {
+			cancelConnectionDrag();
 		}
 
-		connectionState.hoverId = null;
-		nodeState.suppressPanPointerId = event.pointerId;
-
-		if (interactionState.pointerId === event.pointerId) {
-			interactionState.isPanning = false;
-			interactionState.pointerId = null;
+		if (selectionState.isActive) {
+			selectionState.isActive = false;
+			selectionState.pointerId = null;
+			renderSelectionBox();
 		}
 
-		if (dragState.pointerId === event.pointerId) {
+		if (dragState.isDragging) {
 			dragState.isDragging = false;
 			dragState.pointerId = null;
 			dragState.anchorId = null;
+			dragState.groupId = null;
 			dragState.startPositions.clear();
+			dragState.groupStart = null;
 		}
 
-		const clientEvent = event as unknown as PointerEvent;
-		const world = getWorldFromClient(clientEvent.clientX, clientEvent.clientY);
-
-		connectionState.active = {
-			pointerId: event.pointerId,
-			start: { nodeId, portId },
-			direction: port.direction,
-			type: port.type,
-			x: world.x,
-			y: world.y,
-			target: null,
-			isValid: false,
-		};
-		canvas.setPointerCapture(event.pointerId);
+		if (interactionState.isPanning) {
+			interactionState.isPanning = false;
+			interactionState.pointerId = null;
+			interactionState.panMode = "default";
+		}
 	};
 
-	const cancelConnectionDrag = () => {
-		clearActiveDragTarget();
-		connectionState.active = null;
+	const beginTouchGesture = () => {
+		const points = getTouchPoints();
+		if (points.length < 2) {
+			return;
+		}
+
+		cancelActiveInteractions();
+
+		const center = getTouchCenter(points);
+		touchState.gesture.isActive = true;
+		touchState.gesture.startDistance = getTouchDistance(points[0], points[1]);
+		touchState.gesture.startScale = camera.scale.x || 1;
+		touchState.gesture.startPivotX = camera.pivot.x;
+		touchState.gesture.startPivotY = camera.pivot.y;
+		touchState.gesture.lastCenterX = center.x;
+		touchState.gesture.lastCenterY = center.y;
 	};
 
-	const finalizeConnectionDrag = (event: PointerEvent) => {
-		const active = connectionState.active;
-		if (!active) {
+	const applyTouchGesture = () => {
+		const points = getTouchPoints();
+		if (points.length < 2) {
 			return;
 		}
 
-		let didChange = false;
-		const world = getWorldFromClient(event.clientX, event.clientY);
-		const target = findPortAt(world.x, world.y);
-		const startData = getNodePort(active.start);
-		if (!startData) {
-			cancelConnectionDrag();
+		const center = getTouchCenter(points);
+		const distance = getTouchDistance(points[0], points[1]);
+		const scaleRatio =
+			touchState.gesture.startDistance > 0
+				? distance / touchState.gesture.startDistance
+				: 1;
+		const nextScale = Math.min(
+			zoomLimits.max,
+			Math.max(zoomLimits.min, touchState.gesture.startScale * scaleRatio),
+		);
+
+		const screen = app.renderer.screen;
+		const rect = canvas.getBoundingClientRect();
+		const cursorX = center.x - rect.left;
+		const cursorY = center.y - rect.top;
+		const offsetX = cursorX - screen.width / 2;
+		const offsetY = cursorY - screen.height / 2;
+		const currentScale = camera.scale.x || 1;
+		const worldX = camera.pivot.x + offsetX / currentScale;
+		const worldY = camera.pivot.y + offsetY / currentScale;
+
+		if (nextScale !== currentScale) {
+			camera.scale.set(nextScale, nextScale);
+			camera.pivot.x = worldX - offsetX / nextScale;
+			camera.pivot.y = worldY - offsetY / nextScale;
+		}
+
+		const deltaX = center.x - touchState.gesture.lastCenterX;
+		const deltaY = center.y - touchState.gesture.lastCenterY;
+		touchState.gesture.lastCenterX = center.x;
+		touchState.gesture.lastCenterY = center.y;
+
+		if (Math.abs(deltaX) > 0 || Math.abs(deltaY) > 0) {
+			const panState = applyPan(
+				{
+					pivotX: camera.pivot.x,
+					pivotY: camera.pivot.y,
+					scale: camera.scale.x || 1,
+				},
+				{ deltaX, deltaY },
+			);
+			camera.pivot.x = panState.pivotX;
+			camera.pivot.y = panState.pivotY;
+		}
+	};
+
+	const endTouchGestureIfNeeded = () => {
+		if (touchState.points.size >= 2) {
+			return;
+		}
+		if (!touchState.gesture.isActive) {
 			return;
 		}
 
-		if (!target) {
-			if (startData.port.direction === "input") {
-				for (const [key, connection] of connectionState.connections.entries()) {
-					if (
-						connection.to.nodeId === active.start.nodeId &&
-						connection.to.portId === active.start.portId
-					) {
-						connectionState.connections.delete(key);
-						didChange = true;
-					}
-				}
-			}
-
-			cancelConnectionDrag();
-			if (didChange) {
-				commitHistory();
-			}
-			return;
-		}
-
+		touchState.gesture.isActive = false;
 		if (
-			target.ref.nodeId === active.start.nodeId &&
-			target.ref.portId === active.start.portId
+			camera.pivot.x !== touchState.gesture.startPivotX ||
+			camera.pivot.y !== touchState.gesture.startPivotY ||
+			(camera.scale.x || 1) !== touchState.gesture.startScale
 		) {
-			cancelConnectionDrag();
-			return;
-		}
-
-		const startPort = startData.port;
-		const endPort = target.port;
-		if (
-			!arePortTypesCompatible(startPort.type, endPort.type) ||
-			startPort.direction === endPort.direction
-		) {
-			cancelConnectionDrag();
-			return;
-		}
-
-		const connectionType = resolveConnectionType(startPort.type, endPort.type);
-		const from = startPort.direction === "output" ? active.start : target.ref;
-		const to = startPort.direction === "output" ? target.ref : active.start;
-		const id = `${from.nodeId}:${from.portId}->${to.nodeId}:${to.portId}`;
-
-		for (const [key, connection] of connectionState.connections.entries()) {
-			if (
-				connection.to.nodeId === to.nodeId &&
-				connection.to.portId === to.portId
-			) {
-				connectionState.connections.delete(key);
-				didChange = true;
-			}
-		}
-
-		connectionState.connections.set(id, {
-			id,
-			from,
-			to,
-			type: connectionType,
-		});
-		cancelConnectionDrag();
-		didChange = true;
-		if (didChange) {
 			commitHistory();
 		}
 	};
 
-	const startNodeDrag = (event: FederatedPointerEvent, id: number) => {
+	startNodeDrag = (event: FederatedPointerEvent, id: number) => {
 		const node = nodeState.nodes.get(id);
 		if (!node) {
 			return;
 		}
 
 		const clientEvent = event as unknown as PointerEvent;
+		if (interactionState.spacePressed || clientEvent.button === 1) {
+			return;
+		}
+
+		clearConnectionSelection();
+		clearGroupSelectionWithEmit();
+
 		if (clientEvent.shiftKey) {
 			nodeState.suppressPanPointerId = event.pointerId;
 			toggleSelection(id);
@@ -849,6 +1019,10 @@ export async function initCanvas(
 		}
 
 		connectionState.hoverId = null;
+		if (hoveredConnectionId !== null) {
+			hoveredConnectionId = null;
+			emitHoverChange();
+		}
 		nodeState.suppressPanPointerId = event.pointerId;
 		ensureSelectedForDrag(id);
 
@@ -873,378 +1047,76 @@ export async function initCanvas(
 		canvas.setPointerCapture(event.pointerId);
 	};
 
-	const createNode = (
-		position: { x: number; y: number },
-		options: {
-			id?: number;
-			title?: string;
-			ports?: SerializablePort[];
-			select?: boolean;
-			templateId?: string;
-			data?: NodeData;
-		} = {},
-	) => {
-		const id = options.id ?? nodeState.nextId++;
-		if (options.id !== undefined) {
-			nodeState.nextId = Math.max(nodeState.nextId, options.id + 1);
-		}
-		const container = new Container();
-		container.position.set(position.x, position.y);
-		container.eventMode = "static";
-		container.cursor = "pointer";
-		container.hitArea = new Rectangle(
-			0,
-			0,
-			nodeDimensions.width,
-			nodeDimensions.height,
-		);
-
-		const background = new Graphics();
-		const title = new Text({
-			text: options.title ?? `Node ${id}`,
-			style: {
-				fill: 0x1e1e1e,
-				fontFamily: "Arial",
-				fontSize: 14,
-			},
-		});
-		title.position.set(10, 8);
-
-		const ports = options.ports ?? defaultPorts;
-		const nodeData = options.data ?? getDefaultNodeData(options.templateId);
-
-		const portViews = ports.map((port) => {
-			const graphics = new Graphics();
-			const label = new Text({
-				text: "",
-				style: {
-					fill: 0x2b2b2b,
-					fontFamily: "Arial",
-					fontSize: 11,
-				},
-			});
-
-			graphics.eventMode = "static";
-			graphics.cursor = "crosshair";
-
-			return {
-				...port,
-				graphics,
-				label,
-				isHover: false,
-				isDragTarget: false,
-				isDragValid: false,
-			};
-		});
-
-		container.addChild(background);
-		container.addChild(title);
-
-		let valueLabel: Text | undefined;
-		if (
-			options.templateId === "const-float" ||
-			options.templateId === "const-color" ||
-			options.templateId === "const-vec2" ||
-			options.templateId === "const-vec3" ||
-			options.templateId === "const-vec4"
-		) {
-			valueLabel = new Text({
-				text: "",
-				style: {
-					fill: 0x2b2b2b,
-					fontFamily: "Arial",
-					fontSize: 11,
-				},
-			});
-			valueLabel.position.set(10, 28);
-			container.addChild(valueLabel);
+	startGroupDrag = (event: FederatedPointerEvent, id: number) => {
+		const group = groupState.groups.get(id);
+		if (!group) {
+			return;
 		}
 
-		const node: NodeView = {
-			id,
-			container,
-			background,
-			title,
-			ports: portViews,
-			width: nodeDimensions.width,
-			height: nodeDimensions.height,
-			isHover: false,
-			...(nodeData ? { data: nodeData } : {}),
-			...(valueLabel ? { valueLabel } : {}),
-			...(options.templateId ? { templateId: options.templateId } : {}),
+		const clientEvent = event as unknown as PointerEvent;
+		if (interactionState.spacePressed || clientEvent.button === 1) {
+			return;
+		}
+
+		clearConnectionSelection();
+		if (!clientEvent.shiftKey) {
+			clearSelection();
+		}
+
+		nodeState.suppressPanPointerId = event.pointerId;
+		selectGroup(id, clientEvent.shiftKey);
+
+		const world = getWorldFromClient(clientEvent.clientX, clientEvent.clientY);
+		const startPositions = new Map<number, { x: number; y: number }>();
+		group.nodeIds.forEach((nodeId) => {
+			const node = nodeState.nodes.get(nodeId);
+			if (node) {
+				startPositions.set(nodeId, {
+					x: node.container.position.x,
+					y: node.container.position.y,
+				});
+			}
+		});
+
+		dragState.isDragging = true;
+		dragState.pointerId = event.pointerId;
+		dragState.anchorId = null;
+		dragState.groupId = id;
+		dragState.offsetX = world.x - group.container.position.x;
+		dragState.offsetY = world.y - group.container.position.y;
+		dragState.startPositions = startPositions;
+		dragState.groupStart = {
+			x: group.container.position.x,
+			y: group.container.position.y,
 		};
-
-		portViews.forEach((port) => {
-			container.addChild(port.graphics);
-			container.addChild(port.label);
-			port.graphics.on("pointerdown", (event) => {
-				const data = event as unknown as { stopPropagation?: () => void };
-				data.stopPropagation?.();
-				startConnectionDrag(event, id, port.id);
-			});
-			port.graphics.on("pointerover", () => {
-				port.isHover = true;
-				renderPorts(node);
-			});
-			port.graphics.on("pointerout", () => {
-				port.isHover = false;
-				renderPorts(node);
-			});
-		});
-		nodesLayer.addChild(container);
-
-		nodeState.nodes.set(id, node);
-		renderNode(node, false);
-		renderPorts(node);
-		renderConstValue(node);
-		if (options.select ?? true) {
-			selectSingle(id);
-		}
-
-		container.on("pointerdown", (event) => {
-			startNodeDrag(event, id);
-		});
-		container.on("pointerover", () => {
-			node.isHover = true;
-			renderNode(node, nodeState.selectedIds.has(id));
-		});
-		container.on("pointerout", () => {
-			node.isHover = false;
-			renderNode(node, nodeState.selectedIds.has(id));
-		});
+		canvas.setPointerCapture(event.pointerId);
 	};
 
-	const clearGraph = () => {
-		closeConstEditor();
-		updateSelection(new Set());
-		cancelConnectionDrag();
-		connectionState.hoverId = null;
-		connectionState.connections.clear();
-		connectionsLayer.clear();
-		nodeState.nodes.forEach((node) => {
-			node.container.destroy({ children: true });
-		});
-		nodeState.nodes.clear();
-		nodeState.nextId = 1;
-	};
-
-	const buildGraphSnapshot = (): SerializableGraph => {
-		const nodes = Array.from(nodeState.nodes.values()).map((node) => ({
+	const buildShaderSnapshot = (snapshot: SerializableGraph) => ({
+		nodes: snapshot.nodes.map((node) => ({
 			id: node.id,
-			title: node.title.text,
-			x: node.container.position.x,
-			y: node.container.position.y,
+			typeId: node.typeId,
+			state: node.state,
 			ports: node.ports.map((port) => ({
 				id: port.id,
-				name: port.name,
 				type: port.type,
 				direction: port.direction,
 			})),
-			...(node.data ? { data: node.data } : {}),
-			...(node.templateId ? { templateId: node.templateId } : {}),
-		}));
+		})),
+		connections: snapshot.connections.map((connection) => ({
+			from: connection.from,
+			to: connection.to,
+			type: connection.type,
+		})),
+	});
 
-		const connections = Array.from(connectionState.connections.values()).map(
-			(connection) => ({
-				from: connection.from,
-				to: connection.to,
-				type: connection.type,
-			}),
-		);
-
-		return {
-			version: 1,
-			nodes,
-			connections,
-			camera: {
-				pivotX: camera.pivot.x,
-				pivotY: camera.pivot.y,
-				scale: camera.scale.x || 1,
-			},
-		};
-	};
-
-	const serializeSnapshot = (snapshot: SerializableGraph) =>
-		JSON.stringify(snapshot);
-
-	const setHistoryCurrent = (snapshot: SerializableGraph) => {
-		historyState.current = snapshot;
-		historyState.currentSerialized = serializeSnapshot(snapshot);
-	};
-
-	commitHistory = () => {
-		const snapshot = buildGraphSnapshot();
-		const serialized = serializeSnapshot(snapshot);
-		if (serialized === historyState.currentSerialized) {
-			return;
-		}
-
-		if (historyState.current) {
-			historyState.past.push(historyState.current);
-		}
-		historyState.future = [];
-		setHistoryCurrent(snapshot);
-		updateShaderFromSnapshot(snapshot);
-	};
-
-	const undoHistory = () => {
-		if (!historyState.current || historyState.past.length === 0) {
-			return;
-		}
-
-		const snapshot = historyState.past.pop();
-		if (!snapshot) {
-			return;
-		}
-
-		historyState.future.push(historyState.current);
-		setHistoryCurrent(snapshot);
-		applyGraphSnapshot(snapshot);
-	};
-
-	const redoHistory = () => {
-		if (!historyState.current || historyState.future.length === 0) {
-			return;
-		}
-
-		const snapshot = historyState.future.pop();
-		if (!snapshot) {
-			return;
-		}
-
-		historyState.past.push(historyState.current);
-		setHistoryCurrent(snapshot);
-		applyGraphSnapshot(snapshot);
-	};
-
-	const applyCameraState = (cameraState?: SerializableGraph["camera"]) => {
-		if (!cameraState) {
-			return;
-		}
-
-		const nextScale = Math.min(
-			zoomLimits.max,
-			Math.max(zoomLimits.min, cameraState.scale),
-		);
-
-		camera.scale.set(nextScale, nextScale);
-		camera.pivot.x = cameraState.pivotX;
-		camera.pivot.y = cameraState.pivotY;
-	};
-
-	const sanitizeGraphSnapshot = (snapshot: SerializableGraph) => {
-		const nodeMap = new Map(
-			snapshot.nodes.map((node) => [node.id, node] as const),
-		);
-		const validConnections: SerializableConnection[] = [];
-		let droppedConnections = 0;
-
-		snapshot.connections.forEach((connection) => {
-			const fromNode = nodeMap.get(connection.from.nodeId);
-			const toNode = nodeMap.get(connection.to.nodeId);
-			const fromPort = fromNode?.ports.find(
-				(port) => port.id === connection.from.portId,
-			);
-			const toPort = toNode?.ports.find(
-				(port) => port.id === connection.to.portId,
-			);
-
-			if (!fromPort || !toPort) {
-				droppedConnections += 1;
-				return;
-			}
-
-			if (fromPort.direction !== "output" || toPort.direction !== "input") {
-				droppedConnections += 1;
-				return;
-			}
-
-			if (
-				!arePortTypesCompatible(fromPort.type, connection.type) ||
-				!arePortTypesCompatible(toPort.type, connection.type)
-			) {
-				droppedConnections += 1;
-				return;
-			}
-
-			validConnections.push(connection);
-		});
-
-		const sanitizedSnapshot: SerializableGraph = {
-			version: snapshot.version,
-			nodes: snapshot.nodes,
-			connections: validConnections,
-			...(snapshot.camera ? { camera: snapshot.camera } : {}),
-		};
-
-		return { snapshot: sanitizedSnapshot, droppedConnections };
-	};
-
-	const applyGraphSnapshot = (snapshot: SerializableGraph) => {
-		const { snapshot: sanitizedSnapshot, droppedConnections } =
-			sanitizeGraphSnapshot(snapshot);
-		clearGraph();
-
-		sanitizedSnapshot.nodes.forEach((node) => {
-			createNode(
-				{ x: node.x, y: node.y },
-				{
-					id: node.id,
-					title: node.title,
-					ports: node.ports,
-					...(node.data ? { data: node.data } : {}),
-					...(node.templateId ? { templateId: node.templateId } : {}),
-					select: false,
-				},
-			);
-		});
-
-		sanitizedSnapshot.connections.forEach((connection) => {
-			const fromData = getNodePort(connection.from);
-			const toData = getNodePort(connection.to);
-			if (!fromData || !toData) {
-				return;
-			}
-
-			if (
-				!arePortTypesCompatible(fromData.port.type, connection.type) ||
-				!arePortTypesCompatible(toData.port.type, connection.type)
-			) {
-				return;
-			}
-
-			if (
-				fromData.port.direction !== "output" ||
-				toData.port.direction !== "input"
-			) {
-				return;
-			}
-
-			const id = `${connection.from.nodeId}:${connection.from.portId}->${connection.to.nodeId}:${connection.to.portId}`;
-			connectionState.connections.set(id, {
-				id,
-				from: connection.from,
-				to: connection.to,
-				type: connection.type,
-			});
-		});
-
-		clearSelection();
-		applyCameraState(sanitizedSnapshot.camera);
-		updateShaderFromSnapshot(sanitizedSnapshot);
-		return { snapshot: sanitizedSnapshot, droppedConnections };
-	};
-
-	updateShaderFromSnapshot = (snapshot: SerializableGraph) => {
+	const updateShaderFromSnapshot = (snapshot: SerializableGraph) => {
 		const onShaderChange = options.onShaderChange;
 		if (!onShaderChange) {
 			return;
 		}
 
-		const shaderSnapshot = {
-			nodes: snapshot.nodes,
-			connections: snapshot.connections,
-		};
+		const shaderSnapshot = buildShaderSnapshot(snapshot);
 		const serialized = JSON.stringify(shaderSnapshot);
 		if (serialized === lastShaderSnapshot) {
 			return;
@@ -1262,49 +1134,243 @@ export async function initCanvas(
 				return;
 			}
 			pendingShaderSnapshot = null;
-			onShaderChange(
-				compileGraphToGlsl(nodeState.nodes, connectionState.connections),
+			const compileStart = performance.now();
+			const result = compileGraphToGlsl(
+				nodeState.nodes,
+				connectionState.connections,
 			);
+			const compileMs = performance.now() - compileStart;
+			result.compileMs = compileMs;
+			if (debugOverlay) {
+				debugOverlay.recordShaderMessages(result.messages, compileMs);
+			}
+			onShaderChange(result);
 		});
 	};
 
-	const deleteSelectedNode = () => {
-		if (nodeState.selectedIds.size === 0) {
-			return false;
+	const emitUiMessage = (tone: UiMessageTone, message: string) => {
+		if (debugOverlay) {
+			debugOverlay.recordUiMessage({ tone, message });
+		}
+		if (options.onUiMessage) {
+			options.onUiMessage({ tone, message });
+			return;
 		}
 
-		const nodesToDelete = Array.from(nodeState.selectedIds)
-			.map((id) => nodeState.nodes.get(id))
-			.filter((node): node is NodeView => Boolean(node));
-		if (nodesToDelete.length === 0) {
-			return false;
-		}
+		const prefix =
+			tone === "error" ? "Error: " : tone === "warning" ? "Warning: " : "";
+		window.alert(`${prefix}${message}`);
+	};
 
-		const removals: string[] = [];
-		nodesToDelete.forEach((node) => {
-			connectionState.connections.forEach((connection) => {
-				if (
-					connection.from.nodeId === node.id ||
-					connection.to.nodeId === node.id
-				) {
-					removals.push(connection.id);
-				}
+	const connectionSystem = createConnectionSystem({
+		canvas,
+		camera,
+		connectionsLayer,
+		nodeState,
+		connectionState,
+		dragState,
+		interactionState,
+		portStyles,
+		getConnectionStyles: () => visualSettings.connections,
+		portTypeColors,
+		arePortTypesCompatible,
+		resolveConnectionType,
+		emitUiMessage,
+		getWorldFromClient,
+		getNodePort,
+		getPortWorldPosition: (node, port) => {
+			const groupPort = getGroupPortForRef({
+				nodeId: node.id,
+				portId: port.id,
 			});
-		});
-		removals.forEach((id) => {
-			connectionState.connections.delete(id);
-		});
+			if (groupPort) {
+				return getGroupPortWorldPosition(groupPort.group, groupPort.port);
+			}
+			return getPortWorldPosition(node, port);
+		},
+		getPortDragView: (ref) => {
+			const groupPort = getGroupPortForRef(ref);
+			if (groupPort) {
+				return {
+					port: groupPort.port,
+					render: () => updateAllGroupLayouts(),
+				};
+			}
+			const data = getNodePort(ref);
+			if (!data) {
+				return null;
+			}
+			return {
+				port: data.port,
+				render: () => renderPort(data.node, data.port),
+			};
+		},
+		findGroupPortAt,
+		isNodeHidden,
+		commitHistory: () => commitHistory(),
+	});
 
-		nodesToDelete.forEach((node) => {
-			node.container.destroy({ children: true });
-			nodeState.nodes.delete(node.id);
-		});
+	startConnectionDrag = connectionSystem.startConnectionDrag;
+	cancelConnectionDrag = connectionSystem.cancelConnectionDrag;
 
-		clearSelection();
+	renderConnections = connectionSystem.renderConnections;
+	const {
+		findHoveredConnection,
+		updateActiveConnectionTarget,
+		finalizeConnectionDrag,
+	} = connectionSystem;
+
+	const applyVisualSettings = (next: EditorVisualSettings) => {
+		visualSettings = next;
+		debugOverlay.setEnabled(visualSettings.debugOverlay);
+		updateBackground();
+		updateScene();
+		renderAllNodes();
+		renderAllGroups();
+		renderConnections();
+	};
+
+	const updateVisualSettings = (overrides: Partial<EditorVisualSettings>) => {
+		applyVisualSettings(mergeVisualSettings(visualSettings, overrides));
+	};
+
+	const historyManager = createHistoryManager({
+		camera,
+		zoomLimits,
+		nodeState,
+		groupState,
+		connectionState,
+		historyState,
+		arePortTypesCompatible,
+		createNode,
+		createGroup,
+		clearGraph: clearGraphWithGroups,
+		clearSelection,
+		getNodePort,
+		updateShaderFromSnapshot,
+		updateNodePorts,
+	});
+
+	const {
+		buildGraphSnapshot,
+		commitHistory: commitHistoryImpl,
+		setHistoryCurrent,
+		undoHistory: undoHistoryImpl,
+		redoHistory: redoHistoryImpl,
+		applyGraphSnapshot,
+	} = historyManager;
+
+	const graphAutosaveKey = `shadr.graph.autosave.v${GRAPH_SCHEMA_VERSION}`;
+	let autosaveTimeout: number | null = null;
+	let lastAutosaveSerialized: string | null = null;
+
+	const clearAutosaveTimeout = () => {
+		if (autosaveTimeout === null) {
+			return;
+		}
+		window.clearTimeout(autosaveTimeout);
+		autosaveTimeout = null;
+	};
+
+	const writeAutosave = (serialized: string) => {
+		try {
+			window.localStorage.setItem(graphAutosaveKey, serialized);
+			lastAutosaveSerialized = serialized;
+		} catch {
+			// Ignore storage failures (private mode or quota issues).
+		}
+	};
+
+	const scheduleAutosave = (serialized?: string | null) => {
+		const nextSerialized = serialized ?? historyState.currentSerialized;
+		if (!nextSerialized || nextSerialized === lastAutosaveSerialized) {
+			return;
+		}
+		clearAutosaveTimeout();
+		autosaveTimeout = window.setTimeout(() => {
+			writeAutosave(nextSerialized);
+			autosaveTimeout = null;
+		}, 300);
+	};
+
+	const clearAutosaveStorage = () => {
+		try {
+			window.localStorage.removeItem(graphAutosaveKey);
+		} catch {
+			// Ignore storage failures (private mode or quota issues).
+		}
+	};
+
+	const restoreAutosavedGraph = () => {
+		let stored: string | null = null;
+		try {
+			stored = window.localStorage.getItem(graphAutosaveKey);
+		} catch {
+			return false;
+		}
+		if (!stored) {
+			return false;
+		}
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(stored);
+		} catch {
+			clearAutosaveStorage();
+			emitUiMessage("warning", "Autosaved graph was invalid and was cleared.");
+			return false;
+		}
+
+		const snapshot = parseGraph(parsed);
+		if (!snapshot) {
+			clearAutosaveStorage();
+			emitUiMessage(
+				"warning",
+				"Autosaved graph data is missing required fields and was cleared.",
+			);
+			return false;
+		}
+
+		const { snapshot: sanitizedSnapshot, droppedConnections } =
+			applyGraphSnapshot(snapshot);
+		historyState.past = [];
+		historyState.future = [];
+		setHistoryCurrent(sanitizedSnapshot);
+		lastAutosaveSerialized = historyState.currentSerialized ?? stored;
+
+		if (droppedConnections > 0) {
+			emitUiMessage(
+				"warning",
+				`Autosaved graph contained ${droppedConnections} invalid connection(s) that were removed.`,
+			);
+		}
+		emitUiMessage("info", "Restored autosaved graph.");
 		return true;
 	};
 
+	const undoHistory = () => {
+		undoHistoryImpl();
+		scheduleAutosave();
+	};
+
+	const redoHistory = () => {
+		redoHistoryImpl();
+		scheduleAutosave();
+	};
+
+	commitHistory = () => {
+		commitHistoryImpl();
+		scheduleAutosave();
+	};
+
 	const contextMenuItems: ContextMenuItem[] = [];
+	type ClipboardPayload = {
+		nodes: SerializableGraph["nodes"];
+		connections: SerializableGraph["connections"];
+		bounds: { minX: number; minY: number; maxX: number; maxY: number };
+	};
+	let clipboard: ClipboardPayload | null = null;
+	let pasteNudge = 0;
 
 	const emitContextMenuChange = (state: ContextMenuState) => {
 		if (options.onContextMenuChange) {
@@ -1345,6 +1411,16 @@ export async function initCanvas(
 		syncContextMenuState();
 	};
 
+	const closeNodeRename = () => {
+		if (!nodeRenameState) {
+			return;
+		}
+		nodeRenameState = null;
+		if (options.onNodeRenameChange) {
+			options.onNodeRenameChange(null);
+		}
+	};
+
 	const setContextMenuItemEnabled = (
 		item: ContextMenuItem,
 		enabled: boolean,
@@ -1367,6 +1443,27 @@ export async function initCanvas(
 		return item;
 	};
 
+	const openNodeRename = (nodeId: number) => {
+		const node = nodeState.nodes.get(nodeId);
+		if (!node || isNodeHidden(nodeId)) {
+			return;
+		}
+		const { x: screenX, y: screenY } = getScreenFromWorld(
+			node.container.position.x + node.title.position.x,
+			node.container.position.y + node.title.position.y,
+		);
+		nodeRenameState = {
+			nodeId,
+			title: node.title.text,
+			screenX,
+			screenY,
+			scale: camera.scale.x || 1,
+		};
+		if (options.onNodeRenameChange) {
+			options.onNodeRenameChange(nodeRenameState);
+		}
+	};
+
 	const createNodeWithHistory = (
 		position: { x: number; y: number },
 		options: {
@@ -1374,8 +1471,8 @@ export async function initCanvas(
 			title?: string;
 			ports?: SerializablePort[];
 			select?: boolean;
-			templateId?: string;
-			data?: NodeData;
+			typeId?: string;
+			state?: NodeState;
 		} = {},
 	) => {
 		createNode(position, options);
@@ -1388,16 +1485,8 @@ export async function initCanvas(
 	) => {
 		createNodeWithHistory(position, {
 			title: template.title,
-			ports: template.ports,
-			templateId: template.id,
+			typeId: template.id,
 		});
-	};
-
-	const spawnTemplate = (template: NodeTemplate) => {
-		spawnTemplateAt(
-			{ x: contextMenuState.worldX, y: contextMenuState.worldY },
-			template,
-		);
 	};
 
 	const searchEntries: SearchEntry[] = [
@@ -1405,12 +1494,14 @@ export async function initCanvas(
 			id: "blank-node",
 			label: "Blank Node",
 			keywords: "blank node",
+			category: "General",
 			action: () => createNodeWithHistory(getSpawnPosition()),
 		},
 		...nodeTemplates.map((template) => ({
 			id: template.id,
 			label: template.label,
-			keywords: `${template.label} ${template.title}`,
+			keywords: `${template.label} ${template.title} ${template.category}`,
+			category: template.category,
 			action: () => spawnTemplateAt(getSpawnPosition(), template),
 		})),
 	];
@@ -1418,6 +1509,18 @@ export async function initCanvas(
 	const searchPalette = createSearchPalette({
 		container: canvas.parentElement ?? document.body,
 		entries: searchEntries,
+		categoryOrder: [
+			"General",
+			"Inputs",
+			"Constants",
+			"Math",
+			"Vector",
+			"Color",
+			"Texture/UV",
+			"Conversion",
+			"Logic",
+			"Output",
+		],
 	});
 
 	const openSearchPalette = () => {
@@ -1425,7 +1528,7 @@ export async function initCanvas(
 			return;
 		}
 		hideContextMenu();
-		closeConstEditor();
+		closeNodeRename();
 		searchPalette.open();
 	};
 
@@ -1433,28 +1536,494 @@ export async function initCanvas(
 		searchPalette.close();
 	};
 
-	createContextMenuItem("add-blank", "Add Blank Node", () => {
-		createNodeWithHistory({
+	const buildSelectionClipboard = (): ClipboardPayload | null => {
+		if (nodeState.selectedIds.size === 0) {
+			return null;
+		}
+
+		const nodes = Array.from(nodeState.selectedIds)
+			.map((id) => nodeState.nodes.get(id))
+			.filter((node): node is NonNullable<typeof node> => Boolean(node))
+			.map((node) => ({
+				id: node.id,
+				title: node.title.text,
+				x: node.container.position.x,
+				y: node.container.position.y,
+				ports: node.ports.map((port) => ({
+					id: port.id,
+					name: port.name,
+					type: port.type,
+					direction: port.direction,
+				})),
+				...(node.state ? { state: cloneNodeState(node.state) } : {}),
+				...(node.typeId ? { typeId: node.typeId } : {}),
+			}));
+
+		if (nodes.length === 0) {
+			return null;
+		}
+
+		const selectedIds = new Set(nodes.map((node) => node.id));
+		const connections = Array.from(connectionState.connections.values())
+			.filter(
+				(connection) =>
+					selectedIds.has(connection.from.nodeId) &&
+					selectedIds.has(connection.to.nodeId),
+			)
+			.map((connection) => ({
+				from: connection.from,
+				to: connection.to,
+				type: connection.type,
+			}));
+
+		const bounds = nodes.reduce(
+			(acc, node) => ({
+				minX: Math.min(acc.minX, node.x),
+				minY: Math.min(acc.minY, node.y),
+				maxX: Math.max(acc.maxX, node.x),
+				maxY: Math.max(acc.maxY, node.y),
+			}),
+			{
+				minX: nodes[0].x,
+				minY: nodes[0].y,
+				maxX: nodes[0].x,
+				maxY: nodes[0].y,
+			},
+		);
+
+		return { nodes, connections, bounds };
+	};
+
+	const copySelected = () => {
+		const payload = buildSelectionClipboard();
+		if (!payload) {
+			emitUiMessage("warning", "Select at least one node to copy.");
+			return false;
+		}
+
+		clipboard = payload;
+		pasteNudge = 0;
+		return true;
+	};
+
+	const cutSelected = () => {
+		if (!copySelected()) {
+			return;
+		}
+
+		const removed = Array.from(nodeState.selectedIds);
+		if (deleteSelectedNode()) {
+			removeNodesFromGroups(removed);
+			commitHistory();
+		}
+	};
+
+	const pasteClipboard = (position?: { x: number; y: number }) => {
+		if (!clipboard) {
+			emitUiMessage("warning", "Nothing to paste yet.");
+			return;
+		}
+
+		const anchor = position ?? getSpawnPosition();
+		const nudge = pasteNudge * 24;
+		pasteNudge += 1;
+
+		const offsetX = anchor.x + nudge - clipboard.bounds.minX;
+		const offsetY = anchor.y + nudge - clipboard.bounds.minY;
+
+		const idMap = new Map<number, number>();
+		const createdIds: number[] = [];
+
+		clearSelection();
+		clipboard.nodes.forEach((node) => {
+			const options: {
+				title: string;
+				select: boolean;
+				state?: NodeState;
+				typeId?: string;
+				ports?: SerializablePort[];
+			} = {
+				title: node.title,
+				select: false,
+				...(node.state ? { state: cloneNodeState(node.state) } : {}),
+				...(node.typeId ? { typeId: node.typeId } : {}),
+			};
+			if (!node.typeId) {
+				options.ports = node.ports;
+			}
+			const created = createNode(
+				{ x: node.x + offsetX, y: node.y + offsetY },
+				options,
+			);
+			idMap.set(node.id, created.id);
+			createdIds.push(created.id);
+		});
+
+		clipboard.connections.forEach((connection) => {
+			const fromNodeId = idMap.get(connection.from.nodeId);
+			const toNodeId = idMap.get(connection.to.nodeId);
+			if (!fromNodeId || !toNodeId) {
+				return;
+			}
+
+			const fromRef = { nodeId: fromNodeId, portId: connection.from.portId };
+			const toRef = { nodeId: toNodeId, portId: connection.to.portId };
+			if (fromRef.nodeId === toRef.nodeId) {
+				return;
+			}
+			const fromData = getNodePort(fromRef);
+			const toData = getNodePort(toRef);
+			if (!fromData || !toData) {
+				return;
+			}
+
+			if (
+				fromData.port.direction !== "output" ||
+				toData.port.direction !== "input"
+			) {
+				return;
+			}
+
+			if (
+				!arePortTypesCompatible(fromData.port.type, connection.type) ||
+				!arePortTypesCompatible(toData.port.type, connection.type)
+			) {
+				return;
+			}
+
+			const id = `${fromRef.nodeId}:${fromRef.portId}->${toRef.nodeId}:${toRef.portId}`;
+			connectionState.connections.set(id, {
+				id,
+				from: fromRef,
+				to: toRef,
+				type: connection.type,
+			});
+		});
+
+		createdIds.forEach((id) => {
+			toggleSelection(id);
+		});
+		commitHistory();
+	};
+
+	const getSelectedGroupFromNodes = () => {
+		if (nodeState.selectedIds.size === 0) {
+			return null;
+		}
+		const selectedIds = Array.from(nodeState.selectedIds);
+		const firstGroupId = getGroupForNode(selectedIds[0]);
+		if (firstGroupId === undefined) {
+			return null;
+		}
+		const matches = selectedIds.every(
+			(nodeId) => getGroupForNode(nodeId) === firstGroupId,
+		);
+		if (!matches) {
+			return null;
+		}
+		return groupState.groups.get(firstGroupId) ?? null;
+	};
+
+	const groupSelectedNodes = () => {
+		if (nodeState.selectedIds.size < 2) {
+			emitUiMessage("warning", "Select at least two nodes to create a group.");
+			return;
+		}
+		const selectedIds = Array.from(nodeState.selectedIds);
+		const alreadyGrouped = selectedIds.some(
+			(nodeId) => getGroupForNode(nodeId) !== undefined,
+		);
+		if (alreadyGrouped) {
+			emitUiMessage(
+				"warning",
+				"Ungroup selected nodes before creating a new group.",
+			);
+			return;
+		}
+
+		const group = createGroup(selectedIds, { collapsed: false });
+		clearSelection();
+		clearGroupSelectionWithEmit();
+		selectGroup(group.id, false);
+		commitHistory();
+	};
+
+	const collapseSelectedGroup = () => {
+		const group =
+			groupState.selectedIds.size > 0
+				? (groupState.groups.get(Array.from(groupState.selectedIds)[0]) ?? null)
+				: getSelectedGroupFromNodes();
+		if (!group || group.collapsed) {
+			return;
+		}
+		setGroupCollapsed(group, true);
+		clearSelection();
+		selectGroup(group.id, false);
+		commitHistory();
+	};
+
+	const expandSelectedGroup = () => {
+		if (groupState.selectedIds.size === 0) {
+			return;
+		}
+		const group = groupState.groups.get(Array.from(groupState.selectedIds)[0]);
+		if (!group || !group.collapsed) {
+			return;
+		}
+		setGroupCollapsed(group, false);
+		commitHistory();
+	};
+
+	const ungroupSelection = () => {
+		if (groupState.selectedIds.size > 0) {
+			const groupIds = Array.from(groupState.selectedIds);
+			ungroupGroups(groupIds);
+			commitHistory();
+			return;
+		}
+		const group = getSelectedGroupFromNodes();
+		if (!group) {
+			emitUiMessage("warning", "Select nodes from a single group to ungroup.");
+			return;
+		}
+		ungroupGroups([group.id]);
+		commitHistory();
+	};
+
+	type SelectionBounds = {
+		minX: number;
+		minY: number;
+		maxX: number;
+		maxY: number;
+	};
+
+	const getSelectionBounds = (): SelectionBounds | null => {
+		let bounds: SelectionBounds | null = null;
+		const applyBounds = (
+			minX: number,
+			minY: number,
+			maxX: number,
+			maxY: number,
+		) => {
+			if (!bounds) {
+				bounds = { minX, minY, maxX, maxY };
+				return;
+			}
+			bounds.minX = Math.min(bounds.minX, minX);
+			bounds.minY = Math.min(bounds.minY, minY);
+			bounds.maxX = Math.max(bounds.maxX, maxX);
+			bounds.maxY = Math.max(bounds.maxY, maxY);
+		};
+
+		nodeState.selectedIds.forEach((id) => {
+			const node = nodeState.nodes.get(id);
+			if (!node || isNodeHidden(id)) {
+				return;
+			}
+			const x = node.container.position.x;
+			const y = node.container.position.y;
+			applyBounds(x, y, x + node.width, y + node.height);
+		});
+
+		groupState.selectedIds.forEach((id) => {
+			const group = groupState.groups.get(id);
+			if (!group) {
+				return;
+			}
+			const x = group.container.position.x;
+			const y = group.container.position.y;
+			applyBounds(x, y, x + group.width, y + group.height);
+		});
+
+		connectionState.selectedIds.forEach((id) => {
+			const connection = connectionState.connections.get(id);
+			if (!connection) {
+				return;
+			}
+			[connection.from, connection.to].forEach((ref) => {
+				const groupPort = getGroupPortForRef(ref);
+				if (groupPort) {
+					const portPosition = getGroupPortWorldPosition(
+						groupPort.group,
+						groupPort.port,
+					);
+					applyBounds(
+						portPosition.x,
+						portPosition.y,
+						portPosition.x,
+						portPosition.y,
+					);
+					return;
+				}
+				const data = getNodePort(ref);
+				if (!data) {
+					return;
+				}
+				const portPosition = getPortWorldPosition(data.node, data.port);
+				applyBounds(
+					portPosition.x,
+					portPosition.y,
+					portPosition.x,
+					portPosition.y,
+				);
+			});
+		});
+
+		return bounds;
+	};
+
+	const resetView = () => {
+		camera.scale.set(1, 1);
+		camera.pivot.x = 0;
+		camera.pivot.y = 0;
+		commitHistory();
+	};
+
+	const frameSelection = () => {
+		const bounds = getSelectionBounds();
+		if (!bounds) {
+			return;
+		}
+		const screen = app.renderer.screen;
+		const padding = 80;
+		const availableWidth = Math.max(1, screen.width - padding * 2);
+		const availableHeight = Math.max(1, screen.height - padding * 2);
+		const boundsWidth = Math.max(1, bounds.maxX - bounds.minX);
+		const boundsHeight = Math.max(1, bounds.maxY - bounds.minY);
+		const targetScale = Math.min(
+			availableWidth / boundsWidth,
+			availableHeight / boundsHeight,
+		);
+		const nextScale = Math.max(
+			zoomLimits.min,
+			Math.min(zoomLimits.max, targetScale),
+		);
+		camera.scale.set(nextScale, nextScale);
+		camera.pivot.x = (bounds.minX + bounds.maxX) / 2;
+		camera.pivot.y = (bounds.minY + bounds.maxY) / 2;
+		commitHistory();
+	};
+
+	const deleteSelection = () => {
+		closeNodeRename();
+		if (nodeState.selectedIds.size > 0) {
+			const removed = Array.from(nodeState.selectedIds);
+			if (deleteSelectedNode()) {
+				removeNodesFromGroups(removed);
+				commitHistory();
+				emitSelectionChange();
+			}
+			return;
+		}
+
+		if (groupState.selectedIds.size > 0) {
+			const groupIds = Array.from(groupState.selectedIds);
+			const nodeIds = new Set<number>();
+			for (const groupId of groupIds) {
+				const group = groupState.groups.get(groupId);
+				if (!group) {
+					continue;
+				}
+				for (const nodeId of group.nodeIds) {
+					nodeIds.add(nodeId);
+				}
+			}
+			connectionState.connections.forEach((connection, id) => {
+				if (
+					nodeIds.has(connection.from.nodeId) ||
+					nodeIds.has(connection.to.nodeId)
+				) {
+					connectionState.connections.delete(id);
+				}
+			});
+			deleteGroups(groupIds);
+			commitHistory();
+			emitSelectionChange();
+			return;
+		}
+
+		if (connectionState.selectedIds.size > 0) {
+			connectionState.selectedIds.forEach((id) => {
+				connectionState.connections.delete(id);
+			});
+			connectionState.selectedIds.clear();
+			commitHistory();
+			emitSelectionChange();
+		}
+	};
+
+	const saveGraph = () => {
+		const snapshot = buildGraphSnapshot();
+		const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+			type: "application/json",
+		});
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement("a");
+		link.href = url;
+		link.download = "shadr-graph.json";
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 0);
+	};
+
+	createContextMenuItem("add-node", "Add Node...", () => {
+		openSearchPalette();
+	});
+
+	createContextMenuItem("rename-node", "Rename Node", () => {
+		const [nodeId] = Array.from(nodeState.selectedIds);
+		if (typeof nodeId === "number") {
+			openNodeRename(nodeId);
+		}
+	});
+
+	createContextMenuItem("group-selected", "Group Selected", () => {
+		groupSelectedNodes();
+	});
+
+	createContextMenuItem("ungroup-selected", "Ungroup", () => {
+		ungroupSelection();
+	});
+
+	createContextMenuItem("collapse-group", "Collapse Group", () => {
+		collapseSelectedGroup();
+	});
+
+	createContextMenuItem("expand-group", "Expand Group", () => {
+		expandSelectedGroup();
+	});
+
+	createContextMenuItem("copy-selected", "Copy Selected", () => {
+		copySelected();
+	});
+
+	createContextMenuItem("cut-selected", "Cut Selected", () => {
+		cutSelected();
+	});
+
+	createContextMenuItem("paste", "Paste", () => {
+		pasteClipboard({
 			x: contextMenuState.worldX,
 			y: contextMenuState.worldY,
 		});
 	});
 
-	nodeTemplates.forEach((template) => {
-		createContextMenuItem(`add-${template.id}`, `Add ${template.label}`, () => {
-			spawnTemplate(template);
-		});
+	createContextMenuItem("delete-selected", "Delete Selected", () => {
+		deleteSelection();
 	});
 
-	createContextMenuItem("delete-selected", "Delete Selected", () => {
-		if (deleteSelectedNode()) {
-			commitHistory();
-		}
+	createContextMenuItem("frame-selection", "Frame Selection", () => {
+		frameSelection();
+	});
+
+	createContextMenuItem("reset-view", "Reset View", () => {
+		resetView();
 	});
 
 	const showContextMenu = (event: MouseEvent) => {
 		event.preventDefault();
-		closeConstEditor();
+		closeNodeRename();
 
 		const rect = canvas.getBoundingClientRect();
 		const screenX = event.clientX - rect.left;
@@ -1464,9 +2033,80 @@ export async function initCanvas(
 		contextMenuState.worldX = world.x;
 		contextMenuState.worldY = world.y;
 
+		const selectedNodeIds = Array.from(nodeState.selectedIds);
+		const selectedGroup =
+			groupState.selectedIds.size > 0
+				? (groupState.groups.get(Array.from(groupState.selectedIds)[0]) ?? null)
+				: null;
+		const groupFromNodes = getSelectedGroupFromNodes();
+		const canGroup =
+			nodeState.selectedIds.size >= 2 &&
+			selectedNodeIds.every((nodeId) => getGroupForNode(nodeId) === undefined);
+		const canUngroup = Boolean(selectedGroup || groupFromNodes);
+		const canCollapse =
+			(selectedGroup ?? groupFromNodes) !== null &&
+			!(selectedGroup ?? groupFromNodes)?.collapsed;
+		const canExpand = Boolean(selectedGroup?.collapsed);
+		const hasSelection =
+			nodeState.selectedIds.size > 0 ||
+			groupState.selectedIds.size > 0 ||
+			connectionState.selectedIds.size > 0;
+
 		contextMenuItems.forEach((item) => {
+			if (item.id === "group-selected") {
+				setContextMenuItemEnabled(item, canGroup);
+				return;
+			}
+
+			if (item.id === "ungroup-selected") {
+				setContextMenuItemEnabled(item, canUngroup);
+				return;
+			}
+
+			if (item.id === "collapse-group") {
+				setContextMenuItemEnabled(item, canCollapse);
+				return;
+			}
+
+			if (item.id === "expand-group") {
+				setContextMenuItemEnabled(item, canExpand);
+				return;
+			}
+
+			if (item.id === "frame-selection") {
+				setContextMenuItemEnabled(item, hasSelection);
+				return;
+			}
+
 			if (item.id === "delete-selected") {
+				setContextMenuItemEnabled(
+					item,
+					nodeState.selectedIds.size > 0 ||
+						groupState.selectedIds.size > 0 ||
+						connectionState.selectedIds.size > 0,
+				);
+				return;
+			}
+
+			if (item.id === "rename-node") {
+				const [nodeId] = selectedNodeIds;
+				setContextMenuItemEnabled(
+					item,
+					nodeState.selectedIds.size === 1 &&
+						typeof nodeId === "number" &&
+						!isNodeHidden(nodeId),
+				);
+				return;
+			}
+
+			if (item.id === "copy-selected" || item.id === "cut-selected") {
 				setContextMenuItemEnabled(item, nodeState.selectedIds.size > 0);
+				return;
+			}
+
+			if (item.id === "paste") {
+				setContextMenuItemEnabled(item, Boolean(clipboard));
+				return;
 			} else {
 				setContextMenuItemEnabled(item, true);
 			}
@@ -1478,15 +2118,35 @@ export async function initCanvas(
 		syncContextMenuState();
 	};
 
-	updateScene();
-	setHistoryCurrent(buildGraphSnapshot());
+	applyVisualSettings(visualSettings);
+	const didRestoreAutosave = restoreAutosavedGraph();
+	if (!didRestoreAutosave) {
+		setHistoryCurrent(buildGraphSnapshot());
+	}
 	app.ticker.add(() => {
+		updateBackground();
 		updateScene();
+		updateAllGroupLayouts();
 		renderConnections();
+		if (debugOverlay) {
+			debugOverlay.update();
+		}
 	});
 
 	const handlePointerDown = (event: PointerEvent) => {
-		if (event.button !== 0) {
+		if (event.pointerType === "touch") {
+			updateTouchPoint(event);
+			if (touchState.points.size >= 2 && !touchState.gesture.isActive) {
+				event.preventDefault();
+				beginTouchGesture();
+				return;
+			}
+		}
+
+		const isMiddleButton = event.button === 1;
+		const isSpacePan = event.button === 0 && interactionState.spacePressed;
+
+		if (!isMiddleButton && event.button !== 0) {
 			return;
 		}
 
@@ -1500,10 +2160,60 @@ export async function initCanvas(
 		}
 
 		connectionState.hoverId = null;
-		if (!event.shiftKey) {
-			clearSelection();
+		if (hoveredConnectionId !== null) {
+			hoveredConnectionId = null;
+			emitHoverChange();
 		}
+		if (!isMiddleButton && !isSpacePan && event.button === 0) {
+			const world = getWorldFromClient(event.clientX, event.clientY);
+			const hoveredConnection = findHoveredConnection(world.x, world.y);
+			if (hoveredConnection) {
+				clearSelection();
+				clearGroupSelectionWithEmit();
+				if (event.shiftKey) {
+					toggleConnectionSelection(hoveredConnection);
+				} else {
+					selectSingleConnection(hoveredConnection);
+				}
+				return;
+			}
+		}
+		if (isMiddleButton) {
+			event.preventDefault();
+		}
+
+		if (!isMiddleButton && !isSpacePan) {
+			if (interactionState.isPanning) {
+				interactionState.isPanning = false;
+				interactionState.pointerId = null;
+				interactionState.panMode = "default";
+			}
+			if (!event.shiftKey) {
+				clearSelection();
+				clearGroupSelectionWithEmit();
+				clearConnectionSelection();
+			}
+
+			const world = getWorldFromClient(event.clientX, event.clientY);
+			selectionState.isActive = true;
+			selectionState.pointerId = event.pointerId;
+			selectionState.startX = world.x;
+			selectionState.startY = world.y;
+			selectionState.endX = world.x;
+			selectionState.endY = world.y;
+			selectionState.append = event.shiftKey;
+			renderSelectionBox();
+			applySelectionFromRect();
+			canvas.setPointerCapture(event.pointerId);
+			return;
+		}
+
 		interactionState.isPanning = true;
+		interactionState.panMode = isMiddleButton
+			? "middle"
+			: isSpacePan
+				? "space"
+				: "default";
 		interactionState.pointerId = event.pointerId;
 		interactionState.lastX = event.clientX;
 		interactionState.lastY = event.clientY;
@@ -1513,6 +2223,17 @@ export async function initCanvas(
 	};
 
 	const handlePointerMove = (event: PointerEvent) => {
+		if (
+			event.pointerType === "touch" &&
+			touchState.points.has(event.pointerId)
+		) {
+			updateTouchPoint(event);
+			if (touchState.gesture.isActive) {
+				applyTouchGesture();
+				return;
+			}
+		}
+
 		if (
 			connectionState.active &&
 			connectionState.active.pointerId === event.pointerId
@@ -1524,7 +2245,57 @@ export async function initCanvas(
 			return;
 		}
 
+		if (
+			selectionState.isActive &&
+			selectionState.pointerId === event.pointerId
+		) {
+			const world = getWorldFromClient(event.clientX, event.clientY);
+			selectionState.endX = world.x;
+			selectionState.endY = world.y;
+			renderSelectionBox();
+			applySelectionFromRect();
+			return;
+		}
+
 		if (dragState.isDragging && dragState.pointerId === event.pointerId) {
+			if (dragState.groupId !== null) {
+				const group = groupState.groups.get(dragState.groupId);
+				if (!group || !dragState.groupStart) {
+					dragState.isDragging = false;
+					dragState.pointerId = null;
+					dragState.groupId = null;
+					dragState.startPositions.clear();
+					dragState.groupStart = null;
+					return;
+				}
+
+				const world = getWorldFromClient(event.clientX, event.clientY);
+				const nextX = world.x - dragState.offsetX;
+				const nextY = world.y - dragState.offsetY;
+				const deltaX = nextX - dragState.groupStart.x;
+				const deltaY = nextY - dragState.groupStart.y;
+
+				dragState.startPositions.forEach((start, nodeId) => {
+					const node = nodeState.nodes.get(nodeId);
+					if (!node) {
+						return;
+					}
+					node.container.position.set(start.x + deltaX, start.y + deltaY);
+				});
+
+				if (group.collapsed) {
+					group.collapsedPosition = {
+						x: dragState.groupStart.x + deltaX,
+						y: dragState.groupStart.y + deltaY,
+					};
+					group.container.position.set(
+						dragState.groupStart.x + deltaX,
+						dragState.groupStart.y + deltaY,
+					);
+				}
+				return;
+			}
+
 			const anchorId = dragState.anchorId;
 			const anchorStart = anchorId
 				? dragState.startPositions.get(anchorId)
@@ -1562,6 +2333,8 @@ export async function initCanvas(
 			const nextHover = findHoveredConnection(world.x, world.y);
 			if (nextHover !== connectionState.hoverId) {
 				connectionState.hoverId = nextHover;
+				hoveredConnectionId = nextHover;
+				emitHoverChange();
 			}
 			return;
 		}
@@ -1591,6 +2364,17 @@ export async function initCanvas(
 
 	const stopPanning = (event: PointerEvent) => {
 		if (
+			event.pointerType === "touch" &&
+			touchState.points.has(event.pointerId)
+		) {
+			removeTouchPoint(event);
+			endTouchGestureIfNeeded();
+			if (touchState.gesture.isActive) {
+				return;
+			}
+		}
+
+		if (
 			connectionState.active &&
 			connectionState.active.pointerId === event.pointerId
 		) {
@@ -1598,6 +2382,17 @@ export async function initCanvas(
 			if (nodeState.suppressPanPointerId === event.pointerId) {
 				nodeState.suppressPanPointerId = null;
 			}
+			canvas.releasePointerCapture(event.pointerId);
+			return;
+		}
+
+		if (
+			selectionState.isActive &&
+			selectionState.pointerId === event.pointerId
+		) {
+			selectionState.isActive = false;
+			selectionState.pointerId = null;
+			renderSelectionBox();
 			canvas.releasePointerCapture(event.pointerId);
 			return;
 		}
@@ -1619,7 +2414,9 @@ export async function initCanvas(
 			dragState.isDragging = false;
 			dragState.pointerId = null;
 			dragState.anchorId = null;
+			dragState.groupId = null;
 			dragState.startPositions.clear();
+			dragState.groupStart = null;
 			if (nodeState.suppressPanPointerId === event.pointerId) {
 				nodeState.suppressPanPointerId = null;
 			}
@@ -1652,7 +2449,29 @@ export async function initCanvas(
 	};
 
 	const handleWheel = (event: WheelEvent) => {
+		const isPinchZoom = event.ctrlKey || event.metaKey;
+		const isPixelDelta = event.deltaMode === 0;
+		const hasScrollDelta = event.deltaX !== 0 || event.deltaY !== 0;
+		const shouldPan = !isPinchZoom && isPixelDelta && hasScrollDelta;
 		event.preventDefault();
+
+		if (shouldPan) {
+			const panState = applyPan(
+				{
+					pivotX: camera.pivot.x,
+					pivotY: camera.pivot.y,
+					scale: camera.scale.x || 1,
+				},
+				{
+					deltaX: event.deltaX,
+					deltaY: event.deltaY,
+				},
+			);
+			camera.pivot.x = panState.pivotX;
+			camera.pivot.y = panState.pivotY;
+			commitHistory();
+			return;
+		}
 
 		const screen = app.renderer.screen;
 		const rect = canvas.getBoundingClientRect();
@@ -1689,20 +2508,44 @@ export async function initCanvas(
 		showContextMenu(event);
 	};
 
+	const handleResolutionChange = () => {
+		if (typeof window === "undefined") {
+			return;
+		}
+		const nextResolution = window.devicePixelRatio || 1;
+		if (nextResolution === currentResolution) {
+			return;
+		}
+		currentResolution = nextResolution;
+		app.renderer.resolution = nextResolution;
+		const width = Math.max(1, Math.floor(canvas.clientWidth));
+		const height = Math.max(1, Math.floor(canvas.clientHeight));
+		app.renderer.resize(width, height);
+		syncTextResolution();
+	};
+
 	canvas.addEventListener("pointerdown", handlePointerDown);
 	canvas.addEventListener("pointermove", handlePointerMove);
 	canvas.addEventListener("pointerup", stopPanning);
 	canvas.addEventListener("pointercancel", stopPanning);
 	canvas.addEventListener("contextmenu", handleContextMenu);
 	canvas.addEventListener("wheel", handleWheel, { passive: false });
+	window.addEventListener("resize", handleResolutionChange);
 
 	const exportGlsl = () => {
+		const compileStart = performance.now();
 		const result = compileGraphToGlsl(
 			nodeState.nodes,
 			connectionState.connections,
 		);
+		const compileMs = performance.now() - compileStart;
+		result.compileMs = compileMs;
+		if (debugOverlay) {
+			debugOverlay.recordShaderMessages(result.messages, compileMs);
+		}
 		if (!result.hasFragmentOutput) {
-			window.alert(
+			emitUiMessage(
+				"error",
 				"GLSL export failed. Add a Fragment Output node to the graph.",
 			);
 			return;
@@ -1716,16 +2559,23 @@ export async function initCanvas(
 			.map((message) => message.message);
 
 		if (exportErrors.length > 0) {
-			window.alert(
+			emitUiMessage(
+				"error",
 				`GLSL export failed:\n${exportErrors.map((error) => `- ${error}`).join("\n")}`,
 			);
 			return;
 		}
 
 		if (exportWarnings.length > 0) {
-			window.alert(
+			emitUiMessage(
+				"warning",
 				`GLSL export warnings:\n${exportWarnings.map((error) => `- ${error}`).join("\n")}`,
 			);
+		}
+
+		if (options.onExportRequest) {
+			options.onExportRequest(result);
+			return;
 		}
 
 		const payload = [
@@ -1761,6 +2611,12 @@ export async function initCanvas(
 			return;
 		}
 
+		if (event.code === "Space") {
+			event.preventDefault();
+			interactionState.spacePressed = true;
+			return;
+		}
+
 		const key = event.key.toLowerCase();
 		const isMeta = event.ctrlKey || event.metaKey;
 
@@ -1772,28 +2628,21 @@ export async function initCanvas(
 			return;
 		}
 
-		if (key === "enter") {
-			if (nodeState.selectedIds.size === 1) {
-				const selectedId = Array.from(nodeState.selectedIds)[0];
-				const node = nodeState.nodes.get(selectedId);
-				if (
-					node &&
-					(node.templateId === "const-float" ||
-						node.templateId === "const-color" ||
-						node.templateId === "const-vec2" ||
-						node.templateId === "const-vec3" ||
-						node.templateId === "const-vec4")
-				) {
-					event.preventDefault();
-					openConstEditor(node);
-					return;
-				}
-			}
-		}
-
 		if (isMeta && key === "k") {
 			event.preventDefault();
 			openSearchPalette();
+			return;
+		}
+
+		if (isMeta && key === "g" && event.shiftKey) {
+			event.preventDefault();
+			ungroupSelection();
+			return;
+		}
+
+		if (isMeta && key === "g") {
+			event.preventDefault();
+			groupSelectedNodes();
 			return;
 		}
 
@@ -1828,18 +2677,7 @@ export async function initCanvas(
 
 		if (isMeta && key === "s") {
 			event.preventDefault();
-			const snapshot = buildGraphSnapshot();
-			const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
-				type: "application/json",
-			});
-			const url = URL.createObjectURL(blob);
-			const link = document.createElement("a");
-			link.href = url;
-			link.download = "shadr-graph.json";
-			document.body.appendChild(link);
-			link.click();
-			link.remove();
-			setTimeout(() => URL.revokeObjectURL(url), 0);
+			saveGraph();
 			return;
 		}
 
@@ -1855,6 +2693,12 @@ export async function initCanvas(
 			return;
 		}
 
+		if (key === "f") {
+			event.preventDefault();
+			frameSelection();
+			return;
+		}
+
 		if (key === "n") {
 			event.preventDefault();
 			createNodeWithHistory(getSpawnPosition());
@@ -1862,9 +2706,7 @@ export async function initCanvas(
 
 		if (key === "backspace" || key === "delete") {
 			event.preventDefault();
-			if (deleteSelectedNode()) {
-				commitHistory();
-			}
+			deleteSelection();
 		}
 	};
 
@@ -1874,72 +2716,235 @@ export async function initCanvas(
 	fileInput.style.display = "none";
 	document.body.appendChild(fileInput);
 
-	const handleFileChange = (event: Event) => {
-		const target = event.target as HTMLInputElement | null;
-		const file = target?.files?.[0];
-		if (!file) {
+	const loadGraphFromText = (text: string) => {
+		if (!text.trim()) {
+			emitUiMessage("error", "Unable to read graph file.");
+			return false;
+		}
+
+		let raw: unknown;
+		try {
+			raw = JSON.parse(text);
+		} catch {
+			emitUiMessage("error", "Invalid graph JSON.");
+			return false;
+		}
+
+		const report = parseGraphWithReport(raw);
+		if (!report.snapshot) {
+			const details =
+				report.errors.length > 0
+					? report.errors.map((error) => `- ${error}`).join("\n")
+					: "- Graph data is missing required fields.";
+			emitUiMessage("error", `Graph import failed:\n${details}`);
+			return false;
+		}
+
+		const { snapshot: sanitizedSnapshot, droppedConnections } =
+			applyGraphSnapshot(report.snapshot);
+		historyState.past = [];
+		historyState.future = [];
+		setHistoryCurrent(sanitizedSnapshot);
+		scheduleAutosave(historyState.currentSerialized);
+		if (droppedConnections > 0) {
+			emitUiMessage(
+				"warning",
+				`Loaded graph contained ${droppedConnections} invalid connection(s) that were removed.`,
+			);
+		}
+		return true;
+	};
+
+	const isJsonFile = (file: File) => {
+		if (file.type === "application/json") {
+			return true;
+		}
+		return file.name.toLowerCase().endsWith(".json");
+	};
+
+	const readGraphFile = (file: File) => {
+		if (!isJsonFile(file)) {
+			emitUiMessage("error", "Only JSON graph files are supported.");
 			return;
 		}
 
 		const reader = new FileReader();
 		reader.onload = () => {
 			const text = typeof reader.result === "string" ? reader.result : "";
-			if (!text) {
-				window.alert("Unable to read graph file.");
-				return;
-			}
-
-			let raw: unknown;
-			try {
-				raw = JSON.parse(text);
-			} catch {
-				window.alert("Invalid graph JSON.");
-				return;
-			}
-
-			const snapshot = parseGraph(raw);
-			if (!snapshot) {
-				window.alert("Graph data is missing required fields.");
-				return;
-			}
-
-			const { snapshot: sanitizedSnapshot, droppedConnections } =
-				applyGraphSnapshot(snapshot);
-			historyState.past = [];
-			historyState.future = [];
-			setHistoryCurrent(sanitizedSnapshot);
-			if (droppedConnections > 0) {
-				window.alert(
-					`Loaded graph contained ${droppedConnections} invalid connection(s) that were removed.`,
-				);
-			}
+			loadGraphFromText(text);
 		};
 		reader.readAsText(file);
+	};
+
+	const handleFileChange = (event: Event) => {
+		const target = event.target as HTMLInputElement | null;
+		const file = target?.files?.[0];
+		if (!file) {
+			return;
+		}
+		readGraphFile(file);
 		target.value = "";
+	};
+
+	const handleDragOver = (event: DragEvent) => {
+		if (!event.dataTransfer) {
+			return;
+		}
+		if (!event.dataTransfer.types.includes("Files")) {
+			return;
+		}
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "copy";
+	};
+
+	const handleDrop = (event: DragEvent) => {
+		if (!event.dataTransfer) {
+			return;
+		}
+		const file = event.dataTransfer.files?.[0];
+		if (!file) {
+			return;
+		}
+		event.preventDefault();
+		readGraphFile(file);
 	};
 
 	fileInput.addEventListener("change", handleFileChange);
 	window.addEventListener("keydown", handleKeyDown);
+	canvas.addEventListener("dragover", handleDragOver);
+	canvas.addEventListener("drop", handleDrop);
+	const handleKeyUp = (event: KeyboardEvent) => {
+		if (event.code !== "Space") {
+			return;
+		}
+
+		event.preventDefault();
+		interactionState.spacePressed = false;
+	};
+
+	window.addEventListener("keyup", handleKeyUp);
 	updateShaderFromSnapshot(buildGraphSnapshot());
 
 	const originalDestroy = app.destroy.bind(app);
 	app.destroy = () => {
+		clearAutosaveTimeout();
 		canvas.removeEventListener("pointerdown", handlePointerDown);
 		canvas.removeEventListener("pointermove", handlePointerMove);
 		canvas.removeEventListener("pointerup", stopPanning);
 		canvas.removeEventListener("pointercancel", stopPanning);
 		canvas.removeEventListener("contextmenu", handleContextMenu);
 		canvas.removeEventListener("wheel", handleWheel);
+		canvas.removeEventListener("dragover", handleDragOver);
+		canvas.removeEventListener("drop", handleDrop);
 		fileInput.removeEventListener("change", handleFileChange);
 		fileInput.remove();
 		searchPalette.dispose();
-		constEditor.dispose();
 		window.removeEventListener("keydown", handleKeyDown);
+		window.removeEventListener("keyup", handleKeyUp);
+		window.removeEventListener("resize", handleResolutionChange);
 		originalDestroy();
 	};
 
 	const editorApp = app as EditorApp;
 	editorApp.closeContextMenu = hideContextMenu;
+	editorApp.closeNodeRename = closeNodeRename;
 	editorApp.exportGlsl = exportGlsl;
+	editorApp.openSearchPalette = openSearchPalette;
+	editorApp.undo = undoHistory;
+	editorApp.redo = redoHistory;
+	editorApp.copySelected = copySelected;
+	editorApp.cutSelected = cutSelected;
+	editorApp.paste = () => {
+		pasteClipboard();
+	};
+	editorApp.deleteSelected = deleteSelection;
+	editorApp.resetView = resetView;
+	editorApp.frameSelection = frameSelection;
+	editorApp.saveGraph = saveGraph;
+	editorApp.loadGraph = () => {
+		fileInput.click();
+	};
+	editorApp.loadGraphFromText = loadGraphFromText;
+	editorApp.getGraphJson = () =>
+		historyState.currentSerialized ?? JSON.stringify(buildGraphSnapshot());
+	editorApp.updateNodeState = (nodeId, state) => {
+		const node = nodeState.nodes.get(nodeId);
+		if (!node || !node.typeId) {
+			return false;
+		}
+
+		const previous = node.state ??
+			getDefaultNodeState(node.typeId) ?? { version: 1, params: {} };
+		const merged: NodeState = {
+			version: state.version ?? previous.version ?? 1,
+			params: { ...previous.params, ...state.params },
+			ui: { ...previous.ui, ...state.ui },
+		};
+		const normalized = normalizeNodeState(node.typeId, merged);
+		if (!normalized) {
+			return false;
+		}
+
+		const didChange =
+			JSON.stringify(previous.params) !== JSON.stringify(normalized.params) ||
+			JSON.stringify(previous.ui ?? {}) !== JSON.stringify(normalized.ui ?? {});
+		if (!didChange) {
+			return false;
+		}
+
+		node.state = normalized;
+		const ports = getDefinitionPorts(node.typeId, normalized);
+		if (ports.length > 0) {
+			const didUpdate = updateNodePorts(nodeId, ports, {
+				preserveNames: true,
+			});
+			if (didUpdate) {
+				renderConnections();
+			}
+		}
+		renderFooterLabel(node);
+		renderBodyLabel(node);
+		commitHistory();
+		emitSelectionChange();
+		return true;
+	};
+	editorApp.updateNodeTitle = (nodeId, title) => {
+		const didUpdate = updateNodeTitle(nodeId, title);
+		if (!didUpdate) {
+			return false;
+		}
+		commitHistory();
+		emitSelectionChange();
+		return true;
+	};
+	editorApp.updateNodePortName = (nodeId, portId, name) => {
+		const node = nodeState.nodes.get(nodeId);
+		if (!node) {
+			return false;
+		}
+		const nextName = name.trim();
+		if (!nextName) {
+			return false;
+		}
+		const nextPorts = node.ports.map((port) => ({
+			id: port.id,
+			name: port.id === portId ? nextName : port.name,
+			type: port.type,
+			direction: port.direction,
+		}));
+		const didUpdate = updateNodePorts(nodeId, nextPorts, {
+			preserveNames: false,
+		});
+		if (!didUpdate) {
+			return false;
+		}
+		commitHistory();
+		emitSelectionChange();
+		return true;
+	};
+	editorApp.updateVisualSettings = (settings) => {
+		updateVisualSettings(settings);
+	};
+	emitSelectionChange();
 	return editorApp;
 }
