@@ -1,6 +1,6 @@
 # Fix Plan (Core)
 
-Last updated: 2026-01-17
+Last updated: 2026-01-18
 Features reference: `FEATURES.md` (for what to work on after all tasks are complete)
 
 > Move completed tasks to the 'Completed' section at the bottom of this file when completed
@@ -8,31 +8,13 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 > Split code into multiple files when possible, to keep file sizes smaller and more managable/maintainable
 
 ## Critical
-- [ ] Implement core Graph data model in `graph-core` (no UI): `Node`, `Socket`, `Wire`, `Graph` as immutable-ish state transitions (Effect-friendly reducers), plus adjacency indexes (incoming/outgoing) optimized for 1000 nodes
-- [ ] Implement graph operations API (pure) with validation results: `addNode`, `removeNode`, `moveNode(s)`, `addWire`, `removeWire`, `updateParam`, `addRerouteNode` (optional for MVP), each returning `Effect` success or typed domain errors
-- [ ] Implement traversal utilities for 1000-node scale: upstream/downstream dependency closure, connected components, and “execution subgraph” derivation by requested output sockets
-- [ ] Implement cycle detection on connect (fast): incremental cycle check using DFS from target → source via adjacency before committing the wire; return structured cycle path for UI feedback
-- [ ] Implement socket type system in `shared`: primitives enum + metadata; “exact match only” compatibility; explicit conversion nodes only (no implicit casting)
-- [ ] Implement `plugin-system` (internal-only): registry for node definitions + socket types + UI parameter schema; lifecycle hooks `init/destroy` with access to message bus + graph API
-- [ ] Implement synchronous message bus/event system (Effect-based): typed event map, sync dispatch by default, explicit “deferred” channel for expensive listeners (still sync compute engine)
-- [ ] Implement node definition contract (pure functions): `compute(inputs, params, ctx) -> outputs` with typed input/output sockets; enforce purity by convention (no IO APIs exposed in ctx)
-- [ ] Build execution engine in `exec-engine` (pull-based): `evaluateSocket(socketId)` computes upstream lazily; compute only the requested closure
-- [ ] Add memoization + dirty propagation (node-level cache): maintain `dirty` flags, cache outputs by node+socket, invalidate downstream on param change / wiring change / upstream invalidation
-- [ ] Define null/undefined propagation rules: required missing input yields typed error state + output `null` (or “no value”) consistently; ensure UI can render these states
-- [ ] Add deterministic topological order generation for the requested subgraph (stable sorting by id/creation index to avoid flicker in debug/preview)
-- [ ] Implement error model end-to-end: domain errors for validation/execution; node runtime errors captured and surfaced as node error state without crashing the app
-- [ ] Create Pixi rendering layer in `ui-canvas`: scene graph structure (layers: grid, wires, nodes, overlays) with stable object mapping by IDs (no full re-create per tick)
-- [ ] Implement viewport/camera: world↔screen transforms, pan + zoom, pixel ratio handling, and frustum culling (only render visible nodes/wires) tuned for ~1000 nodes
-- [ ] Implement hit testing in Pixi: node body, socket hotspots (larger than visible), wire selection hit area; integrate with Solid state for selection + hover
-- [ ] Implement core editor interactions (must-have): create node, drag node(s), marquee select, connect wire (drag from output → input), disconnect wire, delete node(s), delete wire(s)
-- [ ] Implement connection attempt UX feedback: hover target validation (type mismatch, cycle, max connections), “ghost wire” preview, commit only when valid
-- [ ] Implement minimal overlay UI shell in `app-web` (Solid + Kobalte): app layout, left node library panel placeholder, right inspector placeholder, top bar (open/save status), notifications/toasts
-- [ ] Implement parameter editing (DOM overlay, not Pixi): for basic params (float/int/bool/vec) using Kobalte controls; edits emit events → dirty propagation
-- [ ] Implement output request pipeline: “Output node selected” triggers evaluation; do not auto-execute whole graph continuously—only on explicit preview/output request or param changes affecting previewed output
-- [ ] Implement value preview: socket hover tooltip shows cached value; optionally compute-on-hover behind a debounce only for already-selected output path
-- [ ] Implement persistence in `storage-idb`: IndexedDB store for `GraphDocumentV1`, settings, UI state; debounced autosave on graph mutations; crash-safe load on startup
+
+- [x] Implement error model end-to-end: domain errors for validation/execution; node runtime errors captured and surfaced as node error state without crashing the app
 - [ ] Implement undo/redo (graph-aware): command log for node add/remove, wire connect/disconnect, move, param change; include batching for drags and marquee operations
 - [ ] Add “graph executed” instrumentation: timing per node compute, total evaluation time, cache hit/miss counts (for later perf tuning, visible in devtools)
+- [ ] Fix type errors and lint errors, also fix this client error: ([plugin:vite:import-analysis] Failed to resolve entry for package "@shadr/storage-idb". The package may have incorrect main/module/exports specified in its package.json.
+      ./packages/app-web/src/components/EditorShell.tsx:4:53)
+- [ ] Convert all CSS on frontend app to use TailwindCSS
 
 ## High Priority
 
@@ -79,7 +61,24 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 ## Completed
 
+- [x] Implement value preview: socket hover tooltip shows cached value; optionally compute-on-hover behind a debounce only for already-selected output path
+- [x] Implement persistence in `storage-idb`: IndexedDB store for `GraphDocumentV1`, settings, UI state; debounced autosave on graph mutations; crash-safe load on startup
+- [x] Implement connection attempt UX feedback: hover target validation (type mismatch, cycle, max connections), “ghost wire” preview, commit only when valid
+- [x] Implement minimal overlay UI shell in `app-web` (Solid + Kobalte): app layout, left node library panel placeholder, right inspector placeholder, top bar (open/save status), notifications/toasts
+- [x] Implement core editor interactions (must-have): create node, drag node(s), marquee select, connect wire (drag from output → input), disconnect wire, delete node(s), delete wire(s)
+- [x] Implement hit testing in Pixi: node body, socket hotspots (larger than visible), wire selection hit area; integrate with Solid state for selection + hover
+- [x] Create Pixi rendering layer in `ui-canvas`: scene graph structure (layers: grid, wires, nodes, overlays) with stable object mapping by IDs (no full re-create per tick)
+- [x] Build execution engine in `exec-engine` (pull-based): `evaluateSocket(socketId)` computes upstream lazily; compute only the requested closure (use Effect when applicable)
+- [x] Define null/undefined propagation rules: required missing input yields typed error state + output `null` (or “no value”) consistently; ensure UI can render these states (use Effect when applicable)
+- [x] Implement node definition contract (pure functions): `compute(inputs, params, ctx) -> outputs` with typed input/output sockets; enforce purity by convention (no IO APIs exposed in ctx) (use Effect when applicable)
+- [x] Implement synchronous message bus/event system (Effect-based): typed event map, sync dispatch by default, explicit “deferred” channel for expensive listeners (still sync compute engine) (use Effect when applicable)
+- [x] Implement `plugin-system` (internal-only): registry for node definitions + socket types + UI parameter schema; lifecycle hooks `init/destroy` with access to message bus + graph API (use Effect when applicable)
+- [x] Implement cycle detection on connect (fast): incremental cycle check using DFS from target → source via adjacency before committing the wire; return structured cycle path for UI feedback (use Effect when applicable)
+- [x] Implement socket type system in `shared`: primitives enum + metadata, exact-match compatibility, and wire validation so connections require explicit conversion nodes rather than implicit casting.
+- [x] Implement traversal utilities for 1000-node scale: upstream/downstream dependency closure, connected components, and “execution subgraph” derivation by requested output sockets (use Effect when applicable) — enables consistent dependency queries and execution scoping for large graphs
+- [x] Implement graph operations API (pure) with validation results: `addNode`, `removeNode`, `moveNode(s)`, `addWire`, `removeWire`, `updateParam` returning `Effect` success or typed domain errors (reroute helper deferred for now)
 - [x] Define shared identity types in `shared`: `NodeId`, `SocketId`, `WireId`, `GraphId`, branded types, plus `NonEmptyArray`, `Result`/`Either` helpers (prefer Effect types)
+- [x] Implement core Graph data model in `graph-core` (no UI): `Node`, `Socket`, `Wire`, `Graph` as immutable-ish state transitions (Effect-friendly reducers), plus adjacency indexes (incoming/outgoing) optimized for 1000 nodes (use Effect when applicable)
 - [x] Add “bundle/perf guardrails”: build output size report and a simple perf benchmark for 1000-node render (dev script, not CI required yet)
 - [x] Ensure Effect-ts (see root package.json for catalog versions) is installed and used correctly in all packages that will need Effect, anything with layers or services or composability in the core packages
 - [x] Add Playwright smoke test for app boot + basic node creation/connect (one test is enough for MVP confidence)
@@ -94,3 +93,8 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 - [x] Create monorepo skeleton (pnpm workspaces + Turborepo) with packages: `app-web`, `graph-core`, `exec-engine`, `ui-canvas`, `ui-overlay`, `plugin-system`, `storage-idb`, `shared`, `devtools` (optional)
 - [x] Add repo-wide tooling baseline: Node LTS via `.nvmrc` + `.node-version`, `corepack` enabled, pinned pnpm version in `packageManager`, consistent ESM strategy (pick ESM-only unless you have a hard reason not to)
 - [x] Define versioned graph JSON schema in `shared`: `GraphDocumentV1` with explicit `schemaVersion`, migrations interface, stable IDs, and deterministic ordering rules for serialization (enables deterministic storage and future migrations)
+- [x] Add memoization + dirty propagation (node-level cache): maintain `dirty` flags, cache outputs by node+socket, invalidate downstream on param change / wiring change / upstream invalidation (use Effect when applicable)
+- [x] Add deterministic topological order generation for the requested subgraph (stable sorting by id/creation index to avoid flicker in debug/preview)
+- [x] Implement viewport/camera: world↔screen transforms, pan + zoom, pixel ratio handling, and frustum culling (only render visible nodes/wires) tuned for ~1000 nodes
+- [x] Implement parameter editing (DOM overlay, not Pixi): for basic params (float/int/bool/vec) using Kobalte controls; edits emit events → dirty propagation
+- [x] Implement output request pipeline: “Output node selected” triggers evaluation; do not auto-execute whole graph continuously—only on explicit preview/output request or param changes affecting previewed output

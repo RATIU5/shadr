@@ -1,4 +1,5 @@
 import type { GraphId, NodeId, SocketId, WireId } from "./identity.js";
+import type { SocketTypeId } from "./socket-types.js";
 
 export const GRAPH_DOCUMENT_V1_SCHEMA_VERSION = 1 as const;
 
@@ -7,7 +8,9 @@ export type GraphDocumentSchemaVersion =
 
 export type JsonPrimitive = boolean | null | number | string;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
-export type JsonObject = Readonly<Record<string, JsonValue>>;
+export interface JsonObject {
+  readonly [key: string]: JsonValue;
+}
 export type JsonArray = ReadonlyArray<JsonValue>;
 
 export type GraphSocketDirectionV1 = "input" | "output";
@@ -17,7 +20,7 @@ export type GraphSocketV1 = Readonly<{
   nodeId: NodeId;
   name: string;
   direction: GraphSocketDirectionV1;
-  dataType: string;
+  dataType: SocketTypeId;
   required: boolean;
   defaultValue?: JsonValue;
 }>;
@@ -48,12 +51,12 @@ export type GraphDocumentV1 = Readonly<{
 
 export type GraphDocument = GraphDocumentV1;
 
-export type GraphDocumentByVersion<
-  Version extends GraphDocumentSchemaVersion,
-> = Version extends typeof GRAPH_DOCUMENT_V1_SCHEMA_VERSION
-  ? GraphDocumentV1
-  : never;
+export type GraphDocumentByVersion<Version extends GraphDocumentSchemaVersion> =
+  Version extends typeof GRAPH_DOCUMENT_V1_SCHEMA_VERSION
+    ? GraphDocumentV1
+    : never;
 
+/* eslint-disable no-unused-vars -- type signatures need named parameters */
 export type GraphDocumentMigration<
   From extends GraphDocumentSchemaVersion,
   To extends GraphDocumentSchemaVersion,
@@ -61,14 +64,15 @@ export type GraphDocumentMigration<
   from: From;
   to: To;
   migrate: (
-    _document: GraphDocumentByVersion<From>,
+    document: GraphDocumentByVersion<From>,
   ) => GraphDocumentByVersion<To>;
 }>;
 
 export type GraphDocumentMigrator = Readonly<{
   latestVersion: GraphDocumentSchemaVersion;
-  migrate: (_document: GraphDocument) => GraphDocument;
+  migrate: (document: GraphDocument) => GraphDocument;
 }>;
+/* eslint-enable no-unused-vars */
 
 const sortIds = <T extends string>(ids: ReadonlyArray<T>): T[] =>
   [...ids].sort((left, right) => left.localeCompare(right));

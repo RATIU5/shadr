@@ -5,11 +5,21 @@
   "scripts": {
     "dev": "vinxi dev",
     "build": "vinxi build",
-    "start": "vinxi start"
+    "start": "vinxi start",
+    "lint": "eslint --fix ."
   },
   "dependencies": {
+    "@kobalte/core": "^0.13.11",
+    "@shadr/exec-engine": "workspace:*",
+    "@shadr/graph-core": "workspace:*",
+    "@shadr/plugin-system": "workspace:*",
+    "@shadr/shared": "workspace:*",
+    "@shadr/storage-idb": "workspace:*",
+    "@shadr/ui-canvas": "workspace:*",
     "@solidjs/router": "^0.15.0",
     "@solidjs/start": "^1.1.0",
+    "effect": "catalog:effect",
+    "pixi.js": "^8.6.1",
     "solid-js": "^1.9.5",
     "vinxi": "^0.5.7"
   },

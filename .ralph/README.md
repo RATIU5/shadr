@@ -21,9 +21,9 @@ Autonomous AI development loops for the shadr project.
 
 Ralph supports switching between AI providers:
 
-| Provider | CLI | Env Variable |
-|----------|-----|--------------|
-| `codex` | [OpenAI Codex](https://github.com/openai/codex) | `OPENAI_API_KEY` |
+| Provider | CLI                                                      | Env Variable        |
+| -------- | -------------------------------------------------------- | ------------------- |
+| `codex`  | [OpenAI Codex](https://github.com/openai/codex)          | `OPENAI_API_KEY`    |
 | `claude` | [Claude Code](https://github.com/anthropics/claude-code) | `ANTHROPIC_API_KEY` |
 
 ### Switch Provider
@@ -56,6 +56,7 @@ done
 ```
 
 Each iteration:
+
 1. Reads prompt + project files
 2. Picks ONE task from `fix_plan.md`
 3. Searches codebase before changing
@@ -68,11 +69,11 @@ Progress persists in **files and git**, not LLM context.
 
 ## Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `ralph.sh` | Main development loop |
-| `ralph-plan.sh` | One-shot planning analysis |
-| `config.sh` | Default settings (provider, timeouts) |
+| Script          | Purpose                               |
+| --------------- | ------------------------------------- |
+| `ralph.sh`      | Main development loop                 |
+| `ralph-plan.sh` | One-shot planning analysis            |
+| `config.sh`     | Default settings (provider, timeouts) |
 
 ### ralph.sh Options
 
@@ -88,10 +89,10 @@ Progress persists in **files and git**, not LLM context.
 
 ## Key Files
 
-| File | Purpose |
-|------|---------|
-| `AGENT.md` | Build/run commands + learnings + guardrails |
-| `fix_plan.md` | Prioritized task list |
+| File                    | Purpose                                      |
+| ----------------------- | -------------------------------------------- |
+| `AGENT.md`              | Build/run commands + learnings + guardrails  |
+| `fix_plan.md`           | Prioritized task list                        |
 | `specs/architecture.md` | Project structure (update on major changes!) |
 
 ## Best Practices

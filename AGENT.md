@@ -213,6 +213,11 @@ If you see patterns suggesting otherwise, **they are wrong** and should be corre
 
 - Playwright smoke tests run from `tests/e2e` and load `packages/app-web/index.html` directly for a lightweight UI boot check.
 - TypeScript project references build declarations only (`emitDeclarationOnly`) to satisfy `allowImportingTsExtensions`; package scripts use `tsc -b`.
+- Graph-core operations now return `Effect` results; tests use `Effect.either` with `Effect.runSync`.
+- Exec engine now records missing required inputs as node error state in `ExecState.nodeErrors` and returns `null` outputs instead of failing evaluation.
+- Kobalte primitives are currently shimmed locally in `packages/kobalte-core` for offline development; replace with upstream `@kobalte/core` when available.
+- The Kobalte shim includes basic `NumberField` and `Switch` controls for parameter editing in `app-web`.
+- IndexedDB persistence lives in `@shadr/storage-idb` (stores `GraphDocumentV1`, settings, and UI state); `EditorShell` loads on mount and uses a debounced autosave.
 
 ---
 

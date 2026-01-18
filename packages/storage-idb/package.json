@@ -1,16 +1,17 @@
 {
-	"name": "@shadr/storage-idb",
-	"version": "0.0.0",
-	"private": true,
-	"type": "module",
-	"scripts": {
-		"build": "tsc -b",
-		"dev": "tsc -b -w --preserveWatchOutput",
-		"typecheck": "tsc -b",
-		"lint": "eslint .",
-		"test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/storage-idb/test/**/*.test.ts"
-	},
-	"dependencies": {
-		"effect": "catalog:effect"
-	}
+  "name": "@shadr/storage-idb",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b -w --preserveWatchOutput",
+    "typecheck": "tsc -b",
+    "lint": "eslint --fix .",
+    "test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/storage-idb/test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@shadr/shared": "workspace:*",
+    "effect": "catalog:effect"
+  }
 }

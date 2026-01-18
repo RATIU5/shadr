@@ -1,19 +1,20 @@
 {
-	"extends": "./tsconfig.base.json",
-	"compilerOptions": {
-		"noEmit": true
-	},
-	"files": [],
-	"references": [
-		{ "path": "./packages/app-web" },
-		{ "path": "./packages/devtools" },
-		{ "path": "./packages/exec-engine" },
-		{ "path": "./packages/graph-core" },
-		{ "path": "./packages/plugin-system" },
-		{ "path": "./packages/shared" },
-		{ "path": "./packages/storage-idb" },
-		{ "path": "./packages/ui-canvas" },
-		{ "path": "./packages/ui-overlay" }
-	],
-	"exclude": ["node_modules"]
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./packages/app-web" },
+    { "path": "./packages/kobalte-core" },
+    { "path": "./packages/devtools" },
+    { "path": "./packages/exec-engine" },
+    { "path": "./packages/graph-core" },
+    { "path": "./packages/plugin-system" },
+    { "path": "./packages/shared" },
+    { "path": "./packages/storage-idb" },
+    { "path": "./packages/ui-canvas" },
+    { "path": "./packages/ui-overlay" }
+  ],
+  "exclude": ["node_modules"]
 }

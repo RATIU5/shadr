@@ -14,6 +14,7 @@ This directory contains architecture and feature specs.
 3. Review and iterate
 
 Specs should include:
+
 - What it does
 - Requirements
 - API/interface

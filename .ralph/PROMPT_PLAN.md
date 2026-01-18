@@ -28,18 +28,23 @@ Update `fix_plan.md` with prioritized tasks:
 Last updated: [date]
 
 ## Critical
+
 - [ ] Build/type errors that block development
 
 ## High Priority
+
 - [ ] Core functionality gaps (with file paths)
 
 ## Medium Priority
+
 - [ ] Improvements and refactoring
 
 ## Low Priority
+
 - [ ] Nice-to-have enhancements
 
 ## Completed
+
 - [x] Done items (date)
 ```
 
@@ -48,6 +53,7 @@ Be specific - include file paths and line numbers where relevant.
 ## 3. Architecture Updates
 
 If the project structure has changed significantly from what's documented:
+
 - Update `specs/architecture.md` to reflect current state
 
 ---
@@ -56,8 +62,8 @@ If the project structure has changed significantly from what's documented:
 
 99. **Do NOT implement anything** - this is planning only.
 
-999. Search before assuming something isn't implemented.
+100. Search before assuming something isn't implemented.
 
-9999. Be thorough but realistic about priorities.
+101. Be thorough but realistic about priorities.
 
-99999. Keep tasks specific and actionable.
+102. Keep tasks specific and actionable.
