@@ -23,6 +23,8 @@ export type GraphSocketV1 = Readonly<{
   dataType: SocketTypeId;
   required: boolean;
   defaultValue?: JsonValue;
+  minConnections?: number;
+  maxConnections?: number;
 }>;
 
 export type GraphNodeV1 = Readonly<{

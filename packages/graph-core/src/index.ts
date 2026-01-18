@@ -60,9 +60,44 @@ export type GraphError =
       fromType: SocketTypeId;
       toType: SocketTypeId;
     }
+  | {
+      _tag: "SocketConnectionLimitExceeded";
+      socketId: SocketId;
+      maxConnections: number;
+      connectionCount: number;
+    }
+  | {
+      _tag: "SocketConnectionBelowMin";
+      socketId: SocketId;
+      minConnections: number;
+      connectionCount: number;
+    }
+  | {
+      _tag: "InvalidSocketConnectionLimit";
+      socketId: SocketId;
+      minConnections?: number;
+      maxConnections?: number;
+    }
   | { _tag: "AdjacencyMismatch"; from: NodeId; to: NodeId }
   | { _tag: "SelfLoop"; nodeId: NodeId }
   | { _tag: "CycleDetected"; path: NodeId[] };
+
+export type GraphWarning =
+  | {
+      _tag: "MissingRequiredInput";
+      nodeId: NodeId;
+      socketId: SocketId;
+      socketName: string;
+    }
+  | {
+      _tag: "IncompatibleSocketTypes";
+      wireId: WireId;
+      fromSocketId: SocketId;
+      toSocketId: SocketId;
+      fromType: SocketTypeId;
+      toType: SocketTypeId;
+    }
+  | { _tag: "UnusedNode"; nodeId: NodeId };
 
 export type GraphEffect<T> = Effect.Effect<T, GraphError>;
 
@@ -80,6 +115,27 @@ const cloneSetMap = <K>(
 };
 
 const cloneMap = <K, V>(map: ReadonlyMap<K, V>): Map<K, V> => new Map(map);
+
+const getSocketMaxConnections = (socket: GraphSocket): number =>
+  socket.maxConnections ??
+  (socket.direction === "input" ? 1 : Number.POSITIVE_INFINITY);
+
+const getSocketMinConnections = (socket: GraphSocket): number =>
+  socket.minConnections ?? 0;
+
+const countSocketConnections = (graph: Graph, socket: GraphSocket): number => {
+  let count = 0;
+  for (const wire of graph.wires.values()) {
+    if (socket.direction === "input") {
+      if (wire.toSocketId === socket.id) {
+        count += 1;
+      }
+    } else if (wire.fromSocketId === socket.id) {
+      count += 1;
+    }
+  }
+  return count;
+};
 
 const sameIdSet = (
   left: ReadonlyArray<SocketId>,
@@ -270,6 +326,27 @@ export const addWire = (graph: Graph, wire: GraphWire): GraphEffect<Graph> => {
       toSocketId: toSocket.id,
       fromType: fromSocket.dataType,
       toType: toSocket.dataType,
+    });
+  }
+
+  const fromConnectionCount = countSocketConnections(graph, fromSocket);
+  const fromMax = getSocketMaxConnections(fromSocket);
+  if (fromConnectionCount + 1 > fromMax) {
+    return fail({
+      _tag: "SocketConnectionLimitExceeded",
+      socketId: fromSocket.id,
+      maxConnections: fromMax,
+      connectionCount: fromConnectionCount,
+    });
+  }
+  const toConnectionCount = countSocketConnections(graph, toSocket);
+  const toMax = getSocketMaxConnections(toSocket);
+  if (toConnectionCount + 1 > toMax) {
+    return fail({
+      _tag: "SocketConnectionLimitExceeded",
+      socketId: toSocket.id,
+      maxConnections: toMax,
+      connectionCount: toConnectionCount,
     });
   }
 
@@ -659,12 +736,137 @@ export const validateGraph = (graph: Graph): GraphEffect<Graph> => {
     }
   }
 
+  const connectionCounts = new Map<SocketId, number>();
+  const incrementCount = (socketId: SocketId): void => {
+    connectionCounts.set(socketId, (connectionCounts.get(socketId) ?? 0) + 1);
+  };
+  for (const wire of graph.wires.values()) {
+    incrementCount(wire.fromSocketId);
+    incrementCount(wire.toSocketId);
+  }
+
+  for (const socket of graph.sockets.values()) {
+    const minConnections = getSocketMinConnections(socket);
+    const maxConnections = getSocketMaxConnections(socket);
+    if (
+      minConnections < 0 ||
+      maxConnections < 0 ||
+      maxConnections < minConnections
+    ) {
+      return fail({
+        _tag: "InvalidSocketConnectionLimit",
+        socketId: socket.id,
+        minConnections,
+        maxConnections,
+      });
+    }
+    const connectionCount = connectionCounts.get(socket.id) ?? 0;
+    if (connectionCount > maxConnections) {
+      return fail({
+        _tag: "SocketConnectionLimitExceeded",
+        socketId: socket.id,
+        maxConnections,
+        connectionCount,
+      });
+    }
+    if (connectionCount < minConnections) {
+      return fail({
+        _tag: "SocketConnectionBelowMin",
+        socketId: socket.id,
+        minConnections,
+        connectionCount,
+      });
+    }
+  }
+
   const cycle = detectCycle(graph);
   if (cycle) {
     return fail({ _tag: "CycleDetected", path: cycle });
   }
 
   return succeed(graph);
+};
+
+export const collectGraphWarnings = (
+  graph: Graph,
+): ReadonlyArray<GraphWarning> => {
+  const warnings: GraphWarning[] = [];
+  const connectionCounts = new Map<SocketId, number>();
+
+  const incrementCount = (socketId: SocketId): void => {
+    connectionCounts.set(socketId, (connectionCounts.get(socketId) ?? 0) + 1);
+  };
+
+  const wireIds = Array.from(graph.wires.keys()).sort((left, right) =>
+    left.localeCompare(right),
+  );
+
+  for (const wireId of wireIds) {
+    const wire = graph.wires.get(wireId);
+    if (!wire) {
+      continue;
+    }
+    incrementCount(wire.fromSocketId);
+    incrementCount(wire.toSocketId);
+
+    const fromSocket = graph.sockets.get(wire.fromSocketId);
+    const toSocket = graph.sockets.get(wire.toSocketId);
+    if (!fromSocket || !toSocket) {
+      continue;
+    }
+    if (!isSocketTypeCompatible(fromSocket.dataType, toSocket.dataType)) {
+      warnings.push({
+        _tag: "IncompatibleSocketTypes",
+        wireId,
+        fromSocketId: fromSocket.id,
+        toSocketId: toSocket.id,
+        fromType: fromSocket.dataType,
+        toType: toSocket.dataType,
+      });
+    }
+  }
+
+  const nodeIds = sortedNodes(graph);
+  for (const nodeId of nodeIds) {
+    const node = graph.nodes.get(nodeId);
+    if (!node) {
+      continue;
+    }
+    let hasConnections = false;
+    for (const socketId of node.inputs) {
+      const socket = graph.sockets.get(socketId);
+      if (!socket) {
+        continue;
+      }
+      const connectionCount = connectionCounts.get(socketId) ?? 0;
+      if (connectionCount > 0) {
+        hasConnections = true;
+      }
+      if (
+        socket.direction === "input" &&
+        socket.required &&
+        socket.defaultValue === undefined &&
+        connectionCount === 0
+      ) {
+        warnings.push({
+          _tag: "MissingRequiredInput",
+          nodeId,
+          socketId,
+          socketName: socket.name,
+        });
+      }
+    }
+    for (const socketId of node.outputs) {
+      if ((connectionCounts.get(socketId) ?? 0) > 0) {
+        hasConnections = true;
+      }
+    }
+    if (!hasConnections) {
+      warnings.push({ _tag: "UnusedNode", nodeId });
+    }
+  }
+
+  return warnings;
 };
 
 export const topoSort = (graph: Graph): GraphEffect<NodeId[]> =>
@@ -990,13 +1192,13 @@ export const graphToDocumentV1 = (
 export const graphFromDocumentV1 = (
   document: GraphDocumentV1,
 ): GraphEffect<Graph> =>
-  Effect.gen(function* (_) {
+  Effect.gen(function* () {
     const nodeIds = new Set<NodeId>(document.nodes.map((node) => node.id));
     const socketsByNode = new Map<NodeId, GraphSocket[]>();
 
     for (const socket of document.sockets) {
       if (!nodeIds.has(socket.nodeId)) {
-        return yield* _(fail({ _tag: "MissingNode", nodeId: socket.nodeId }));
+        return yield* fail({ _tag: "MissingNode", nodeId: socket.nodeId });
       }
       const list = socketsByNode.get(socket.nodeId);
       if (list) {
@@ -1009,11 +1211,11 @@ export const graphFromDocumentV1 = (
     let graph = createGraph(document.graphId);
     for (const node of document.nodes) {
       const sockets = socketsByNode.get(node.id) ?? [];
-      graph = yield* _(addNode(graph, node, sockets));
+      graph = yield* addNode(graph, node, sockets);
     }
 
     for (const wire of document.wires) {
-      graph = yield* _(addWire(graph, wire));
+      graph = yield* addWire(graph, wire);
     }
 
     return graph;

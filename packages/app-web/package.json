@@ -19,6 +19,7 @@
     "@solidjs/router": "^0.15.0",
     "@solidjs/start": "^1.1.0",
     "effect": "catalog:effect",
+    "lucide-solid": "^0.562.0",
     "pixi.js": "^8.6.1",
     "solid-js": "^1.9.5",
     "vinxi": "^0.5.7"

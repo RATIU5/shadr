@@ -72,7 +72,7 @@ The system is split into **four primary layers**, each with explicit responsibil
 - Solid manages **UI state**, not canvas rendering
 - Pixi objects are **not reactive**
 - Effects are invoked through services, not embedded deeply in components
-- Kobalte primitives are currently provided via a local shim package (`packages/kobalte-core`) for offline development; swap to upstream `@kobalte/core` when available
+- Kobalte primitives are pulled directly from `@kobalte/core` in the UI layer
 
 ---
 
@@ -122,6 +122,7 @@ The system is split into **four primary layers**, each with explicit responsibil
 - UI triggers Effects via thin adapters
 - No implicit global state
 - Effects orchestrate side-effects (storage, logging, notifications)
+- App UI uses Effect-based services (`GraphService`, `ExecService`, `StorageService`, `UiEventService`) wired as Layers with helpers to keep components free of direct Effect runners
 
 ---
 

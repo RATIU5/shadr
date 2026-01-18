@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createExecState,
   evaluateSocket,
+  evaluateSocketWithStats,
   getNodeErrors,
   markDirty,
 } from "@shadr/exec-engine";
@@ -373,6 +374,101 @@ describe("evaluateSocket", () => {
     expect(counters.get(nodeB.nodeId)).toBe(1);
     expect(counters.get(nodeC.nodeId)).toBe(1);
     expect(counters.get(nodeD.nodeId)).toBe(1);
+  });
+
+  it("captures evaluation stats and cache hits", () => {
+    const nodeA = createTestNode("A", "const", [], ["out"]);
+    const nodeB = createTestNode(
+      "B",
+      "inc",
+      [{ key: "in", required: true }],
+      ["out"],
+    );
+
+    const definitions: NodeDefinition[] = [
+      {
+        typeId: "const",
+        label: "Const",
+        description: "const",
+        inputs: [],
+        outputs: [
+          {
+            key: "out",
+            label: "Out",
+            dataType: "float",
+            direction: "output",
+          },
+        ],
+        compute: () => ({ out: 2 }),
+      },
+      {
+        typeId: "inc",
+        label: "Inc",
+        description: "inc",
+        inputs: [
+          {
+            key: "in",
+            label: "In",
+            dataType: "float",
+            direction: "input",
+          },
+        ],
+        outputs: [
+          {
+            key: "out",
+            label: "Out",
+            dataType: "float",
+            direction: "output",
+          },
+        ],
+        compute: (inputs) => ({ out: toNumber(inputs.in) + 1 }),
+      },
+    ];
+
+    const resolveNodeDefinition = (
+      nodeType: string,
+    ): NodeDefinition | undefined =>
+      definitions.find((definition) => definition.typeId === nodeType);
+
+    let graph = createGraph(makeGraphId("graph"));
+    graph = expectGraphOk(addNode(graph, nodeA.node, nodeA.sockets));
+    graph = expectGraphOk(addNode(graph, nodeB.node, nodeB.sockets));
+    graph = expectGraphOk(
+      addWire(graph, {
+        id: makeWireId("A-B"),
+        fromSocketId: nodeA.outputSocketIds.out,
+        toSocketId: nodeB.inputSocketIds.in,
+      }),
+    );
+
+    const state = createExecState();
+    const first = expectOk(
+      evaluateSocketWithStats(
+        graph,
+        nodeB.outputSocketIds.out,
+        resolveNodeDefinition,
+        state,
+      ),
+    );
+    expect(first.value).toBe(3);
+    expect(first.stats.cacheHits).toBe(0);
+    expect(first.stats.cacheMisses).toBe(2);
+    expect(first.stats.nodeTimings).toHaveLength(2);
+    expect(first.stats.totalMs).toBeGreaterThanOrEqual(0);
+
+    const second = expectOk(
+      evaluateSocketWithStats(
+        graph,
+        nodeB.outputSocketIds.out,
+        resolveNodeDefinition,
+        state,
+      ),
+    );
+    expect(second.value).toBe(3);
+    expect(second.stats.cacheHits).toBe(1);
+    expect(second.stats.cacheMisses).toBe(0);
+    expect(second.stats.nodeTimings).toHaveLength(1);
+    expect(second.stats.totalMs).toBeGreaterThanOrEqual(0);
   });
 
   it("reuses cached outputs across evaluations until invalidated", () => {

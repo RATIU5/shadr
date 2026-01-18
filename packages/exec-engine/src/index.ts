@@ -13,9 +13,12 @@ import type {
   NodeOutputValues,
   NodeParamValues,
   ParamValue,
+  Vec2,
+  Vec3,
+  Vec4,
 } from "@shadr/plugin-system";
 import type { JsonObject, JsonValue } from "@shadr/shared";
-import { Effect } from "effect";
+import { Effect, Either } from "effect";
 
 export type ExecEngineError =
   | {
@@ -82,11 +85,71 @@ export type ExecState = {
   nodeErrors: Map<NodeId, NodeErrorState>;
 };
 
+export type ExecNodeTiming = Readonly<{
+  nodeId: NodeId;
+  nodeType: string;
+  durationMs: number;
+  cacheHit: boolean;
+}>;
+
+export type ExecEvaluationStats = Readonly<{
+  totalMs: number;
+  cacheHits: number;
+  cacheMisses: number;
+  nodeTimings: ReadonlyArray<ExecNodeTiming>;
+}>;
+
+export type ExecEvaluationResult = Readonly<{
+  value: JsonValue | null;
+  stats: ExecEvaluationStats;
+}>;
+
 export const createExecState = (): ExecState => ({
   dirty: new Set<NodeId>(),
   outputCache: new Map<NodeId, NodeOutputValues>(),
   nodeErrors: new Map<NodeId, NodeErrorState>(),
 });
+
+type ExecInstrumentation = {
+  startMs: number;
+  cacheHits: number;
+  cacheMisses: number;
+  nodeTimings: ExecNodeTiming[];
+};
+
+const nowMs = (): number => {
+  const perf = globalThis.performance;
+  if (perf && typeof perf.now === "function") {
+    return perf.now();
+  }
+  return Date.now();
+};
+
+const createInstrumentation = (): ExecInstrumentation => ({
+  startMs: nowMs(),
+  cacheHits: 0,
+  cacheMisses: 0,
+  nodeTimings: [],
+});
+
+const finalizeInstrumentation = (
+  instrumentation: ExecInstrumentation,
+): ExecEvaluationStats => ({
+  totalMs: Math.max(0, nowMs() - instrumentation.startMs),
+  cacheHits: instrumentation.cacheHits,
+  cacheMisses: instrumentation.cacheMisses,
+  nodeTimings: instrumentation.nodeTimings,
+});
+
+const recordNodeTiming = (
+  instrumentation: ExecInstrumentation | undefined,
+  timing: ExecNodeTiming,
+): void => {
+  if (!instrumentation) {
+    return;
+  }
+  instrumentation.nodeTimings.push(timing);
+};
 
 const fail = (error: ExecError): Effect.Effect<never, ExecError> =>
   Effect.fail(error);
@@ -98,11 +161,17 @@ const toParamValue = (value: JsonValue): ParamValue | null => {
   if (!Array.isArray(value)) {
     return null;
   }
-  if (
-    (value.length === 2 || value.length === 3 || value.length === 4) &&
-    value.every((entry) => typeof entry === "number")
-  ) {
-    return value as ParamValue;
+  if (!value.every((entry) => typeof entry === "number")) {
+    return null;
+  }
+  if (value.length === 2) {
+    return [value[0] ?? 0, value[1] ?? 0] as Vec2;
+  }
+  if (value.length === 3) {
+    return [value[0] ?? 0, value[1] ?? 0, value[2] ?? 0] as Vec3;
+  }
+  if (value.length === 4) {
+    return [value[0] ?? 0, value[1] ?? 0, value[2] ?? 0, value[3] ?? 0] as Vec4;
   }
   return null;
 };
@@ -133,37 +202,37 @@ export const getNodeErrors = (
   nodeId: NodeId,
 ): NodeErrorState => state.nodeErrors.get(nodeId) ?? [];
 
-export const evaluateSocket = (
+const evaluateSocketInternal = (
   graph: Graph,
   socketId: SocketId,
   resolveNodeDefinition: NodeDefinitionResolver,
   state?: ExecState,
+  instrumentation?: ExecInstrumentation,
 ): Effect.Effect<JsonValue | null, ExecError> =>
   Effect.flatMap(
     executionSubgraphByOutputSockets(graph, [socketId]),
     (subgraph) =>
-      Effect.gen(function* (_) {
+      Effect.gen(function* () {
         const execState = state ?? createExecState();
         const inputWireIndex = new Map<SocketId, WireId[]>();
         for (const wireId of subgraph.wires) {
           const wire = graph.wires.get(wireId);
           if (!wire) {
-            return yield* _(fail({ _tag: "MissingWire", wireId }));
+            return yield* fail({ _tag: "MissingWire", wireId });
           }
           const toSocket = graph.sockets.get(wire.toSocketId);
           if (!toSocket) {
-            return yield* _(
-              fail({ _tag: "MissingSocket", socketId: wire.toSocketId }),
-            );
+            return yield* fail({
+              _tag: "MissingSocket",
+              socketId: wire.toSocketId,
+            });
           }
           if (toSocket.direction !== "input") {
-            return yield* _(
-              fail({
-                _tag: "InvalidSocketDirection",
-                socketId: toSocket.id,
-                expected: "input",
-              }),
-            );
+            return yield* fail({
+              _tag: "InvalidSocketDirection",
+              socketId: toSocket.id,
+              expected: "input",
+            });
           }
           const list = inputWireIndex.get(wire.toSocketId);
           if (list) {
@@ -175,50 +244,53 @@ export const evaluateSocket = (
 
         const outputCache = execState.outputCache;
 
-        const validateNodeSockets = (
-          nodeId: NodeId,
-          nodeType: string,
-          nodeSocketIds: ReadonlyArray<SocketId>,
-          direction: GraphSocketDirection,
-          expectedKeys: ReadonlySet<string>,
-        ): Effect.Effect<ReadonlyArray<string>, ExecError> =>
-          Effect.gen(function* (__) {
+        /* eslint-disable no-unused-vars */
+        const validateNodeSockets: (
+          ...args: [
+            NodeId,
+            string,
+            ReadonlyArray<SocketId>,
+            GraphSocketDirection,
+            ReadonlySet<string>,
+          ]
+        ) => Effect.Effect<ReadonlyArray<string>, ExecError> =
+          Effect.fnUntraced(function* (
+            nodeId: NodeId,
+            nodeType: string,
+            nodeSocketIds: ReadonlyArray<SocketId>,
+            direction: GraphSocketDirection,
+            expectedKeys: ReadonlySet<string>,
+          ) {
             const names: string[] = [];
             const seen = new Set<string>();
             for (const socketId of nodeSocketIds) {
               const socket = graph.sockets.get(socketId);
               if (!socket) {
-                return yield* __(fail({ _tag: "MissingSocket", socketId }));
+                return yield* fail({ _tag: "MissingSocket", socketId });
               }
               if (socket.direction !== direction) {
-                return yield* __(
-                  fail({
-                    _tag: "InvalidSocketDirection",
-                    socketId: socket.id,
-                    expected: direction,
-                  }),
-                );
+                return yield* fail({
+                  _tag: "InvalidSocketDirection",
+                  socketId: socket.id,
+                  expected: direction,
+                });
               }
               if (seen.has(socket.name)) {
-                return yield* __(
-                  fail({
-                    _tag: "DuplicateSocketKey",
-                    nodeId,
-                    socketName: socket.name,
-                    direction,
-                  }),
-                );
+                return yield* fail({
+                  _tag: "DuplicateSocketKey",
+                  nodeId,
+                  socketName: socket.name,
+                  direction,
+                });
               }
               if (!expectedKeys.has(socket.name)) {
-                return yield* __(
-                  fail({
-                    _tag: "UnknownSocketKey",
-                    nodeId,
-                    socketName: socket.name,
-                    direction,
-                    nodeType,
-                  }),
-                );
+                return yield* fail({
+                  _tag: "UnknownSocketKey",
+                  nodeId,
+                  socketName: socket.name,
+                  direction,
+                  nodeType,
+                });
               }
               seen.add(socket.name);
               names.push(socket.name);
@@ -226,15 +298,13 @@ export const evaluateSocket = (
 
             for (const key of expectedKeys) {
               if (!seen.has(key)) {
-                return yield* __(
-                  fail({
-                    _tag: "MissingSocketForDefinition",
-                    nodeId,
-                    socketName: key,
-                    direction,
-                    nodeType,
-                  }),
-                );
+                return yield* fail({
+                  _tag: "MissingSocketForDefinition",
+                  nodeId,
+                  socketName: key,
+                  direction,
+                  nodeType,
+                });
               }
             }
 
@@ -247,27 +317,37 @@ export const evaluateSocket = (
           Effect.suspend(() => {
             const cached = outputCache.get(nodeId);
             if (cached && !execState.dirty.has(nodeId)) {
+              if (instrumentation) {
+                instrumentation.cacheHits += 1;
+                recordNodeTiming(instrumentation, {
+                  nodeId,
+                  nodeType: graph.nodes.get(nodeId)?.type ?? "unknown",
+                  durationMs: 0,
+                  cacheHit: true,
+                });
+              }
               return Effect.succeed(cached);
             }
+            if (instrumentation) {
+              instrumentation.cacheMisses += 1;
+            }
 
-            return Effect.gen(function* (__) {
+            return Effect.gen(function* () {
               const node = graph.nodes.get(nodeId);
               if (!node) {
-                return yield* __(fail({ _tag: "MissingNode", nodeId }));
+                return yield* fail({ _tag: "MissingNode", nodeId });
               }
               if (!subgraph.nodes.has(nodeId)) {
-                return yield* __(fail({ _tag: "MissingNode", nodeId }));
+                return yield* fail({ _tag: "MissingNode", nodeId });
               }
 
               const definition = resolveNodeDefinition(node.type);
               if (!definition) {
-                return yield* __(
-                  fail({
-                    _tag: "MissingNodeDefinition",
-                    nodeId,
-                    nodeType: node.type,
-                  }),
-                );
+                return yield* fail({
+                  _tag: "MissingNodeDefinition",
+                  nodeId,
+                  nodeType: node.type,
+                });
               }
 
               const inputKeys = new Set(
@@ -277,23 +357,19 @@ export const evaluateSocket = (
                 definition.outputs.map((output) => output.key),
               );
 
-              const inputNames = yield* __(
-                validateNodeSockets(
-                  nodeId,
-                  definition.typeId,
-                  node.inputs,
-                  "input",
-                  inputKeys,
-                ),
+              const inputNames = yield* validateNodeSockets(
+                nodeId,
+                definition.typeId,
+                node.inputs,
+                "input",
+                inputKeys,
               );
-              const outputNames = yield* __(
-                validateNodeSockets(
-                  nodeId,
-                  definition.typeId,
-                  node.outputs,
-                  "output",
-                  outputKeys,
-                ),
+              const outputNames = yield* validateNodeSockets(
+                nodeId,
+                definition.typeId,
+                node.outputs,
+                "output",
+                outputKeys,
               );
 
               const inputs: Record<string, JsonValue | null> = {};
@@ -301,33 +377,29 @@ export const evaluateSocket = (
               for (const [index, socketId] of node.inputs.entries()) {
                 const socket = graph.sockets.get(socketId);
                 if (!socket) {
-                  return yield* __(fail({ _tag: "MissingSocket", socketId }));
+                  return yield* fail({ _tag: "MissingSocket", socketId });
                 }
                 const name = inputNames[index];
                 if (!name) {
-                  return yield* __(
-                    fail({
-                      _tag: "UnknownSocketKey",
-                      nodeId,
-                      socketName: socket.name,
-                      direction: "input",
-                      nodeType: definition.typeId,
-                    }),
-                  );
+                  return yield* fail({
+                    _tag: "UnknownSocketKey",
+                    nodeId,
+                    socketName: socket.name,
+                    direction: "input",
+                    nodeType: definition.typeId,
+                  });
                 }
 
                 const wireIds = inputWireIndex.get(socketId) ?? [];
                 if (wireIds.length > 1) {
-                  return yield* __(
-                    fail({
-                      _tag: "MultipleInputWires",
-                      nodeId,
-                      socketId,
-                      wireIds: [...wireIds].sort((left, right) =>
-                        left.localeCompare(right),
-                      ),
-                    }),
-                  );
+                  return yield* fail({
+                    _tag: "MultipleInputWires",
+                    nodeId,
+                    socketId,
+                    wireIds: [...wireIds].sort((left, right) =>
+                      left.localeCompare(right),
+                    ),
+                  });
                 }
 
                 if (wireIds.length === 0) {
@@ -347,40 +419,43 @@ export const evaluateSocket = (
                   continue;
                 }
 
-                const wireId = wireIds[0];
+                const wireId = wireIds[0]!;
                 const wire = graph.wires.get(wireId);
                 if (!wire) {
-                  return yield* __(fail({ _tag: "MissingWire", wireId }));
+                  return yield* fail({ _tag: "MissingWire", wireId });
                 }
                 const fromSocket = graph.sockets.get(wire.fromSocketId);
                 if (!fromSocket) {
-                  return yield* __(
-                    fail({
-                      _tag: "MissingSocket",
-                      socketId: wire.fromSocketId,
-                    }),
-                  );
+                  return yield* fail({
+                    _tag: "MissingSocket",
+                    socketId: wire.fromSocketId,
+                  });
                 }
                 if (fromSocket.direction !== "output") {
-                  return yield* __(
-                    fail({
-                      _tag: "InvalidSocketDirection",
-                      socketId: fromSocket.id,
-                      expected: "output",
-                    }),
-                  );
+                  return yield* fail({
+                    _tag: "InvalidSocketDirection",
+                    socketId: fromSocket.id,
+                    expected: "output",
+                  });
                 }
                 if (!subgraph.nodes.has(fromSocket.nodeId)) {
-                  return yield* __(
-                    fail({ _tag: "MissingNode", nodeId: fromSocket.nodeId }),
-                  );
+                  return yield* fail({
+                    _tag: "MissingNode",
+                    nodeId: fromSocket.nodeId,
+                  });
                 }
-                const value = yield* __(evaluateOutputSocket(fromSocket.id));
+                const value = yield* evaluateOutputSocket(fromSocket.id);
                 inputs[name] = value;
               }
 
               if (missingRequired.length > 0) {
                 const nullOutputs = createNullOutputs(outputNames);
+                recordNodeTiming(instrumentation, {
+                  nodeId,
+                  nodeType: definition.typeId,
+                  durationMs: 0,
+                  cacheHit: false,
+                });
                 outputCache.set(nodeId, nullOutputs);
                 execState.nodeErrors.set(nodeId, missingRequired);
                 execState.dirty.delete(nodeId);
@@ -389,41 +464,63 @@ export const evaluateSocket = (
 
               const params = coerceParamValues(node.params);
               const nodeInputs: NodeInputValues = inputs;
-              let outputs: NodeOutputValues;
-              try {
-                outputs = definition.compute(nodeInputs, params, { nodeId });
-              } catch (cause) {
+              const computeStart = nowMs();
+              const outputsResult = yield* Effect.either(
+                Effect.try({
+                  try: () => {
+                    const outputs = definition.compute(nodeInputs, params, {
+                      nodeId,
+                    });
+                    recordNodeTiming(instrumentation, {
+                      nodeId,
+                      nodeType: definition.typeId,
+                      durationMs: Math.max(0, nowMs() - computeStart),
+                      cacheHit: false,
+                    });
+                    return outputs;
+                  },
+                  catch: (cause): ExecEngineError => {
+                    recordNodeTiming(instrumentation, {
+                      nodeId,
+                      nodeType: definition.typeId,
+                      durationMs: Math.max(0, nowMs() - computeStart),
+                      cacheHit: false,
+                    });
+                    return {
+                      _tag: "NodeComputeFailed",
+                      nodeId,
+                      nodeType: definition.typeId,
+                      cause,
+                    };
+                  },
+                }),
+              );
+              if (Either.isLeft(outputsResult)) {
                 const nullOutputs = createNullOutputs(outputNames);
                 execState.nodeErrors.set(nodeId, [
-                  {
-                    _tag: "NodeComputeFailed",
-                    nodeId,
-                    nodeType: definition.typeId,
-                    cause,
-                  },
+                  outputsResult.left as NodeRuntimeError,
                 ]);
                 outputCache.set(nodeId, nullOutputs);
                 execState.dirty.delete(nodeId);
                 return nullOutputs;
               }
+              const outputs = outputsResult.right;
 
               const normalized: Record<string, JsonValue | null> = {};
               for (const [index, socketId] of node.outputs.entries()) {
                 const socket = graph.sockets.get(socketId);
                 if (!socket) {
-                  return yield* __(fail({ _tag: "MissingSocket", socketId }));
+                  return yield* fail({ _tag: "MissingSocket", socketId });
                 }
                 const name = outputNames[index];
                 if (!name) {
-                  return yield* __(
-                    fail({
-                      _tag: "UnknownSocketKey",
-                      nodeId,
-                      socketName: socket.name,
-                      direction: "output",
-                      nodeType: definition.typeId,
-                    }),
-                  );
+                  return yield* fail({
+                    _tag: "UnknownSocketKey",
+                    nodeId,
+                    socketName: socket.name,
+                    direction: "output",
+                    nodeType: definition.typeId,
+                  });
                 }
                 const value = outputs[name];
                 normalized[name] = value === undefined ? null : value;
@@ -436,31 +533,65 @@ export const evaluateSocket = (
             });
           });
 
-        const evaluateOutputSocket = (
-          targetSocketId: SocketId,
-        ): Effect.Effect<JsonValue | null, ExecError> =>
-          Effect.gen(function* (__) {
+        /* eslint-disable no-unused-vars */
+        const evaluateOutputSocket: (
+          ...args: [SocketId]
+        ) => Effect.Effect<JsonValue | null, ExecError> = Effect.fnUntraced(
+          function* (targetSocketId: SocketId) {
             const socket = graph.sockets.get(targetSocketId);
             if (!socket) {
-              return yield* __(
-                fail({ _tag: "MissingSocket", socketId: targetSocketId }),
-              );
+              return yield* fail({
+                _tag: "MissingSocket",
+                socketId: targetSocketId,
+              });
             }
             if (socket.direction !== "output") {
-              return yield* __(
-                fail({
-                  _tag: "InvalidSocketDirection",
-                  socketId: socket.id,
-                  expected: "output",
-                }),
-              );
+              return yield* fail({
+                _tag: "InvalidSocketDirection",
+                socketId: socket.id,
+                expected: "output",
+              });
             }
-            const outputs = yield* __(evaluateNode(socket.nodeId));
+            const outputs = yield* evaluateNode(socket.nodeId);
             return outputs[socket.name] ?? null;
-          });
+          },
+        );
+        /* eslint-enable no-unused-vars */
 
-        return yield* _(evaluateOutputSocket(socketId));
+        return yield* evaluateOutputSocket(socketId);
       }),
+  );
+
+export const evaluateSocket = (
+  graph: Graph,
+  socketId: SocketId,
+  resolveNodeDefinition: NodeDefinitionResolver,
+  state?: ExecState,
+): Effect.Effect<JsonValue | null, ExecError> =>
+  evaluateSocketInternal(graph, socketId, resolveNodeDefinition, state);
+
+export const evaluateSocketWithStats = (
+  graph: Graph,
+  socketId: SocketId,
+  resolveNodeDefinition: NodeDefinitionResolver,
+  state?: ExecState,
+): Effect.Effect<ExecEvaluationResult, ExecError> =>
+  Effect.flatMap(
+    Effect.sync(() => createInstrumentation()),
+    (instrumentation) =>
+      Effect.map(
+        evaluateSocketInternal(
+          graph,
+          socketId,
+          resolveNodeDefinition,
+          state,
+          instrumentation,
+        ),
+        (value) => ({
+          value,
+          stats: finalizeInstrumentation(instrumentation),
+        }),
+      ),
   );
 
 export type DirtyState = ExecState;
@@ -535,21 +666,25 @@ export const markDirtyForParamChange = (
   nodeId: NodeId,
 ): ExecState => markDirty(graph, state, nodeId);
 
-export const markDirtyForWireChange = (
+/* eslint-disable no-unused-vars */
+export const markDirtyForWireChange: (
+  ...args: [Graph, ExecState, WireId]
+) => Effect.Effect<ExecState, ExecError> = Effect.fnUntraced(function* (
   graph: Graph,
   state: ExecState,
   wireId: WireId,
-): Effect.Effect<ExecState, ExecError> =>
-  Effect.gen(function* (_) {
-    const wire = graph.wires.get(wireId);
-    if (!wire) {
-      return yield* _(fail({ _tag: "MissingWire", wireId }));
-    }
-    const toSocket = graph.sockets.get(wire.toSocketId);
-    if (!toSocket) {
-      return yield* _(
-        fail({ _tag: "MissingSocket", socketId: wire.toSocketId }),
-      );
-    }
-    return markDirty(graph, state, toSocket.nodeId);
-  });
+) {
+  const wire = graph.wires.get(wireId);
+  if (!wire) {
+    return yield* fail({ _tag: "MissingWire", wireId });
+  }
+  const toSocket = graph.sockets.get(wire.toSocketId);
+  if (!toSocket) {
+    return yield* fail({
+      _tag: "MissingSocket",
+      socketId: wire.toSocketId,
+    });
+  }
+  return markDirty(graph, state, toSocket.nodeId);
+});
+/* eslint-enable no-unused-vars */

@@ -6,6 +6,7 @@ import simpleImportSort from "eslint-plugin-simple-import-sort";
 import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import prettierConfig from "eslint-config-prettier";
+import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -95,4 +96,5 @@ export default [
     },
   },
   prettierConfig,
+  eslintPluginPrettierRecommended,
 ];

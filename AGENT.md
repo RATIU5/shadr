@@ -215,9 +215,13 @@ If you see patterns suggesting otherwise, **they are wrong** and should be corre
 - TypeScript project references build declarations only (`emitDeclarationOnly`) to satisfy `allowImportingTsExtensions`; package scripts use `tsc -b`.
 - Graph-core operations now return `Effect` results; tests use `Effect.either` with `Effect.runSync`.
 - Exec engine now records missing required inputs as node error state in `ExecState.nodeErrors` and returns `null` outputs instead of failing evaluation.
-- Kobalte primitives are currently shimmed locally in `packages/kobalte-core` for offline development; replace with upstream `@kobalte/core` when available.
-- The Kobalte shim includes basic `NumberField` and `Switch` controls for parameter editing in `app-web`.
+- Kobalte primitives are pulled directly from `@kobalte/core` in `app-web` (no local shim package).
 - IndexedDB persistence lives in `@shadr/storage-idb` (stores `GraphDocumentV1`, settings, and UI state); `EditorShell` loads on mount and uses a debounced autosave.
+- Effect diagnostics treat `Effect.gen` adapter usage and try/catch inside generators as errors; prefer `Effect.gen(function* () { ... })` and wrap helper effects with `Effect.fnUntraced` when needed.
+- Wire rendering is batched in `ui-canvas` using shared Graphics layers for normal/selected wires to reduce per-wire allocations at 1000-node scale.
+- Kobalte primitives should be imported from their subpaths (e.g. `@kobalte/core/number-field`) to avoid SSR "Comp is not a function" errors from namespace exports.
+- Subpath Kobalte modules should be imported as namespaces (e.g. `import * as NumberField from "@kobalte/core/number-field"`) to access `Root`/`Input` without SSR runtime errors.
+- `app-web` runs Effectful work through `runAppEffect*` helpers and service Layers (`GraphService`, `ExecService`, `StorageService`, `UiEventService`) instead of calling Effect runners directly in components.
 
 ---
 

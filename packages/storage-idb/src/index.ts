@@ -159,6 +159,20 @@ const isGraphDocumentV1 = (value: unknown): value is GraphDocumentV1 => {
     if (!isBoolean(socketRecord["required"])) {
       return false;
     }
+    if (
+      "minConnections" in socketRecord &&
+      socketRecord["minConnections"] !== undefined &&
+      !isNumber(socketRecord["minConnections"])
+    ) {
+      return false;
+    }
+    if (
+      "maxConnections" in socketRecord &&
+      socketRecord["maxConnections"] !== undefined &&
+      !isNumber(socketRecord["maxConnections"])
+    ) {
+      return false;
+    }
   }
   for (const wire of wires) {
     if (!isRecord(wire)) {

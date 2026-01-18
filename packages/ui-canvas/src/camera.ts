@@ -77,6 +77,11 @@ export class Camera2D {
     this.zoom = clamp(zoom, this.minZoom, this.maxZoom);
   }
 
+  setCenterAndZoom(center: Point, zoom: number): void {
+    this.center = center;
+    this.zoom = clamp(zoom, this.minZoom, this.maxZoom);
+  }
+
   zoomAt(
     screenPoint: Point,
     nextZoom: number,

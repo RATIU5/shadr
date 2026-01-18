@@ -1,4 +1,5 @@
-import { NumberField, Switch } from "@kobalte/core";
+import * as NumberField from "@kobalte/core/number-field";
+import * as Switch from "@kobalte/core/switch";
 import type { GraphNode } from "@shadr/graph-core";
 import type {
   ParamFieldDefinition,
@@ -74,27 +75,42 @@ const getVecParam = (
 const VECTOR_LABELS = ["X", "Y", "Z", "W"];
 
 export default function ParamEditor(props: ParamEditorProps) {
+  const paramField = "flex flex-col gap-2";
+  const paramLabel = "text-[0.7rem] uppercase tracking-[0.1em] text-[#9aa8c7]";
+  const paramInputBase =
+    "w-full rounded-lg border border-[rgba(120,150,190,0.35)] bg-[rgba(9,12,20,0.9)] px-[0.6rem] py-[0.45rem] text-[0.85rem] text-[#e4ebff]";
+  const paramSwitchRow =
+    "flex items-center justify-between gap-2 rounded-lg border border-[rgba(120,150,190,0.3)] bg-[rgba(9,12,20,0.85)] px-[0.6rem] py-[0.4rem]";
+  const paramSwitchText = "text-[0.8rem] text-[#dbe6ff]";
+  const paramVector =
+    "grid grid-cols-[repeat(auto-fit,minmax(70px,1fr))] gap-2";
+  const paramVectorItem = "grid gap-1";
+  const paramVectorLabel =
+    "text-[0.65rem] uppercase tracking-[0.14em] text-[rgba(154,168,199,0.9)]";
+
   const renderNumberField = (
     field: Extract<ParamFieldDefinition, { kind: "float" | "int" }>,
   ) => {
     const value = getNumberParam(props.node, field);
     const step = field.step ?? (field.kind === "int" ? 1 : 0.01);
     return (
-      <div class="param-field">
-        <div class="param-label">{field.label}</div>
-        <NumberField
-          class="param-input"
-          value={value}
-          min={field.min}
-          max={field.max}
+      <div class={paramField}>
+        <div class={paramLabel}>{field.label}</div>
+        <NumberField.Root
+          class="w-full"
+          rawValue={value}
+          minValue={field.min}
+          maxValue={field.max}
           step={step}
-          onChange={(next) => {
+          onRawValueChange={(next) => {
             const clamped = clampNumber(next, field.min, field.max);
             const normalized =
               field.kind === "int" ? Math.round(clamped) : clamped;
             props.onParamChange(field.id, normalized);
           }}
-        />
+        >
+          <NumberField.Input class={paramInputBase} />
+        </NumberField.Root>
       </div>
     );
   };
@@ -104,22 +120,22 @@ export default function ParamEditor(props: ParamEditorProps) {
   ) => {
     const checked = getBoolParam(props.node, field);
     return (
-      <div class="param-field">
-        <div class="param-label">{field.label}</div>
-        <div class="param-switch-row">
-          <span class="param-switch-text">
+      <div class={paramField}>
+        <div class={paramLabel}>{field.label}</div>
+        <div class={paramSwitchRow}>
+          <span class={paramSwitchText}>
             {checked ? "Enabled" : "Disabled"}
           </span>
-          <label class="param-switch">
-            <Switch
-              class="param-switch-input"
-              checked={checked}
-              onChange={(next) => props.onParamChange(field.id, next)}
-            />
-            <span class="param-switch-track">
-              <span class="param-switch-thumb" />
-            </span>
-          </label>
+          <Switch.Root
+            class="relative h-6 w-11"
+            checked={checked}
+            onChange={(next) => props.onParamChange(field.id, next)}
+          >
+            <Switch.Input />
+            <Switch.Control class="absolute inset-0 rounded-full border border-[rgba(120,150,190,0.35)] bg-[rgba(10,14,24,0.9)] transition-colors duration-200 data-[checked]:border-[rgba(91,228,255,0.6)] data-[checked]:bg-[rgba(91,228,255,0.25)]">
+              <Switch.Thumb class="absolute left-[3px] top-[3px] h-[18px] w-[18px] rounded-full bg-[#dbe6ff] transition-transform duration-200 data-[checked]:translate-x-[20px] data-[checked]:bg-white" />
+            </Switch.Control>
+          </Switch.Root>
         </div>
       </div>
     );
@@ -132,25 +148,27 @@ export default function ParamEditor(props: ParamEditorProps) {
     const step = field.step ?? 0.01;
     const size = field.kind === "vec2" ? 2 : field.kind === "vec3" ? 3 : 4;
     return (
-      <div class="param-field">
-        <div class="param-label">{field.label}</div>
-        <div class="param-vector">
+      <div class={paramField}>
+        <div class={paramLabel}>{field.label}</div>
+        <div class={paramVector}>
           {Array.from({ length: size }).map((_, index) => (
-            <label class="param-vector-item">
-              <span class="param-vector-label">{VECTOR_LABELS[index]}</span>
-              <NumberField
-                class="param-input param-input-small"
-                value={value[index] ?? 0}
-                min={field.min}
-                max={field.max}
+            <label class={paramVectorItem}>
+              <span class={paramVectorLabel}>{VECTOR_LABELS[index]}</span>
+              <NumberField.Root
+                class="w-full"
+                rawValue={value[index] ?? 0}
+                minValue={field.min}
+                maxValue={field.max}
                 step={step}
-                onChange={(next) => {
+                onRawValueChange={(next) => {
                   const clamped = clampNumber(next, field.min, field.max);
                   const updated = [...value] as number[];
                   updated[index] = clamped;
                   props.onParamChange(field.id, updated);
                 }}
-              />
+              >
+                <NumberField.Input class={`${paramInputBase} text-center`} />
+              </NumberField.Root>
             </label>
           ))}
         </div>
@@ -159,7 +177,7 @@ export default function ParamEditor(props: ParamEditorProps) {
   };
 
   return (
-    <div class="param-section">
+    <div class="flex flex-col gap-[0.85rem]">
       {props.schema.fields.map((field) => {
         switch (field.kind) {
           case "float":

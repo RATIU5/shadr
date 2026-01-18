@@ -50,6 +50,7 @@ export type NodeSocketBase = Readonly<{
   label: string;
   dataType: SocketTypeId;
   isOptional?: boolean;
+  minConnections?: number;
   maxConnections?: number;
 }>;
 

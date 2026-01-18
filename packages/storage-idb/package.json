@@ -10,6 +10,13 @@
     "lint": "eslint --fix .",
     "test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/storage-idb/test/**/*.test.ts"
   },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "types": "./src/index.ts",
   "dependencies": {
     "@shadr/shared": "workspace:*",
     "effect": "catalog:effect"

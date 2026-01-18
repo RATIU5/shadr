@@ -7,6 +7,7 @@ import type {
 
 import type { Point, Size } from "./types.js";
 
+/* eslint-disable no-unused-vars -- function types keep args for clarity */
 export type NodeLayout = Readonly<{
   width: number;
   minHeight: number;
@@ -14,7 +15,17 @@ export type NodeLayout = Readonly<{
   bodyPadding: number;
   socketSpacing: number;
   socketOffsetX: number;
+  getNodeTitle?: (node: GraphNode) => string;
+  getContentSize?: (node: GraphNode) => Size | null;
+  getNodeSizeOverride?: (node: GraphNode) => Size | null;
+  getSocketPositionOverride?: (
+    node: GraphNode,
+    socket: GraphSocket,
+    layout: NodeLayout,
+  ) => Point | null;
+  isRerouteNode?: (node: GraphNode) => boolean;
 }>;
+/* eslint-enable no-unused-vars */
 
 export const defaultNodeLayout: NodeLayout = {
   width: 180,
@@ -25,14 +36,46 @@ export const defaultNodeLayout: NodeLayout = {
   socketOffsetX: 8,
 };
 
+export type NodeHeaderToggleBounds = Readonly<{
+  x: number;
+  y: number;
+  size: number;
+}>;
+
+const DEFAULT_TOGGLE_SIZE = 12;
+const MIN_TOGGLE_SIZE = 8;
+const TOGGLE_LEFT_PADDING = 8;
+
+export const getNodeHeaderToggleBounds = (
+  layout: NodeLayout,
+): NodeHeaderToggleBounds => {
+  const size = Math.max(
+    MIN_TOGGLE_SIZE,
+    Math.min(DEFAULT_TOGGLE_SIZE, layout.headerHeight - 8),
+  );
+  const x = TOGGLE_LEFT_PADDING;
+  const y = (layout.headerHeight - size) / 2;
+  return { x, y, size };
+};
+
 export const getNodeSize = (node: GraphNode, layout: NodeLayout): Size => {
+  const overrideSize = layout.getNodeSizeOverride?.(node) ?? null;
+  if (overrideSize) {
+    return overrideSize;
+  }
   const socketCount = Math.max(node.inputs.length, node.outputs.length, 1);
-  const contentHeight =
-    layout.headerHeight +
-    layout.bodyPadding * 2 +
-    socketCount * layout.socketSpacing;
-  const height = Math.max(layout.minHeight, contentHeight);
-  return { width: layout.width, height };
+  const contentSize = layout.getContentSize?.(node) ?? null;
+  const socketHeight = socketCount * layout.socketSpacing;
+  const innerHeight = Math.max(socketHeight, contentSize?.height ?? 0);
+  const height = Math.max(
+    layout.minHeight,
+    layout.headerHeight + layout.bodyPadding * 2 + innerHeight,
+  );
+  const width = Math.max(
+    layout.width,
+    (contentSize?.width ?? 0) + layout.bodyPadding * 2,
+  );
+  return { width, height };
 };
 
 const findSocketIndex = (
@@ -57,10 +100,16 @@ export const getSocketPosition = (
   if (!node) {
     return null;
   }
+  const overridePosition =
+    layout.getSocketPositionOverride?.(node, socket, layout) ?? null;
+  if (overridePosition) {
+    return overridePosition;
+  }
   const socketIndex = findSocketIndex(node, socket);
   if (socketIndex === null) {
     return null;
   }
+  const { width } = getNodeSize(node, layout);
   const startY =
     node.position.y +
     layout.headerHeight +
@@ -71,6 +120,6 @@ export const getSocketPosition = (
     node.position.x +
     (socket.direction === "input"
       ? layout.socketOffsetX
-      : layout.width - layout.socketOffsetX);
+      : width - layout.socketOffsetX);
   return { x, y };
 };
