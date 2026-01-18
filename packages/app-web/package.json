@@ -1,0 +1,13 @@
+{
+	"name": "@shadr/app-web",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "tsc -b",
+		"dev": "tsc -b -w --preserveWatchOutput",
+		"typecheck": "tsc -b",
+		"lint": "eslint .",
+		"test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/app-web/test/**/*.test.ts"
+	}
+}

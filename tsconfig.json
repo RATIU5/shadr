@@ -1,22 +1,19 @@
 {
-  "compilerOptions": {
-    "plugins": [{ "name": "@effect/language-service" }],
-    "target": "ES2024",
-    "lib": ["DOM", "DOM.Iterable", "ESNext"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "strict": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitOverride": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true,
-    "forceConsistentCasingInFileNames": true,
-  },
-  "exclude": ["node_modules"],
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true
+	},
+	"files": [],
+	"references": [
+		{ "path": "./packages/app-web" },
+		{ "path": "./packages/devtools" },
+		{ "path": "./packages/exec-engine" },
+		{ "path": "./packages/graph-core" },
+		{ "path": "./packages/plugin-system" },
+		{ "path": "./packages/shared" },
+		{ "path": "./packages/storage-idb" },
+		{ "path": "./packages/ui-canvas" },
+		{ "path": "./packages/ui-overlay" }
+	],
+	"exclude": ["node_modules"]
 }

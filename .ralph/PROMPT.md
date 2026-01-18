@@ -39,14 +39,6 @@ When you make changes:
 
 **Capture the why** - document not just what you did, but why it matters.
 
-## 5. Commit
-
-When validation passes:
-```bash
-git add -A
-git commit -m "short descriptive message"
-```
-
 ---
 
 ## Guardrails

@@ -106,6 +106,9 @@ Typical packages:
 ## Commands
 
 ```bash
+# Enable pinned package manager via Corepack
+corepack enable
+
 # Install dependencies
 pnpm install
 
@@ -206,6 +209,8 @@ If you see patterns suggesting otherwise, **they are wrong** and should be corre
 - Dirty propagation must be downstream-only
 - Avoid reactive bindings between Solid state and Pixi objects
 -->
+
+- Playwright smoke tests run from `tests/e2e` and load `packages/app-web/index.html` directly for a lightweight UI boot check.
 
 ---
 

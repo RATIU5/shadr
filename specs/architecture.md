@@ -200,6 +200,13 @@ The system is split into **four primary layers**, each with explicit responsibil
 
 ---
 
+## Testing
+
+- Unit tests use Vitest in core packages
+- Playwright smoke tests live in `tests/e2e` and load `packages/app-web/index.html` directly
+
+---
+
 ## Non-Goals (By Design)
 
 - No multi-user or collaborative features

@@ -3,19 +3,13 @@
 Last updated: 2026-01-17
 Features reference: `FEATURES.md` (for what to work on after all tasks are complete)
 
+> Move completed tasks to the 'Completed' section at the bottom of this file when completed
+
+> Split code into multiple files when possible, to keep file sizes smaller and more managable/maintainable
+
 ## Critical
 
-- [ ] Create monorepo skeleton (pnpm workspaces + Turborepo) with packages: `app-web`, `graph-core`, `exec-engine`, `ui-canvas`, `ui-overlay`, `plugin-system`, `storage-idb`, `shared`, `devtools` (optional)
-- [ ] Add repo-wide tooling baseline: Node LTS via `.nvmrc` + `.node-version`, `corepack` enabled, pinned pnpm version in `packageManager`, consistent ESM strategy (pick ESM-only unless you have a hard reason not to)
-- [ ] Establish strict TypeScript foundation (repo-wide): `tsconfig.base.json` with `strict: true`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `useUnknownInCatchVariables`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`, `verbatimModuleSyntax`, project references enabled
-- [ ] Set up lint/format policy: ESLint flat config (type-aware) + Prettier + import ordering; enforce “no default export” in libraries (except Solid components if you prefer), and ban `any` in core packages
-- [ ] GitHub Actions: `ci.yml` running on PR + main: install (pnpm), typecheck (tsc -b), lint, tests, build (turbo) with caching
-- [ ] Add `changesets` for versioning packages (even if private) to keep releases clean; or keep a single app version if you prefer
-- [ ] Add “quality gates”: block merge if typecheck/lint fails; enforce formatting via CI
-- [ ] Add `eslint` type-aware config that uses package `tsconfig.json` references (avoid “project: true” pitfalls by scoping configs per package)
-- [ ] Add `vitest` + `@vitest/coverage-v8` for core packages; start with unit tests for graph validation, topo sort, cycle detect, dirty propagation
-- [ ] Add Playwright smoke test for app boot + basic node creation/connect (one test is enough for MVP confidence)
-- [ ] Add `pnpm -r` scripts and Turbo pipelines: `build`, `dev`, `typecheck`, `lint`, `test` with correct dependency graph
+- [ ] Ensure Effect-ts (see root package.json for catalog versions) is installed and used correctly in all packages that will need Effect, anything with layers or services or composability in the core packages
 - [ ] Add “bundle/perf guardrails”: build output size report and a simple perf benchmark for 1000-node render (dev script, not CI required yet)
 - [ ] Define shared identity types in `shared`: `NodeId`, `SocketId`, `WireId`, `GraphId`, branded types, plus `NonEmptyArray`, `Result`/`Either` helpers (prefer Effect types)
 - [ ] Define versioned graph JSON schema in `shared`: `GraphDocumentV1` with explicit `schemaVersion`, migrations interface, stable IDs, and deterministic ordering rules for serialization
@@ -90,15 +84,14 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 ## Completed
 
-- [x] Completed tasks (none should be here now)
-
----
-
-- [ ] GitHub Actions: `ci.yml` running on PR + main: install (pnpm), typecheck (tsc -b), lint, tests, build (turbo) with caching
-- [ ] Add `changesets` for versioning packages (even if private) to keep releases clean; or keep a single app version if you prefer
-- [ ] Add “quality gates”: block merge if typecheck/lint fails; enforce formatting via CI
-- [ ] Add `eslint` type-aware config that uses package `tsconfig.json` references (avoid “project: true” pitfalls by scoping configs per package)
-- [ ] Add `vitest` + `@vitest/coverage-v8` for core packages; start with unit tests for graph validation, topo sort, cycle detect, dirty propagation
-- [ ] Add Playwright smoke test for app boot + basic node creation/connect (one test is enough for MVP confidence)
-- [ ] Add `pnpm -r` scripts and Turbo pipelines: `build`, `dev`, `typecheck`, `lint`, `test` with correct dependency graph
-- [ ] Add “bundle/perf guardrails”: build output size report and a simple perf benchmark for 1000-node render (dev script, not CI required yet)
+- [x] Add Playwright smoke test for app boot + basic node creation/connect (one test is enough for MVP confidence)
+- [x] Add `pnpm -r` scripts and Turbo pipelines: `build`, `dev`, `typecheck`, `lint`, `test` with correct dependency graph
+- [x] Add `vitest` + `@vitest/coverage-v8` for core packages; add unit tests for graph validation, topo sort, cycle detect, dirty propagation (added `vitest.config.ts`, graph-core/exec-engine test suites, and lightweight graph/dirty helpers to support coverage)
+- [x] Add `eslint` type-aware config that uses package `tsconfig.json` references (avoid “project: true” pitfalls by scoping configs per package) (done via per-package `parserOptions.project` in `eslint.config.js` to keep type-aware linting scoped and fast)
+- [x] Establish strict TypeScript foundation (repo-wide): `tsconfig.base.json` with `strict: true`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `useUnknownInCatchVariables`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`, `verbatimModuleSyntax`, project references enabled
+- [x] Set up lint/format policy: ESLint flat config (type-aware) + Prettier + import ordering; enforce “no default export” in libraries (except Solid components if you prefer), and ban `any` in core packages
+- [x] GitHub Actions: `ci.yml` running on PR + main: install (pnpm), typecheck (tsc -b), lint, tests, build (turbo) with caching to block regressions early and speed repeats
+- [x] Add `changesets` for versioning packages (even if private) to keep releases clean; or keep a single app version if you prefer
+- [x] Add “quality gates”: block merge if typecheck/lint fails; enforce formatting via CI
+- [x] Create monorepo skeleton (pnpm workspaces + Turborepo) with packages: `app-web`, `graph-core`, `exec-engine`, `ui-canvas`, `ui-overlay`, `plugin-system`, `storage-idb`, `shared`, `devtools` (optional)
+- [x] Add repo-wide tooling baseline: Node LTS via `.nvmrc` + `.node-version`, `corepack` enabled, pinned pnpm version in `packageManager`, consistent ESM strategy (pick ESM-only unless you have a hard reason not to)
