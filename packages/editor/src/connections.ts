@@ -1,4 +1,4 @@
-import type { Container, FederatedPointerEvent, Graphics } from "pixi.js";
+import { Container, type FederatedPointerEvent, Graphics, Text } from "pixi.js";
 import type {
 	ConnectionState,
 	ConnectionStyles,
@@ -8,6 +8,9 @@ import type {
 	PortStyles,
 } from "./editor-state";
 import type {
+	Connection,
+	ConnectionDrag,
+	DebugVisualizationState,
 	NodePort,
 	NodeView,
 	PortRef,
@@ -21,16 +24,19 @@ type ConnectionSystemDeps = {
 	canvas: HTMLCanvasElement;
 	camera: Container;
 	connectionsLayer: Graphics;
+	labelLayer: Container;
 	nodeState: NodeCollectionState;
 	connectionState: ConnectionState;
 	dragState: DragState;
 	interactionState: InteractionState;
 	portStyles: PortStyles;
 	getConnectionStyles: () => ConnectionStyles;
+	getFlowActive?: () => boolean;
 	portTypeColors: PortTypeColorMap;
 	arePortTypesCompatible: (first: PortType, second: PortType) => boolean;
 	resolveConnectionType: (first: PortType, second: PortType) => PortType;
 	emitUiMessage?: (tone: UiMessageTone, message: string) => void;
+	getDebugState?: () => DebugVisualizationState | null;
 	getWorldFromClient: (
 		clientX: number,
 		clientY: number,
@@ -47,6 +53,7 @@ type ConnectionSystemDeps = {
 		port: { isDragTarget: boolean; isDragValid: boolean };
 		render: () => void;
 	} | null;
+	registerText: (text: Text) => Text;
 	findGroupPortAt?: (
 		worldX: number,
 		worldY: number,
@@ -62,32 +69,268 @@ export const createConnectionSystem = ({
 	canvas,
 	camera,
 	connectionsLayer,
+	labelLayer,
 	nodeState,
 	connectionState,
 	dragState,
 	interactionState,
 	portStyles,
 	getConnectionStyles,
+	getFlowActive,
 	portTypeColors,
 	arePortTypesCompatible,
 	resolveConnectionType,
 	emitUiMessage,
+	getDebugState,
 	getWorldFromClient,
 	getNodePort,
 	getPortWorldPosition,
 	getPortDragView,
+	registerText,
 	findGroupPortAt,
 	isNodeHidden,
 	commitHistory,
 }: ConnectionSystemDeps) => {
-	const getConnectionControls = (fromX: number, toX: number) => {
+	const arePortsCompatible = (
+		outputPort: { type: PortType; conversionRules?: PortType[] },
+		inputPort: { type: PortType; conversionRules?: PortType[] },
+	) => {
+		if (arePortTypesCompatible(outputPort.type, inputPort.type)) {
+			return true;
+		}
+		if (inputPort.conversionRules?.includes(outputPort.type)) {
+			return true;
+		}
+		if (outputPort.conversionRules?.includes(inputPort.type)) {
+			return true;
+		}
+		return false;
+	};
+
+	const findInputConnection = (ref: PortRef) => {
+		for (const connection of connectionState.connections.values()) {
+			if (
+				connection.to.nodeId === ref.nodeId &&
+				connection.to.portId === ref.portId
+			) {
+				return connection;
+			}
+		}
+		return null;
+	};
+
+	const getConnectionControls = (
+		fromX: number,
+		fromY: number,
+		toX: number,
+		toY: number,
+	) => {
 		const deltaX = toX - fromX;
+		const deltaY = Math.abs(toY - fromY);
 		const absDeltaX = Math.abs(deltaX);
-		const curve = Math.max(40, absDeltaX * 0.5);
+		const curve = Math.max(48, absDeltaX * 0.55 + deltaY * 0.15);
 		const controlX1 = fromX + (deltaX >= 0 ? curve : -curve);
 		const controlX2 = toX - (deltaX >= 0 ? curve : -curve);
 
 		return { controlX1, controlX2 };
+	};
+
+	const resolveEffectiveStyle = (
+		fromX: number,
+		fromY: number,
+		toX: number,
+		toY: number,
+	) => {
+		const styles = getConnectionStyles();
+		if (styles.lodEnabled) {
+			const scale = camera.scale.x || 1;
+			const screenDistance = Math.hypot(toX - fromX, toY - fromY) * scale;
+			if (screenDistance >= styles.lodDistance) {
+				return "straight";
+			}
+		}
+		return styles.style;
+	};
+
+	const buildPolylinePoints = (
+		style: "straight" | "step" | "orthogonal",
+		fromX: number,
+		fromY: number,
+		toX: number,
+		toY: number,
+	) => {
+		if (style === "straight") {
+			return [
+				{ x: fromX, y: fromY },
+				{ x: toX, y: toY },
+			];
+		}
+
+		const midX =
+			style === "step"
+				? (fromX + toX) / 2
+				: (() => {
+						const deltaX = toX - fromX;
+						const absDeltaX = Math.abs(deltaX);
+						const direction = deltaX >= 0 ? 1 : -1;
+						const minOffset = 30;
+						const maxOffset = 140;
+						const desired = Math.min(
+							maxOffset,
+							Math.max(minOffset, absDeltaX * 0.5),
+						);
+						const clamped =
+							absDeltaX < minOffset
+								? absDeltaX / 2
+								: Math.min(desired, absDeltaX * 0.8);
+						return fromX + clamped * direction;
+					})();
+
+		return [
+			{ x: fromX, y: fromY },
+			{ x: midX, y: fromY },
+			{ x: midX, y: toY },
+			{ x: toX, y: toY },
+		];
+	};
+
+	const getPolylineLength = (points: Array<{ x: number; y: number }>) => {
+		let length = 0;
+		for (let i = 1; i < points.length; i += 1) {
+			const prev = points[i - 1];
+			const next = points[i];
+			if (!prev || !next) {
+				continue;
+			}
+			length += Math.hypot(next.x - prev.x, next.y - prev.y);
+		}
+		return length;
+	};
+
+	const getPolylinePointAt = (
+		points: Array<{ x: number; y: number }>,
+		distance: number,
+	) => {
+		let traveled = 0;
+		for (let i = 1; i < points.length; i += 1) {
+			const prev = points[i - 1];
+			const next = points[i];
+			if (!prev || !next) {
+				continue;
+			}
+			const segmentLength = Math.hypot(next.x - prev.x, next.y - prev.y);
+			if (segmentLength <= 0) {
+				continue;
+			}
+			if (traveled + segmentLength >= distance) {
+				const t = (distance - traveled) / segmentLength;
+				return {
+					x: prev.x + (next.x - prev.x) * t,
+					y: prev.y + (next.y - prev.y) * t,
+				};
+			}
+			traveled += segmentLength;
+		}
+		const last = points[points.length - 1] ?? { x: 0, y: 0 };
+		return { x: last.x, y: last.y };
+	};
+
+	const averagePosition = (points: Array<{ x: number; y: number }>) => {
+		if (points.length === 0) {
+			return { x: 0, y: 0 };
+		}
+		let sumX = 0;
+		let sumY = 0;
+		points.forEach((point) => {
+			sumX += point.x;
+			sumY += point.y;
+		});
+		return { x: sumX / points.length, y: sumY / points.length };
+	};
+
+	type ConnectionEntryPart = {
+		connection: Connection;
+		from: { node: NodeView; port: NodePort };
+		to: { node: NodeView; port: NodePort };
+		fromPos: { x: number; y: number };
+		toPos: { x: number; y: number };
+	};
+
+	type ConnectionRenderEntry = {
+		id: string;
+		connections: ConnectionEntryPart[];
+		fromPos: { x: number; y: number };
+		toPos: { x: number; y: number };
+	};
+
+	const collectConnectionEntries = (
+		useBundles: boolean,
+		removals: string[],
+	): ConnectionRenderEntry[] => {
+		if (!useBundles) {
+			const entries: ConnectionRenderEntry[] = [];
+			connectionState.connections.forEach((connection) => {
+				const from = getNodePort(connection.from);
+				const to = getNodePort(connection.to);
+				if (!from || !to) {
+					removals.push(connection.id);
+					return;
+				}
+				const fromPos = getPortWorldPosition(from.node, from.port);
+				const toPos = getPortWorldPosition(to.node, to.port);
+				entries.push({
+					id: connection.id,
+					connections: [
+						{
+							connection,
+							from,
+							to,
+							fromPos,
+							toPos,
+						},
+					],
+					fromPos,
+					toPos,
+				});
+			});
+			return entries;
+		}
+
+		const bundleMap = new Map<string, ConnectionRenderEntry>();
+		connectionState.connections.forEach((connection) => {
+			const from = getNodePort(connection.from);
+			const to = getNodePort(connection.to);
+			if (!from || !to) {
+				removals.push(connection.id);
+				return;
+			}
+			const fromPos = getPortWorldPosition(from.node, from.port);
+			const toPos = getPortWorldPosition(to.node, to.port);
+			const key = `bundle:${connection.from.nodeId}->${connection.to.nodeId}`;
+			const entry = bundleMap.get(key) ?? {
+				id: key,
+				connections: [],
+				fromPos: { x: 0, y: 0 },
+				toPos: { x: 0, y: 0 },
+			};
+			entry.connections.push({
+				connection,
+				from,
+				to,
+				fromPos,
+				toPos,
+			});
+			bundleMap.set(key, entry);
+		});
+
+		bundleMap.forEach((entry) => {
+			const fromPositions = entry.connections.map((part) => part.fromPos);
+			const toPositions = entry.connections.map((part) => part.toPos);
+			entry.fromPos = averagePosition(fromPositions);
+			entry.toPos = averagePosition(toPositions);
+		});
+
+		return Array.from(bundleMap.values());
 	};
 
 	const drawConnection = (
@@ -100,8 +343,8 @@ export const createConnectionSystem = ({
 		width?: number,
 	) => {
 		const styles = getConnectionStyles();
+		const style = resolveEffectiveStyle(fromX, fromY, toX, toY);
 		const scale = camera.scale.x || 1;
-		const { controlX1, controlX2 } = getConnectionControls(fromX, toX);
 
 		connectionsLayer.setStrokeStyle({
 			width: (width ?? styles.width) / scale,
@@ -111,9 +354,13 @@ export const createConnectionSystem = ({
 			join: "round",
 		});
 		connectionsLayer.moveTo(fromX, fromY);
-		if (styles.style === "straight") {
-			connectionsLayer.lineTo(toX, toY);
-		} else {
+		if (style === "curved") {
+			const { controlX1, controlX2 } = getConnectionControls(
+				fromX,
+				fromY,
+				toX,
+				toY,
+			);
 			connectionsLayer.bezierCurveTo(
 				controlX1,
 				fromY,
@@ -122,8 +369,168 @@ export const createConnectionSystem = ({
 				toX,
 				toY,
 			);
+		} else {
+			const points = buildPolylinePoints(style, fromX, fromY, toX, toY);
+			for (let index = 1; index < points.length; index += 1) {
+				const point = points[index];
+				if (point) {
+					connectionsLayer.lineTo(point.x, point.y);
+				}
+			}
 		}
 		connectionsLayer.stroke();
+	};
+
+	const colorToRgb = (color: number) => ({
+		r: (color >> 16) & 0xff,
+		g: (color >> 8) & 0xff,
+		b: color & 0xff,
+	});
+
+	const rgbToColor = (r: number, g: number, b: number) =>
+		(r << 16) + (g << 8) + b;
+
+	const lerpColor = (from: number, to: number, t: number) => {
+		const start = colorToRgb(from);
+		const end = colorToRgb(to);
+		const lerp = (a: number, b: number) => Math.round(a + (b - a) * t);
+		return rgbToColor(
+			lerp(start.r, end.r),
+			lerp(start.g, end.g),
+			lerp(start.b, end.b),
+		);
+	};
+
+	const averageColor = (colors: number[]) => {
+		if (colors.length === 0) {
+			return 0xffffff;
+		}
+		let totalR = 0;
+		let totalG = 0;
+		let totalB = 0;
+		colors.forEach((color) => {
+			const rgb = colorToRgb(color);
+			totalR += rgb.r;
+			totalG += rgb.g;
+			totalB += rgb.b;
+		});
+		const count = colors.length;
+		return rgbToColor(
+			Math.round(totalR / count),
+			Math.round(totalG / count),
+			Math.round(totalB / count),
+		);
+	};
+
+	const formatPortTypeLabel = (type: PortType) => {
+		switch (type) {
+			case "float":
+				return "Float";
+			case "int":
+				return "Int";
+			case "vec2":
+				return "Vec2";
+			case "vec3":
+				return "Vec3";
+			case "vec4":
+				return "Vec4";
+			case "texture":
+				return "Texture";
+			case "color":
+				return "Color";
+		}
+	};
+
+	const connectionLabelStyle = {
+		fill: 0xd7dde7,
+		fontFamily: "Arial",
+		fontSize: 10,
+	};
+	const badgeLabelStyle = {
+		fill: 0x0f131c,
+		fontFamily: "Arial",
+		fontSize: 10,
+	};
+	const badgeFillColor = 0xe6edf7;
+	const badgeFillAlpha = 0.92;
+
+	const connectionLabelPool = new Map<string, Text>();
+	const bundleBadgePool = new Map<
+		string,
+		{ container: Container; background: Graphics; label: Text }
+	>();
+
+	const getConnectionLabel = (id: string) => {
+		const existing = connectionLabelPool.get(id);
+		if (existing) {
+			return existing;
+		}
+		const label = registerText(
+			new Text({
+				text: "",
+				style: connectionLabelStyle,
+			}),
+		);
+		label.eventMode = "none";
+		labelLayer.addChild(label);
+		connectionLabelPool.set(id, label);
+		return label;
+	};
+
+	const getBundleBadge = (id: string) => {
+		const existing = bundleBadgePool.get(id);
+		if (existing) {
+			return existing;
+		}
+		const container = new Container();
+		const background = new Graphics();
+		const label = registerText(
+			new Text({
+				text: "",
+				style: badgeLabelStyle,
+			}),
+		);
+		label.eventMode = "none";
+		background.eventMode = "none";
+		container.addChild(background);
+		container.addChild(label);
+		labelLayer.addChild(container);
+		const badge = { container, background, label };
+		bundleBadgePool.set(id, badge);
+		return badge;
+	};
+
+	const drawGradientConnection = (
+		fromX: number,
+		fromY: number,
+		toX: number,
+		toY: number,
+		startColor: number,
+		endColor: number,
+		alpha: number,
+		width?: number,
+	) => {
+		const styles = getConnectionStyles();
+		const scale = camera.scale.x || 1;
+		const segments = Math.max(6, styles.hoverSegments);
+		let lastPoint = getConnectionPoint(0, fromX, fromY, toX, toY);
+
+		for (let i = 1; i <= segments; i += 1) {
+			const t = i / segments;
+			const nextPoint = getConnectionPoint(t, fromX, fromY, toX, toY);
+			const color = lerpColor(startColor, endColor, t);
+			connectionsLayer.setStrokeStyle({
+				width: (width ?? styles.width) / scale,
+				color,
+				alpha,
+				cap: "round",
+				join: "round",
+			});
+			connectionsLayer.moveTo(lastPoint.x, lastPoint.y);
+			connectionsLayer.lineTo(nextPoint.x, nextPoint.y);
+			connectionsLayer.stroke();
+			lastPoint = nextPoint;
+		}
 	};
 
 	const distanceToSegmentSquared = (
@@ -173,18 +580,23 @@ export const createConnectionSystem = ({
 		toX: number,
 		toY: number,
 	) => {
-		const styles = getConnectionStyles();
-		if (styles.style === "straight") {
+		const style = resolveEffectiveStyle(fromX, fromY, toX, toY);
+		if (style === "curved") {
+			const { controlX1, controlX2 } = getConnectionControls(
+				fromX,
+				fromY,
+				toX,
+				toY,
+			);
 			return {
-				x: fromX + (toX - fromX) * t,
-				y: fromY + (toY - fromY) * t,
+				x: bezierPoint(t, fromX, controlX1, controlX2, toX),
+				y: bezierPoint(t, fromY, fromY, toY, toY),
 			};
 		}
-		const { controlX1, controlX2 } = getConnectionControls(fromX, toX);
-		return {
-			x: bezierPoint(t, fromX, controlX1, controlX2, toX),
-			y: bezierPoint(t, fromY, fromY, toY, toY),
-		};
+		const points = buildPolylinePoints(style, fromX, fromY, toX, toY);
+		const length = getPolylineLength(points);
+		const targetDistance = length * t;
+		return getPolylinePointAt(points, targetDistance);
 	};
 
 	const estimateConnectionLength = (
@@ -194,8 +606,10 @@ export const createConnectionSystem = ({
 		toY: number,
 	) => {
 		const styles = getConnectionStyles();
-		if (styles.style === "straight") {
-			return Math.hypot(toX - fromX, toY - fromY);
+		const style = resolveEffectiveStyle(fromX, fromY, toX, toY);
+		if (style !== "curved") {
+			const points = buildPolylinePoints(style, fromX, fromY, toX, toY);
+			return getPolylineLength(points);
 		}
 		const samples = Math.max(6, styles.hoverSegments);
 		let length = 0;
@@ -218,10 +632,36 @@ export const createConnectionSystem = ({
 		toY: number,
 	) => {
 		const styles = getConnectionStyles();
-		if (styles.style === "straight") {
-			return distanceToSegmentSquared(px, py, fromX, fromY, toX, toY);
+		const style = resolveEffectiveStyle(fromX, fromY, toX, toY);
+		if (style !== "curved") {
+			const points = buildPolylinePoints(style, fromX, fromY, toX, toY);
+			let minDistance = Number.POSITIVE_INFINITY;
+			for (let i = 1; i < points.length; i += 1) {
+				const prev = points[i - 1];
+				const next = points[i];
+				if (!prev || !next) {
+					continue;
+				}
+				const distance = distanceToSegmentSquared(
+					px,
+					py,
+					prev.x,
+					prev.y,
+					next.x,
+					next.y,
+				);
+				if (distance < minDistance) {
+					minDistance = distance;
+				}
+			}
+			return minDistance;
 		}
-		const { controlX1, controlX2 } = getConnectionControls(fromX, toX);
+		const { controlX1, controlX2 } = getConnectionControls(
+			fromX,
+			fromY,
+			toX,
+			toY,
+		);
 		const samples = Math.max(4, styles.hoverSegments);
 		let minDistance = Number.POSITIVE_INFINITY;
 		let lastX = fromX;
@@ -289,26 +729,19 @@ export const createConnectionSystem = ({
 		let closestId: string | null = null;
 		let closestDistance = thresholdSquared;
 
-		connectionState.connections.forEach((connection) => {
-			const from = getNodePort(connection.from);
-			const to = getNodePort(connection.to);
-			if (!from || !to) {
-				return;
-			}
-
-			const fromPos = getPortWorldPosition(from.node, from.port);
-			const toPos = getPortWorldPosition(to.node, to.port);
+		const entries = collectConnectionEntries(styles.bundleConnections, []);
+		entries.forEach((entry) => {
 			const distance = distanceToConnectionSquared(
 				worldX,
 				worldY,
-				fromPos.x,
-				fromPos.y,
-				toPos.x,
-				toPos.y,
+				entry.fromPos.x,
+				entry.fromPos.y,
+				entry.toPos.x,
+				entry.toPos.y,
 			);
 			if (distance <= closestDistance) {
 				closestDistance = distance;
-				closestId = connection.id;
+				closestId = entry.connections[0]?.connection.id ?? null;
 			}
 		});
 
@@ -319,38 +752,81 @@ export const createConnectionSystem = ({
 		const styles = getConnectionStyles();
 		const now = performance.now();
 		const removals: string[] = [];
+		const flowActive = styles.showFlow || getFlowActive?.();
+		const debugState = getDebugState?.();
+		const debugEnabled = Boolean(
+			debugState?.enabled && debugState?.dimInactive,
+		);
+		const debugActiveSet = debugEnabled
+			? new Set(debugState?.activeConnections ?? [])
+			: null;
+		const debugFocusSet = new Set(debugState?.focusConnectionIds ?? []);
+		const emphasisActive =
+			styles.emphasisMode && nodeState.selectedIds.size > 0;
+		const selectedNodeIds = nodeState.selectedIds;
+		const showLabels = styles.showLabels;
+		const showBundles = styles.bundleConnections;
+		const activeLabelIds = new Set<string>();
+		const activeBadgeIds = new Set<string>();
 
 		connectionsLayer.clear();
 
 		const flowScale = camera.scale.x || 1;
 
-		connectionState.connections.forEach((connection) => {
-			const from = getNodePort(connection.from);
-			const to = getNodePort(connection.to);
-			if (!from || !to) {
-				removals.push(connection.id);
-				return;
-			}
+		const entries = collectConnectionEntries(showBundles, removals);
+		entries.forEach((entry) => {
+			const isSelected = entry.connections.some((part) =>
+				connectionState.selectedIds.has(part.connection.id),
+			);
+			const isDebugActive = debugEnabled
+				? entry.connections.some((part) =>
+						debugActiveSet?.has(part.connection.id),
+					)
+				: true;
+			const focusBoost = entry.connections.some((part) =>
+				debugFocusSet.has(part.connection.id),
+			);
+			const isRelatedToSelection = emphasisActive
+				? entry.connections.some(
+						(part) =>
+							selectedNodeIds.has(part.connection.from.nodeId) ||
+							selectedNodeIds.has(part.connection.to.nodeId),
+					)
+				: true;
+			const connectionWidth = isSelected
+				? styles.hoverWidth
+				: focusBoost
+					? styles.hoverWidth
+					: styles.width;
+			const baseAlpha = debugEnabled ? (isDebugActive ? 1 : 0.15) : 1;
+			const emphasisAlpha = emphasisActive && !isRelatedToSelection ? 0.2 : 1;
+			const connectionAlpha = baseAlpha * emphasisAlpha;
+			const fromColors = entry.connections.map(
+				(part) => portTypeColors[part.from.port.type],
+			);
+			const toColors = entry.connections.map(
+				(part) => portTypeColors[part.to.port.type],
+			);
+			const fromColor = averageColor(fromColors);
+			const toColor = averageColor(toColors);
 
-			const fromPos = getPortWorldPosition(from.node, from.port);
-			const toPos = getPortWorldPosition(to.node, to.port);
-			const isSelected = connectionState.selectedIds.has(connection.id);
-			drawConnection(
-				fromPos.x,
-				fromPos.y,
-				toPos.x,
-				toPos.y,
-				portTypeColors[connection.type],
-				1,
-				isSelected ? styles.hoverWidth : styles.width,
+			drawGradientConnection(
+				entry.fromPos.x,
+				entry.fromPos.y,
+				entry.toPos.x,
+				entry.toPos.y,
+				fromColor,
+				toColor,
+				connectionAlpha,
+				connectionWidth,
 			);
 
-			if (styles.showFlow) {
+			if (flowActive && (!debugEnabled || isDebugActive)) {
 				const length = estimateConnectionLength(
-					fromPos.x,
-					fromPos.y,
-					toPos.x,
-					toPos.y,
+					entry.fromPos.x,
+					entry.fromPos.y,
+					entry.toPos.x,
+					entry.toPos.y,
 				);
 				if (length > 0) {
 					const spacing = Math.max(6, styles.flowSpacing);
@@ -362,24 +838,82 @@ export const createConnectionSystem = ({
 						const t = distance / length;
 						const point = getConnectionPoint(
 							t,
-							fromPos.x,
-							fromPos.y,
-							toPos.x,
-							toPos.y,
+							entry.fromPos.x,
+							entry.fromPos.y,
+							entry.toPos.x,
+							entry.toPos.y,
 						);
 						const radius = styles.flowRadius / flowScale;
 						connectionsLayer.circle(point.x, point.y, radius);
 						connectionsLayer.fill({
-							color: portTypeColors[connection.type],
+							color: lerpColor(fromColor, toColor, t),
 							alpha: styles.flowAlpha,
 						});
 					}
 				}
 			}
+
+			if (showLabels) {
+				const typeSet = new Set(
+					entry.connections.map((part) => part.connection.type),
+				);
+				const onlyType = typeSet.values().next().value as PortType | undefined;
+				const labelText =
+					typeSet.size === 1 && onlyType
+						? formatPortTypeLabel(onlyType)
+						: "Mixed";
+				const label = getConnectionLabel(entry.id);
+				const scale = camera.scale.x || 1;
+				const labelPoint = getConnectionPoint(
+					0.5,
+					entry.fromPos.x,
+					entry.fromPos.y,
+					entry.toPos.x,
+					entry.toPos.y,
+				);
+				const offset = 10 / scale;
+				label.text = labelText;
+				label.pivot.set(label.width / 2, label.height / 2);
+				label.position.set(labelPoint.x, labelPoint.y - offset);
+				label.alpha = connectionAlpha;
+				activeLabelIds.add(entry.id);
+			}
+
+			if (showBundles && entry.connections.length > 1) {
+				const badge = getBundleBadge(entry.id);
+				const scale = camera.scale.x || 1;
+				const badgePoint = getConnectionPoint(
+					0.5,
+					entry.fromPos.x,
+					entry.fromPos.y,
+					entry.toPos.x,
+					entry.toPos.y,
+				);
+				const offset = (showLabels ? 12 : 8) / scale;
+				badge.label.text = `${entry.connections.length}`;
+				badge.label.pivot.set(badge.label.width / 2, badge.label.height / 2);
+				const radius = Math.max(badge.label.width, badge.label.height) / 2 + 4;
+				badge.background.clear();
+				badge.background.circle(0, 0, radius).fill({
+					color: badgeFillColor,
+					alpha: badgeFillAlpha,
+				});
+				badge.container.position.set(badgePoint.x, badgePoint.y + offset);
+				badge.container.alpha = connectionAlpha;
+				badge.container.visible = connectionAlpha > 0;
+				activeBadgeIds.add(entry.id);
+			}
 		});
 
 		removals.forEach((id) => {
 			connectionState.connections.delete(id);
+		});
+
+		connectionLabelPool.forEach((label, id) => {
+			label.visible = activeLabelIds.has(id);
+		});
+		bundleBadgePool.forEach((badge, id) => {
+			badge.container.visible = activeBadgeIds.has(id);
 		});
 
 		if (connectionState.active) {
@@ -391,6 +925,7 @@ export const createConnectionSystem = ({
 			const startPos = getPortWorldPosition(start.node, start.port);
 			let ghostColor = portTypeColors[connectionState.active.type];
 			let ghostAlpha = styles.ghostAlpha;
+			let ghostWidth: number | undefined;
 
 			if (connectionState.active.target) {
 				const target = getNodePort(connectionState.active.target);
@@ -403,6 +938,7 @@ export const createConnectionSystem = ({
 					} else {
 						ghostColor = styles.invalidColor;
 						ghostAlpha = styles.invalidAlpha;
+						ghostWidth = styles.hoverWidth;
 					}
 				}
 			}
@@ -414,6 +950,7 @@ export const createConnectionSystem = ({
 				connectionState.active.y,
 				ghostColor,
 				ghostAlpha,
+				ghostWidth,
 			);
 		}
 	};
@@ -442,6 +979,14 @@ export const createConnectionSystem = ({
 		setPortDragTarget(active.target, false, false);
 	};
 
+	const restoreDetachedConnection = (active: ConnectionDrag | null) => {
+		if (!active?.detached) {
+			return false;
+		}
+		connectionState.connections.set(active.detached.id, active.detached);
+		return true;
+	};
+
 	const updateActiveConnectionTarget = (worldX: number, worldY: number) => {
 		const active = connectionState.active;
 		if (!active) {
@@ -462,9 +1007,13 @@ export const createConnectionSystem = ({
 		if (target) {
 			nextTarget = target.ref;
 			const isSameNode = target.ref.nodeId === active.start.nodeId;
+			const outputPort =
+				startData.port.direction === "output" ? startData.port : target.port;
+			const inputPort =
+				startData.port.direction === "input" ? startData.port : target.port;
 			nextValid =
 				!isSameNode &&
-				arePortTypesCompatible(startData.port.type, target.port.type) &&
+				arePortsCompatible(outputPort, inputPort) &&
 				startData.port.direction !== target.port.direction;
 		}
 
@@ -512,6 +1061,23 @@ export const createConnectionSystem = ({
 			return;
 		}
 
+		let startRef: PortRef = { nodeId, portId };
+		let startPort = port;
+		let detached: Connection | undefined;
+
+		if (port.direction === "input") {
+			const existing = findInputConnection(startRef);
+			if (existing) {
+				const startData = getNodePort(existing.from);
+				if (startData) {
+					connectionState.connections.delete(existing.id);
+					detached = existing;
+					startRef = existing.from;
+					startPort = startData.port;
+				}
+			}
+		}
+
 		connectionState.hoverId = null;
 		nodeState.suppressPanPointerId = event.pointerId;
 
@@ -533,19 +1099,23 @@ export const createConnectionSystem = ({
 
 		connectionState.active = {
 			pointerId: event.pointerId,
-			start: { nodeId, portId },
-			direction: port.direction,
-			type: port.type,
+			start: startRef,
+			direction: startPort.direction,
+			type: startPort.type,
 			x: world.x,
 			y: world.y,
 			target: null,
 			isValid: false,
+			...(detached ? { detached } : {}),
 		};
 		canvas.setPointerCapture(event.pointerId);
 	};
 
-	const cancelConnectionDrag = () => {
+	const cancelConnectionDrag = (options?: { restoreDetached?: boolean }) => {
 		clearActiveDragTarget();
+		if (options?.restoreDetached !== false) {
+			restoreDetachedConnection(connectionState.active);
+		}
 		connectionState.active = null;
 	};
 
@@ -555,6 +1125,7 @@ export const createConnectionSystem = ({
 			return;
 		}
 
+		const detached = active.detached;
 		let didChange = false;
 		const world = getWorldFromClient(event.clientX, event.clientY);
 		const target = findPortAt(world.x, world.y);
@@ -565,6 +1136,11 @@ export const createConnectionSystem = ({
 		}
 
 		if (!target) {
+			if (detached) {
+				restoreDetachedConnection(active);
+				cancelConnectionDrag({ restoreDetached: false });
+				return;
+			}
 			if (startData.port.direction === "input") {
 				for (const [key, connection] of connectionState.connections.entries()) {
 					if (
@@ -577,7 +1153,7 @@ export const createConnectionSystem = ({
 				}
 			}
 
-			cancelConnectionDrag();
+			cancelConnectionDrag({ restoreDetached: false });
 			if (didChange) {
 				commitHistory();
 			}
@@ -585,40 +1161,52 @@ export const createConnectionSystem = ({
 		}
 
 		if (target.ref.nodeId === active.start.nodeId) {
-			cancelConnectionDrag();
+			if (detached) {
+				restoreDetachedConnection(active);
+			}
+			cancelConnectionDrag({ restoreDetached: false });
 			return;
 		}
 
 		const startPort = startData.port;
 		const endPort = target.port;
 		const sameDirection = startPort.direction === endPort.direction;
-		const incompatibleTypes = !arePortTypesCompatible(
-			startPort.type,
-			endPort.type,
-		);
+		const outputPort = startPort.direction === "output" ? startPort : endPort;
+		const inputPort = startPort.direction === "input" ? startPort : endPort;
+		const incompatibleTypes = !arePortsCompatible(outputPort, inputPort);
 		if (sameDirection || incompatibleTypes) {
 			if (emitUiMessage) {
 				if (sameDirection) {
 					emitUiMessage("warning", "Ports must connect outputs to inputs.");
 				} else {
-					const outputType =
-						startPort.direction === "output" ? startPort.type : endPort.type;
-					const inputType =
-						startPort.direction === "input" ? startPort.type : endPort.type;
+					const outputType = outputPort.type;
+					const inputType = inputPort.type;
 					emitUiMessage(
 						"warning",
 						`Incompatible port types (${outputType} -> ${inputType}).`,
 					);
 				}
 			}
-			cancelConnectionDrag();
+			if (detached) {
+				restoreDetachedConnection(active);
+			}
+			cancelConnectionDrag({ restoreDetached: false });
 			return;
 		}
 
-		const connectionType = resolveConnectionType(startPort.type, endPort.type);
+		const connectionType = resolveConnectionType(
+			outputPort.type,
+			inputPort.type,
+		);
 		const from = startPort.direction === "output" ? active.start : target.ref;
 		const to = startPort.direction === "output" ? target.ref : active.start;
 		const id = `${from.nodeId}:${from.portId}->${to.nodeId}:${to.portId}`;
+
+		if (detached && detached.id === id) {
+			connectionState.connections.set(detached.id, detached);
+			cancelConnectionDrag({ restoreDetached: false });
+			return;
+		}
 
 		for (const [key, connection] of connectionState.connections.entries()) {
 			if (
@@ -636,7 +1224,7 @@ export const createConnectionSystem = ({
 			to,
 			type: connectionType,
 		});
-		cancelConnectionDrag();
+		cancelConnectionDrag({ restoreDetached: false });
 		didChange = true;
 		if (didChange) {
 			commitHistory();

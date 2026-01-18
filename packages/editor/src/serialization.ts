@@ -8,6 +8,7 @@ import {
 } from "./node-families";
 import type {
 	NodeFamilyId,
+	NodeSocketValue,
 	NodeState,
 	PortDirection,
 	PortType,
@@ -114,6 +115,11 @@ const migrateGraphPayloadWithReport = (
 	if (version === 2) {
 		migrated = { ...migrated, version: 3 };
 		version = 3;
+	}
+
+	if (version === 3) {
+		migrated = { ...migrated, version: 4 };
+		version = 4;
 	}
 
 	if (version !== GRAPH_SCHEMA_VERSION) {
@@ -237,12 +243,55 @@ const parseNodeState = (value: unknown): NodeState | null => {
 			? value.version
 			: 1;
 	const uiRaw = value.ui;
-	const ui =
-		isRecord(uiRaw) && typeof uiRaw.lastTabId === "string"
-			? { lastTabId: uiRaw.lastTabId }
-			: undefined;
+	let ui: NodeState["ui"] | undefined;
+	if (isRecord(uiRaw)) {
+		const next: NodeState["ui"] = {};
+		if (typeof uiRaw.lastTabId === "string") {
+			next.lastTabId = uiRaw.lastTabId;
+		}
+		if (typeof uiRaw.colorTag === "string") {
+			next.colorTag = uiRaw.colorTag;
+		}
+		if (typeof uiRaw.isBypassed === "boolean") {
+			next.isBypassed = uiRaw.isBypassed;
+		}
+		if (Object.keys(next).length > 0) {
+			ui = next;
+		}
+	}
 	return { version, params, ...(ui ? { ui } : {}) };
 };
+
+const parseSocketValues = (
+	value: unknown,
+): Record<string, NodeSocketValue> | null => {
+	if (!isRecord(value)) {
+		return null;
+	}
+	const socketValues: Record<string, NodeSocketValue> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		const parsed = parseNodeParamValue(entry);
+		if (parsed !== null) {
+			socketValues[key] = parsed;
+		}
+	}
+	return socketValues;
+};
+
+const isVectorSocketValue = (
+	value: NodeSocketValue | undefined,
+): value is { x: number; y: number; z?: number; w?: number } =>
+	typeof value === "object" && value !== null && "x" in value && "y" in value;
+
+const isColorSocketValue = (
+	value: NodeSocketValue | undefined,
+): value is { r: number; g: number; b: number; a: number } =>
+	typeof value === "object" &&
+	value !== null &&
+	"r" in value &&
+	"g" in value &&
+	"b" in value &&
+	"a" in value;
 
 const mapLegacyDataToState = (
 	typeId: string,
@@ -378,13 +427,133 @@ const mapLegacyDataToState = (
 	return normalizeNodeState(typeId, { ...base, params }) ?? base;
 };
 
+const mapLegacyDataToSocketValues = (
+	typeId: string,
+	data: LegacyNodeData,
+): Record<string, NodeSocketValue> | null => {
+	if (typeId === "constants") {
+		if (typeof data.value === "number") {
+			return { out: data.value };
+		}
+		if (data.vector) {
+			return {
+				out: {
+					x: data.vector.x,
+					y: data.vector.y,
+					...(data.vector.z !== undefined ? { z: data.vector.z } : {}),
+					...(data.vector.w !== undefined ? { w: data.vector.w } : {}),
+				},
+			};
+		}
+		if (data.color) {
+			return { out: data.color };
+		}
+	}
+
+	if (typeId === "inputs") {
+		if (typeof data.inputValue === "number") {
+			return { out: data.inputValue };
+		}
+		if (typeof data.inputChecked === "boolean") {
+			return { out: data.inputChecked };
+		}
+		if (typeof data.inputText === "string") {
+			return { out: data.inputText };
+		}
+		if (data.inputColor) {
+			return { out: data.inputColor };
+		}
+		if (typeof data.inputSelection === "string") {
+			return { out: data.inputSelection };
+		}
+	}
+
+	return null;
+};
+
+const migrateSocketValuesFromState = (
+	typeId: string,
+	state: NodeState,
+	existingSocketValues?: Record<string, NodeSocketValue> | null,
+) => {
+	const socketValues: Record<string, NodeSocketValue> = {
+		...(existingSocketValues ?? {}),
+	};
+	const params = { ...state.params };
+
+	if (typeId === "constants") {
+		const constType = typeof params.type === "string" ? params.type : "float";
+		if (socketValues.out === undefined) {
+			if (constType === "color" && isColorSocketValue(params.colorValue)) {
+				socketValues.out = params.colorValue;
+			} else if (
+				(constType === "vec2" ||
+					constType === "vec3" ||
+					constType === "vec4") &&
+				isVectorSocketValue(params.vectorValue)
+			) {
+				socketValues.out = params.vectorValue;
+			} else if (typeof params.floatValue === "number") {
+				socketValues.out = params.floatValue;
+			}
+		}
+		delete params.floatValue;
+		delete params.vectorValue;
+		delete params.colorValue;
+	}
+
+	if (typeId === "inputs") {
+		const inputType = typeof params.type === "string" ? params.type : "number";
+		if (socketValues.out === undefined) {
+			if (inputType === "checkbox" && typeof params.checked === "boolean") {
+				socketValues.out = params.checked;
+			} else if (inputType === "text" && typeof params.textValue === "string") {
+				socketValues.out = params.textValue;
+			} else if (
+				inputType === "color" &&
+				isColorSocketValue(params.colorValue)
+			) {
+				socketValues.out = params.colorValue;
+			} else if (
+				inputType === "select" &&
+				typeof params.selection === "string"
+			) {
+				socketValues.out = params.selection;
+			} else if (typeof params.numberValue === "number") {
+				socketValues.out = params.numberValue;
+			}
+		}
+		delete params.numberValue;
+		delete params.checked;
+		delete params.textValue;
+		delete params.colorValue;
+		delete params.selection;
+	}
+
+	return {
+		state: { ...state, params },
+		socketValues: Object.keys(socketValues).length > 0 ? socketValues : null,
+	};
+};
+
 const parseNode = (value: unknown): SerializableNode | null => {
 	if (!isRecord(value)) {
 		return null;
 	}
 
-	const { id, title, x, y, ports, familyId, templateId, data, typeId, state } =
-		value;
+	const {
+		id,
+		title,
+		x,
+		y,
+		ports,
+		familyId,
+		templateId,
+		data,
+		typeId,
+		state,
+		socketValues,
+	} = value;
 	if (
 		typeof id !== "number" ||
 		!Number.isFinite(id) ||
@@ -411,6 +580,7 @@ const parseNode = (value: unknown): SerializableNode | null => {
 		typeof templateId === "string" ? templateId : undefined;
 	const parsedTypeId = typeof typeId === "string" ? typeId : undefined;
 	const parsedState = parseNodeState(state);
+	const parsedSocketValues = parseSocketValues(socketValues);
 
 	const parseVector = (
 		payload: Record<string, unknown>,
@@ -721,6 +891,7 @@ const parseNode = (value: unknown): SerializableNode | null => {
 
 	let resolvedTypeId = parsedTypeId ?? parsedFamilyId;
 	let resolvedState = parsedState;
+	let resolvedSocketValues = parsedSocketValues ?? null;
 
 	if (
 		!resolvedTypeId &&
@@ -739,11 +910,25 @@ const parseNode = (value: unknown): SerializableNode | null => {
 		resolvedState = mapLegacyDataToState(resolvedTypeId, legacyData);
 	}
 
+	if (!resolvedSocketValues && resolvedTypeId && legacyData) {
+		resolvedSocketValues = mapLegacyDataToSocketValues(
+			resolvedTypeId,
+			legacyData,
+		);
+	}
+
 	if (!resolvedState && resolvedTypeId) {
 		resolvedState = getDefaultNodeState(resolvedTypeId);
 	}
 
 	if (resolvedState && resolvedTypeId) {
+		const migrated = migrateSocketValuesFromState(
+			resolvedTypeId,
+			resolvedState,
+			resolvedSocketValues,
+		);
+		resolvedState = migrated.state;
+		resolvedSocketValues = migrated.socketValues;
 		resolvedState =
 			normalizeNodeState(resolvedTypeId, resolvedState) ?? resolvedState;
 	}
@@ -757,6 +942,7 @@ const parseNode = (value: unknown): SerializableNode | null => {
 			(port): port is SerializablePort => port !== null,
 		),
 		...(resolvedState ? { state: resolvedState } : {}),
+		...(resolvedSocketValues ? { socketValues: resolvedSocketValues } : {}),
 		...(resolvedTypeId ? { typeId: resolvedTypeId } : {}),
 	};
 };
@@ -799,7 +985,7 @@ const parseGroup = (value: unknown): SerializableGroup | null => {
 		return null;
 	}
 
-	const { id, title, nodeIds, collapsed, x, y } = value;
+	const { id, title, nodeIds, collapsed, x, y, parentId, color } = value;
 	if (
 		typeof id !== "number" ||
 		!Number.isFinite(id) ||
@@ -814,6 +1000,20 @@ const parseGroup = (value: unknown): SerializableGroup | null => {
 		return null;
 	}
 
+	let resolvedParentId: number | null | undefined;
+	if (typeof parentId === "number" && Number.isFinite(parentId)) {
+		resolvedParentId = parentId;
+	} else if (parentId === null) {
+		resolvedParentId = null;
+	}
+
+	let resolvedColor: number | null | undefined;
+	if (typeof color === "number" && Number.isFinite(color)) {
+		resolvedColor = color;
+	} else if (color === null) {
+		resolvedColor = null;
+	}
+
 	const filteredNodeIds = nodeIds.filter(
 		(nodeId): nodeId is number =>
 			typeof nodeId === "number" && Number.isFinite(nodeId),
@@ -823,9 +1023,11 @@ const parseGroup = (value: unknown): SerializableGroup | null => {
 		id,
 		title,
 		nodeIds: filteredNodeIds,
+		...(resolvedParentId !== undefined ? { parentId: resolvedParentId } : {}),
 		collapsed,
 		x,
 		y,
+		...(resolvedColor !== undefined ? { color: resolvedColor } : {}),
 	};
 };
 
@@ -875,10 +1077,17 @@ export const parseGraphWithReport = (value: unknown): GraphParseReport => {
 	}
 
 	const parsedNodes = nodes.map(parseNode);
-	const invalidNodeCount = parsedNodes.filter((node) => !node).length;
+	const validNodes = parsedNodes.filter(
+		(node): node is SerializableNode => node !== null,
+	);
+	const invalidNodeCount = parsedNodes.length - validNodes.length;
 	if (invalidNodeCount > 0) {
-		errors.push(`Graph contains ${invalidNodeCount} invalid node(s).`);
-		return { snapshot: null, errors };
+		errors.push(
+			`Graph contained ${invalidNodeCount} invalid node(s) that were dropped.`,
+		);
+		if (validNodes.length === 0 && nodes.length > 0) {
+			return { snapshot: null, errors };
+		}
 	}
 
 	const parsedConnections = connections
@@ -895,9 +1104,7 @@ export const parseGraphWithReport = (value: unknown): GraphParseReport => {
 		: [];
 	const snapshot: SerializableGraph = {
 		version: GRAPH_SCHEMA_VERSION,
-		nodes: parsedNodes.filter(
-			(node): node is SerializableNode => node !== null,
-		),
+		nodes: validNodes,
 		connections: parsedConnections,
 	};
 

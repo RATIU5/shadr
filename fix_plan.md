@@ -1,24 +1,20 @@
 # Fix Plan
 
-Last updated: 2026-01-16
+Last updated: 2026-01-17
 Targets reference: `targets.md` (one task at a time)
 
 > Run `.ralph/ralph-plan.sh` to analyze the codebase and update this list.
 
 > Move all completed tasks to the "## Completed" section after they are marked done to keep things clean.
 
-> Keep code simple, don't overengineer. Also keep the UI simple for the user, don't complicate things. Keep the UI concise.
+> Keep code simple, don't overengineer. Also keep the UI simple for the user, don't complicate things. Keep the UI concise. Refactor as needed. Keep files separated, and avoid putting all code into one file.
+
+> Run 'pnpm typecheck' to ensure all types are correct and proper.
 
 ## Critical
 
-- [ ] Double-clicking the container of a group of nodes will toggle the collapse/un-collapsed mode, not when double clicking on the nodes themselves
-- [ ] After un-collapsing a collapsed group, some of the collapsed group UI for the group node remains after the group was un-collapsed. Fix this so the UI doesn't overlap, or be visible at all.
-- [ ] Allow nesting of groups of nodes up to 10 levels max
-- [ ] For modals, remove the opaque backdrop color, keep it fully transparent
-- [ ] For connected connectors/wires, clicking and dragging on a connector point should disconnect the connector/wire, but keep the connection line at the mouse, so when the mouse moves over the same or any other connector point and is let go (dropped), it will connect to that connection point.
-- [ ] Simplify the side panel for selected nodes/connectors. There is duplicated information, and the information displayed (text) is not concise.
-
 ## High Priority
+- [ ] Warn when shader compile time exceeds 100ms and surface the warning in preview/status UI to align with performance target. (Targets: performance, UX feedback)
 
 ## Medium Priority
 
@@ -27,7 +23,57 @@ Targets reference: `targets.md` (one task at a time)
 ## Completed
 
 <!-- Move completed items here with date -->
+- [x] Add explicit compile error state in the preview panel header and disable GLSL export actions while compilation errors exist so failures are unmistakable (Targets: reliability, UX feedback). - 2026-01-17
+- [x] Audit `targets.md` feature target checkboxes against implemented functionality and mark completed items to keep targets in sync. (Targets: feature targets alignment, documentation) - 2026-01-17
+- [x] Allow graph imports to load valid nodes even if some nodes are invalid, and surface warnings instead of failing. (Targets: save/load graph as JSON, UX feedback) - 2026-01-17
 
+- [x] Align math operation ids/ports between `math-ops.ts` and GLSL compilation (e.g., mod-trunc/mod-floor/pingpong/less-than/greater-than/hyperbolic ops) so supported UI operations compile correctly. - 2026-01-17
+
+- [x] Allow vec3 <-> color port compatibility with explicit GLSL conversion (vec3 -> color adds alpha 1.0, color -> vec3 uses rgb) and update connection validation/conversion hints. (Targets: type validation, UX) - 2026-01-17
+
+- [x] Add GLSL compilation tests covering conversion nodes, input node variants (checkbox/text/select), and a representative set of math trig ops to improve GLSL reliability coverage. - 2026-01-17
+
+- [x] Node execution visualization: Add Debug Mode that highlights active execution path in graph (dim non-executing nodes, brighten active path); show data flow animation with particles moving along connections during compilation; display intermediate values on connection hover during debug; implement breakpoint system where execution pauses at marked nodes; add step-through debugging controls (step into node, step over, continue); show execution timing per node to identify bottlenecks. - 2026-01-17
+
+- [x] Connection display options: Add connection style dropdown in settings (Curved Bezier, Straight Lines, Step Lines, Orthogonal) to match user preference; implement connection emphasis mode that only shows connections to/from selected nodes (others dimmed to 20% opacity); support connection bundling where parallel wires between same two nodes are visually combined with number badge; add distance-based LOD where far-away connections render as straight lines for performance; include connection labeling option that shows data type inline on wire. - 2026-01-17
+
+- [x] Compilation and performance indicators: Display compile status in bottom toolbar (Idle, Compiling, Success, Failed states with color coding and icon); show compile time and last compile timestamp; add shader complexity meter (vertex/fragment instruction count, texture sample count) in right sidebar; implement warning badges on nodes that contribute to performance issues (excessive texture samples, complex math); include Optimize Shader button that suggests simplifications; show real-time FPS counter when preview active (if debug view) - 2026-01-17
+
+- [x] Multi-node operations and presets: Add Create Node Group from Selection action that bundles selected nodes into collapsible group with auto-generated input/output sockets; implement template/preset system where common node combinations can be saved and inserted as single action (PBR Setup, Basic Lighting, etc.); support copy/paste across different shader projects with automatic type adaptation; add Replace Node action that swaps node type while preserving compatible connections; include Explode Group action to unpack group back to individual nodes. - 2026-01-17
+
+- [x] Quick duplication and alignment: Implement Alt+Drag to instantly duplicate nodes while dragging (show ghost preview during drag); add right-click context menu options for Align Left, Align Right, Align Top, Align Bottom, Align Horizontal Center, Align Vertical Center when multiple nodes selected; include Distribute Horizontally and Distribute Vertically options; add Straighten Connection option on wire right-click that auto-routes through reroute nodes for cleaner layout - 2026-01-17
+
+- [x] Reroute and annotation nodes: Create lightweight reroute/junction nodes (small dot, no UI, just redirects connection) insertable via Alt+Click on existing wire or from Add menu; implement Frame nodes (colored rectangle backgrounds with title) to group related nodes visually without affecting execution, supporting nested frames and custom colors - 2026-01-17
+
+- [x] Grid and canvas improvements: Reduce grid line opacity to 0.05 for subtle background guidance instead of prominent lines; add adaptive grid that shows finer subdivisions when zoomed in beyond 150%; implement snap-to-grid with visual snap indicators (highlight grid intersections when node nearby); - 2026-01-17
+
+- [x] Connection line improvements: Implement gradient coloring on connection lines that matches socket type colors at each end (fading from output color to input color); add thickness variation where selected connections are 2-3px and unselected are 1px; show animated flow indicators (subtle moving dashes or gradient pulse) during shader compilation or when Preview Mode active; display connection validation feedback with red highlight when hovering incompatible socket types before dropping; add bezier curve smoothing with improved control points for cleaner routing around nodes. - 2026-01-17
+
+- [x] Shader preview panel integration: Create dedicated preview renderer that auto-updates when selected node changes or upstream graph modifies; display preview in right sidebar's preview section with configurable resolution dropdown; implement zoom controls (fit, 100%, 200%) and pan with middle-mouse drag within preview; show checkerboard pattern background for alpha channel visualization; handle error states with "No Preview Available" message when non-renderable node selected or shader compilation fails; add "Preview at Output" toggle to switch between selected node output and final shader result; support exporting preview as PNG; update preview at throttled rate (max 30fps) to avoid performance impact during rapid parameter changes. - 2026-01-17
+
+- [x] Visual hierarchy and consistency: Establish consistent 8px vertical spacing between inline socket controls; implement color-coded socket circles matching Blender conventions (gray=#808080 for float, yellow=#FFEB3B for color, blue=#2196F3 for vector, green=#4CAF50 for shader); show connection state visually with hollow circles when unconnected and filled circles when connected; hide redundant socket labels for obviously-connected sockets to reduce noise; add subtle node header background color variations by category (Math=blue tint, Vector=purple tint, Texture=orange tint, Output=green tint); ensure proper contrast ratios for text on all backgrounds; use consistent border radius (4px for inputs, 6px for nodes, 8px for panels). - 2026-01-17
+
+- [x] Accessibility and input improvements: Ensure all numeric inputs support keyboard entry, click-and-drag to scrub values, and scroll wheel adjustment; implement color pickers with hex input field, RGB sliders, HSV mode, and eyedropper tool; add keyboard navigation to all dropdown menus with type-to-filter; support multi-select with Shift-click for range selection and Ctrl/Cmd-click for individual toggle; implement comprehensive undo/redo for all parameter changes, connections, node creation/deletion, and transforms; add visible keyboard focus indicators with outline styling for all interactive elements; support Tab key navigation between node parameters in selection order. - 2026-01-17
+- [x] Canvas interaction enhancements: Implement double-click on node header to enable inline rename with text input that commits on Enter/blur; add hover tooltips on connected sockets showing upstream computed value and data type; support right-click on socket for quick disconnect action; implement click-outside-to-commit for active inline inputs; add keyboard shortcuts for common actions (Delete selected, Duplicate, Frame selection, Toggle preview mode); enable box selection by click-dragging on empty canvas area; show selection rectangle during drag and select all nodes within bounds on release. - 2026-01-17
+
+- [x] Search-first node creation: Replace current Add Node flow with centered search overlay activated by Add Node button or keyboard hotkey; implement fuzzy matching that filters nodes instantly as user types; search across node names, categories, descriptions, and common aliases; show recently-used nodes at top of results; support arrow key navigation through filtered results and Enter to create selected node at mouse position or canvas center; include category labels in search results; dismiss overlay on Escape or click-outside. - 2026-01-17
+
+- [x] Floating selection toolbar: Implement context-sensitive floating toolbar that appears centered above selected node(s) bounding box; show quick actions including Change Color Tag, Copy, Create Group, Delete, Bypass Node, and Convert to Group; display different action sets based on selection count (single node vs multiple nodes); auto-hide toolbar when selection cleared or user clicks elsewhere; position toolbar with offset to avoid obscuring selected nodes; ensure toolbar follows selection if dragged. - 2026-01-17
+
+- [x] Left sidebar creation: Add new collapsible left sidebar with two main sections—top Shader Library section showing saved shaders in expandable folder tree with thumbnails; bottom Node Palette section showing categorized node types (Math, Vector, Color, Texture, Output, etc.) with category expansion, search filter input, and drag-to-canvas functionality for quick node insertion; enable dragging nodes from palette directly onto canvas at drop position; include recently-used nodes section at top of palette; support keyboard navigation and type-to-filter in both library and palette. - 2026-01-17
+
+- [x] Bottom toolbar consolidation: Reorganized bottom toolbar into three horizontal zones with Add Node + search field on the left, Edit/Preview/Debug mode toggles in the center, and Compile/Export/Settings actions plus consolidated dropdown menus on the right; added compile + mode shortcuts to speed workflows. - 2026-01-17
+
+- [x] Right sidebar reorganization: Transform sidebar from parameter editor to contextual metadata panel; display selected node name, type, and category in compact header at top; add integrated shader preview panel with live render output, resolution controls (128/256/512/1024), zoom/pan, and checkerboard alpha background; include collapsible Advanced Options section for output clamping, precision mode, custom node labels, and color tags; add Output Information section showing socket data types, connection count, and current computed preview values; never duplicate inline node controls in this sidebar, only show metadata and advanced settings. - 2026-01-17
+- [x] Drag-to-reconnect connectors: Allow grabbing an existing wire endpoint to "pull" it off its socket, immediately detach, keep the wire following the cursor, and on drop either connect to a valid compatible socket (with type conversion if allowed) or cancel/restore if dropped on empty space; this should feel identical to creating a new connection from that endpoint. - 2026-01-17
+
+- [x] Modal backdrop transparency: Remove the dark overlay entirely; keep click-outside to dismiss, but ensure background remains visible and interaction behind the modal is blocked using a transparent blocker layer rather than dimming. - 2026-01-17
+
+- [x] Nested groups up to 10 levels: Support recursive group membership with a hard depth cap; enforce in group creation and drag-drop (block nesting beyond 10 with a clear UI message), and ensure selection/move/drag operations respect group ancestry (dragging a parent moves descendants, collapsing parent hides all descendants). - 2026-01-17
+- [x] Collapse/uncollapse UI cleanup: On expand, fully tear down collapsed-mode visuals (collapsed proxy node, compact labels, placeholder ports) before restoring child node render; ensure reflow happens once to avoid overlapping frames and stale hit areas. - 2026-01-16
+- [x] Double-click behavior: Bind double-click only on the group container background (its hit area), ignore double-clicks that originate on node headers/ports/controls; add a small padding hit zone so double-clicking empty space inside the group is reliable and doesn't conflict with node interactions. - 2026-01-16
+- [x] Update the rendering and interaction flow so input sockets display inline controls when unconnected but hide them when connected, mirroring Blender's socket-as-parameter UX; implement a DOM-overlay input system for socket editing (spawn `<input>`/`<select>` at socket screen position on interaction, sync to socket value, destroy on blur/submit, render static value text in Pixi when not editing), keep a single active editor at a time, and ensure pointer-event handling and IME/mobile compatibility. Refactor connectors to use socket-driven types and conversion hints, redraw ports automatically when a node's socket layout changes, and update selection/inspector panels to reflect socket-level values and state, prioritizing a clean, low-friction editing experience with consistent affordances (clear labels, value previews, minimal clicks). - 2026-01-16
+- [x] Replace the current split between NodeState.params and ports with a socket-as-parameter model that makes each input socket the single source of truth for its value when unconnected; introduce a NodeSocket type (id, label, direction, dataType, value, uiSpec, isConnected, defaultValue, visibilityRules, conversionRules) and store socketValues per node (or inline in sockets) while keeping nodeState only for operational mode knobs (e.g., Math operation, vector mode) that drive socket layout and type inference. Provide a declarative buildSockets(state) builder for every node definition that returns the full socket list (including conditional visibility and dynamic type changes), and update serialization to persist {nodeState, socketValues} so sockets are rebuilt on load and values re-applied; add a typed conversion map so compatible sockets auto-convert on connect, and enforce type coloring/labels based on PortType. - 2026-01-16
 - [x] From the active element (node or connector) side panel, extract the details of node (id, family, from, to, type) and condense the dynamic information to be in a bottom floating text in the dom in a status bar. The status bar will display this info on hover/active elements. Make sure this component is in a separate file. The active element side panel should no longer have this information at the end. - 2026-01-16
 - [x] Hide the inspector panel, it's not important or needed now. - 2026-01-16
 - [x] Refactor the node definition system so templates become rich, per-node schemas (not just family stubs) that describe ports, parameters, UI widgets, defaults, validation, and behavior: introduce a NodeDefinition registry keyed by node type with typed parameter

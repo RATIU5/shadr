@@ -38,7 +38,7 @@ describe("graph serialization", () => {
 		expect(parsed?.camera?.scale).toBe(1.5);
 		expect(parsed?.nodes.length).toBe(1);
 		expect(parsed?.nodes[0]?.typeId).toBe("constants");
-		expect(parsed?.nodes[0]?.state?.params.floatValue).toBe(0.75);
+		expect(parsed?.nodes[0]?.socketValues?.out).toBe(0.75);
 	});
 
 	it("drops invalid node data payloads instead of failing", () => {
@@ -109,6 +109,52 @@ describe("graph serialization", () => {
 		expect(parsed?.groups?.length).toBe(1);
 		expect(parsed?.groups?.[0]?.nodeIds).toEqual([7]);
 		expect(parsed?.groups?.[0]?.collapsed).toBe(true);
+	});
+
+	it("preserves group parent ids when provided", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 7,
+					title: "Constant Float",
+					x: 0,
+					y: 0,
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "float",
+							direction: "output",
+						},
+					],
+				},
+			],
+			connections: [],
+			groups: [
+				{
+					id: 1,
+					title: "Parent",
+					nodeIds: [7],
+					collapsed: false,
+					x: 0,
+					y: 0,
+				},
+				{
+					id: 2,
+					title: "Child",
+					nodeIds: [],
+					parentId: 1,
+					collapsed: true,
+					x: 10,
+					y: 10,
+				},
+			],
+		};
+
+		const parsed = parseGraph(snapshot);
+
+		expect(parsed?.groups?.[1]?.parentId).toBe(1);
 	});
 
 	it("keeps dropdown component data for vector component nodes", () => {
@@ -238,7 +284,7 @@ describe("graph serialization", () => {
 		expect(parsed).not.toBeNull();
 		expect(parsed?.nodes[0]?.typeId).toBe("constants");
 		expect(parsed?.nodes[0]?.state?.params.type).toBe("float");
-		expect(parsed?.nodes[0]?.state?.params.floatValue).toBe(0.5);
+		expect(parsed?.nodes[0]?.socketValues?.out).toBe(0.5);
 		expect(parsed?.nodes[1]?.typeId).toBe("math");
 		expect(parsed?.nodes[1]?.state?.params.type).toBe("vec3");
 	});
@@ -335,5 +381,42 @@ describe("graph serialization", () => {
 
 		expect(result.snapshot).toBeNull();
 		expect(result.errors[0]).toContain("newer");
+	});
+
+	it("loads graphs with invalid nodes while reporting warnings", () => {
+		const snapshot = {
+			version: GRAPH_SCHEMA_VERSION,
+			nodes: [
+				{
+					id: 1,
+					title: "Constant Float",
+					x: 0,
+					y: 0,
+					ports: [
+						{
+							id: "out",
+							name: "Out",
+							type: "float",
+							direction: "output",
+						},
+					],
+				},
+				{
+					id: "bad-node",
+					title: "Broken",
+					x: 1,
+					y: 1,
+					ports: [],
+				},
+			],
+			connections: [],
+		};
+
+		const result = parseGraphWithReport(snapshot);
+
+		expect(result.snapshot).not.toBeNull();
+		expect(result.snapshot?.nodes.length).toBe(1);
+		expect(result.errors.length).toBe(1);
+		expect(result.errors[0]).toContain("invalid node");
 	});
 });

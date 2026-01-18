@@ -5,6 +5,7 @@ import type {
 	Connection,
 	NodeParamValue,
 	NodePort,
+	NodeSocketValue,
 	NodeView,
 	PortDirection,
 	PortType,
@@ -49,11 +50,12 @@ const createNode = (
 
 const applyLegacyData = (node: NodeView, data: Record<string, unknown>) => {
 	const params: Record<string, NodeParamValue> = {};
+	const socketValues: Record<string, NodeSocketValue> = {};
 
 	if (typeof data.constType === "string") {
 		params.type = data.constType;
 		if (typeof data.value === "number" && Number.isFinite(data.value)) {
-			params.floatValue = data.value;
+			socketValues.out = data.value;
 		}
 		const vector = data.vector;
 		if (vector && typeof vector === "object") {
@@ -62,7 +64,7 @@ const applyLegacyData = (node: NodeView, data: Record<string, unknown>) => {
 			const y = typeof record.y === "number" ? record.y : 0;
 			const z = typeof record.z === "number" ? record.z : undefined;
 			const w = typeof record.w === "number" ? record.w : undefined;
-			params.vectorValue = {
+			socketValues.out = {
 				x,
 				y,
 				...(z !== undefined ? { z } : {}),
@@ -78,7 +80,7 @@ const applyLegacyData = (node: NodeView, data: Record<string, unknown>) => {
 				typeof record.b === "number" &&
 				typeof record.a === "number"
 			) {
-				params.colorValue = {
+				socketValues.out = {
 					r: record.r,
 					g: record.g,
 					b: record.b,
@@ -91,13 +93,13 @@ const applyLegacyData = (node: NodeView, data: Record<string, unknown>) => {
 	if (typeof data.inputType === "string") {
 		params.type = data.inputType;
 		if (typeof data.inputValue === "number") {
-			params.numberValue = data.inputValue;
+			socketValues.out = data.inputValue;
 		}
 		if (typeof data.inputChecked === "boolean") {
-			params.checked = data.inputChecked;
+			socketValues.out = data.inputChecked;
 		}
 		if (typeof data.inputText === "string") {
-			params.textValue = data.inputText;
+			socketValues.out = data.inputText;
 		}
 		const color = data.inputColor;
 		if (color && typeof color === "object") {
@@ -108,7 +110,7 @@ const applyLegacyData = (node: NodeView, data: Record<string, unknown>) => {
 				typeof record.b === "number" &&
 				typeof record.a === "number"
 			) {
-				params.colorValue = {
+				socketValues.out = {
 					r: record.r,
 					g: record.g,
 					b: record.b,
@@ -126,9 +128,9 @@ const applyLegacyData = (node: NodeView, data: Record<string, unknown>) => {
 					typeof data.inputSelection === "string" &&
 					options.includes(data.inputSelection)
 				) {
-					params.selection = data.inputSelection;
+					socketValues.out = data.inputSelection;
 				} else {
-					params.selection = options[0];
+					socketValues.out = options[0];
 				}
 			}
 		}
@@ -171,6 +173,9 @@ const applyLegacyData = (node: NodeView, data: Record<string, unknown>) => {
 		version: 1,
 		params,
 	};
+	if (Object.keys(socketValues).length > 0) {
+		node.socketValues = socketValues;
+	}
 };
 
 const createConnection = (
@@ -1400,6 +1405,466 @@ describe("shader compilation", () => {
 		expect(result.messages).toHaveLength(0);
 		expect(result.fragmentSource).toContain("mix(");
 		expect(result.fragmentSource).toContain("clamp(");
+	});
+
+	it("compiles conversion nodes for scalar and vector types", () => {
+		const floatNode = createNode(100, "Constant Float", "constants", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(floatNode, { constType: "float", value: 2.9 });
+
+		const floatToIntNode = createNode(101, "Float to Int", "conversion", [
+			createPort("in", "In", "float", "input"),
+			createPort("out", "Out", "int", "output"),
+		]);
+		applyLegacyData(floatToIntNode, { conversionOp: "float-to-int" });
+
+		const intToFloatNode = createNode(102, "Int to Float", "conversion", [
+			createPort("in", "In", "int", "input"),
+			createPort("out", "Out", "float", "output"),
+		]);
+		applyLegacyData(intToFloatNode, { conversionOp: "int-to-float" });
+
+		const vec2Node = createNode(103, "Constant Vec2", "constants", [
+			createPort("out", "Value", "vec2", "output"),
+		]);
+		applyLegacyData(vec2Node, {
+			constType: "vec2",
+			vector: { x: 0.2, y: 0.4 },
+		});
+
+		const zNode = createNode(104, "Constant Float", "constants", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(zNode, { constType: "float", value: 0.6 });
+
+		const vec2ToVec3Node = createNode(105, "Vec2 to Vec3", "conversion", [
+			createPort("in", "In", "vec2", "input"),
+			createPort("z", "Z", "float", "input"),
+			createPort("out", "Out", "vec3", "output"),
+		]);
+		applyLegacyData(vec2ToVec3Node, { conversionOp: "vec2-to-vec3" });
+
+		const vec3ToVec2Node = createNode(106, "Vec3 to Vec2", "conversion", [
+			createPort("in", "In", "vec3", "input"),
+			createPort("out", "Out", "vec2", "output"),
+		]);
+		applyLegacyData(vec3ToVec2Node, { conversionOp: "vec3-to-vec2" });
+
+		const z2Node = createNode(107, "Constant Float", "constants", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(z2Node, { constType: "float", value: 0.7 });
+
+		const vec2ToVec3NodeB = createNode(108, "Vec2 to Vec3", "conversion", [
+			createPort("in", "In", "vec2", "input"),
+			createPort("z", "Z", "float", "input"),
+			createPort("out", "Out", "vec3", "output"),
+		]);
+		applyLegacyData(vec2ToVec3NodeB, { conversionOp: "vec2-to-vec3" });
+
+		const wNode = createNode(109, "Constant Float", "constants", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(wNode, { constType: "float", value: 0.8 });
+
+		const vec3ToVec4Node = createNode(110, "Vec3 to Vec4", "conversion", [
+			createPort("in", "In", "vec3", "input"),
+			createPort("w", "W", "float", "input"),
+			createPort("out", "Out", "vec4", "output"),
+		]);
+		applyLegacyData(vec3ToVec4Node, { conversionOp: "vec3-to-vec4" });
+
+		const fragmentNode = createNode(111, "Fragment Output", "output", [
+			createPort("color", "Color", "vec4", "input"),
+		]);
+		applyLegacyData(fragmentNode, { outputType: "fragment" });
+
+		const nodes = new Map<number, NodeView>([
+			[floatNode.id, floatNode],
+			[floatToIntNode.id, floatToIntNode],
+			[intToFloatNode.id, intToFloatNode],
+			[vec2Node.id, vec2Node],
+			[zNode.id, zNode],
+			[vec2ToVec3Node.id, vec2ToVec3Node],
+			[vec3ToVec2Node.id, vec3ToVec2Node],
+			[z2Node.id, z2Node],
+			[vec2ToVec3NodeB.id, vec2ToVec3NodeB],
+			[wNode.id, wNode],
+			[vec3ToVec4Node.id, vec3ToVec4Node],
+			[fragmentNode.id, fragmentNode],
+		]);
+		const connections = new Map<string, Connection>([
+			[
+				"100-101",
+				createConnection(
+					"100-101",
+					floatNode.id,
+					"out",
+					floatToIntNode.id,
+					"in",
+					"float",
+				),
+			],
+			[
+				"101-102",
+				createConnection(
+					"101-102",
+					floatToIntNode.id,
+					"out",
+					intToFloatNode.id,
+					"in",
+					"int",
+				),
+			],
+			[
+				"103-105",
+				createConnection(
+					"103-105",
+					vec2Node.id,
+					"out",
+					vec2ToVec3Node.id,
+					"in",
+					"vec2",
+				),
+			],
+			[
+				"104-105",
+				createConnection(
+					"104-105",
+					zNode.id,
+					"out",
+					vec2ToVec3Node.id,
+					"z",
+					"float",
+				),
+			],
+			[
+				"105-106",
+				createConnection(
+					"105-106",
+					vec2ToVec3Node.id,
+					"out",
+					vec3ToVec2Node.id,
+					"in",
+					"vec3",
+				),
+			],
+			[
+				"106-108",
+				createConnection(
+					"106-108",
+					vec3ToVec2Node.id,
+					"out",
+					vec2ToVec3NodeB.id,
+					"in",
+					"vec2",
+				),
+			],
+			[
+				"107-108",
+				createConnection(
+					"107-108",
+					z2Node.id,
+					"out",
+					vec2ToVec3NodeB.id,
+					"z",
+					"float",
+				),
+			],
+			[
+				"108-110",
+				createConnection(
+					"108-110",
+					vec2ToVec3NodeB.id,
+					"out",
+					vec3ToVec4Node.id,
+					"in",
+					"vec3",
+				),
+			],
+			[
+				"109-110",
+				createConnection(
+					"109-110",
+					wNode.id,
+					"out",
+					vec3ToVec4Node.id,
+					"w",
+					"float",
+				),
+			],
+			[
+				"110-111",
+				createConnection(
+					"110-111",
+					vec3ToVec4Node.id,
+					"out",
+					fragmentNode.id,
+					"color",
+					"vec4",
+				),
+			],
+		]);
+
+		const result = compileGraphToGlsl(nodes, connections);
+
+		expect(result.messages).toHaveLength(0);
+		expect(result.fragmentSource).toContain("int(n100_out)");
+		expect(result.fragmentSource).toContain("float(n101_out)");
+		expect(result.fragmentSource).toContain("vec3(n103_out, n104_out)");
+		expect(result.fragmentSource).toContain("(n105_out).xy");
+		expect(result.fragmentSource).toContain("vec3(n106_out, n107_out)");
+		expect(result.fragmentSource).toContain("vec4(n108_out, n109_out)");
+	});
+
+	it("compiles checkbox, text, and select input nodes", () => {
+		const checkboxNode = createNode(120, "Input Checkbox", "inputs", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(checkboxNode, {
+			inputType: "checkbox",
+			inputChecked: true,
+		});
+
+		const textNode = createNode(121, "Input Text", "inputs", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(textNode, { inputType: "text", inputText: "2.5" });
+
+		const selectNode = createNode(122, "Input Select", "inputs", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(selectNode, {
+			inputType: "select",
+			inputOptions: ["10", "20"],
+			inputSelection: "20",
+		});
+
+		const fallbackNode = createNode(123, "Constant Float", "constants", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(fallbackNode, { constType: "float", value: 0.7 });
+
+		const composeNode = createNode(124, "Compose", "vector", [
+			createPort("x", "X", "float", "input"),
+			createPort("y", "Y", "float", "input"),
+			createPort("z", "Z", "float", "input"),
+			createPort("w", "W", "float", "input"),
+			createPort("out", "Out", "vec4", "output"),
+		]);
+		applyLegacyData(composeNode, { vectorOp: "compose", vectorType: "vec4" });
+
+		const fragmentNode = createNode(125, "Fragment Output", "output", [
+			createPort("color", "Color", "vec4", "input"),
+		]);
+		applyLegacyData(fragmentNode, { outputType: "fragment" });
+
+		const nodes = new Map<number, NodeView>([
+			[checkboxNode.id, checkboxNode],
+			[textNode.id, textNode],
+			[selectNode.id, selectNode],
+			[fallbackNode.id, fallbackNode],
+			[composeNode.id, composeNode],
+			[fragmentNode.id, fragmentNode],
+		]);
+		const connections = new Map<string, Connection>([
+			[
+				"120-124-x",
+				createConnection(
+					"120-124-x",
+					checkboxNode.id,
+					"out",
+					composeNode.id,
+					"x",
+					"float",
+				),
+			],
+			[
+				"121-124-y",
+				createConnection(
+					"121-124-y",
+					textNode.id,
+					"out",
+					composeNode.id,
+					"y",
+					"float",
+				),
+			],
+			[
+				"122-124-z",
+				createConnection(
+					"122-124-z",
+					selectNode.id,
+					"out",
+					composeNode.id,
+					"z",
+					"float",
+				),
+			],
+			[
+				"123-124-w",
+				createConnection(
+					"123-124-w",
+					fallbackNode.id,
+					"out",
+					composeNode.id,
+					"w",
+					"float",
+				),
+			],
+			[
+				"124-125",
+				createConnection(
+					"124-125",
+					composeNode.id,
+					"out",
+					fragmentNode.id,
+					"color",
+					"vec4",
+				),
+			],
+		]);
+
+		const result = compileGraphToGlsl(nodes, connections);
+
+		expect(result.messages).toHaveLength(0);
+		expect(result.fragmentSource).toContain("float n120_out = 1.0;");
+		expect(result.fragmentSource).toContain("float n121_out = 2.5;");
+		expect(result.fragmentSource).toContain("float n122_out = 20.0;");
+		expect(result.fragmentSource).toContain("vec4 n124_out = vec4(");
+	});
+
+	it("compiles sine and cosine math operations", () => {
+		const floatA = createNode(130, "Constant Float", "constants", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(floatA, { constType: "float", value: 0.5 });
+
+		const floatB = createNode(131, "Constant Float", "constants", [
+			createPort("out", "Value", "float", "output"),
+		]);
+		applyLegacyData(floatB, { constType: "float", value: 0.25 });
+
+		const sineNode = createNode(132, "Sine", "math", [
+			createPort("in", "In", "float", "input"),
+			createPort("out", "Out", "float", "output"),
+		]);
+		applyLegacyData(sineNode, { mathOp: "sine", mathType: "float" });
+
+		const cosineNode = createNode(133, "Cosine", "math", [
+			createPort("in", "In", "float", "input"),
+			createPort("out", "Out", "float", "output"),
+		]);
+		applyLegacyData(cosineNode, { mathOp: "cosine", mathType: "float" });
+
+		const composeNode = createNode(134, "Compose", "vector", [
+			createPort("x", "X", "float", "input"),
+			createPort("y", "Y", "float", "input"),
+			createPort("z", "Z", "float", "input"),
+			createPort("w", "W", "float", "input"),
+			createPort("out", "Out", "vec4", "output"),
+		]);
+		applyLegacyData(composeNode, { vectorOp: "compose", vectorType: "vec4" });
+
+		const fragmentNode = createNode(135, "Fragment Output", "output", [
+			createPort("color", "Color", "vec4", "input"),
+		]);
+		applyLegacyData(fragmentNode, { outputType: "fragment" });
+
+		const nodes = new Map<number, NodeView>([
+			[floatA.id, floatA],
+			[floatB.id, floatB],
+			[sineNode.id, sineNode],
+			[cosineNode.id, cosineNode],
+			[composeNode.id, composeNode],
+			[fragmentNode.id, fragmentNode],
+		]);
+		const connections = new Map<string, Connection>([
+			[
+				"130-132",
+				createConnection(
+					"130-132",
+					floatA.id,
+					"out",
+					sineNode.id,
+					"in",
+					"float",
+				),
+			],
+			[
+				"131-133",
+				createConnection(
+					"131-133",
+					floatB.id,
+					"out",
+					cosineNode.id,
+					"in",
+					"float",
+				),
+			],
+			[
+				"132-134-x",
+				createConnection(
+					"132-134-x",
+					sineNode.id,
+					"out",
+					composeNode.id,
+					"x",
+					"float",
+				),
+			],
+			[
+				"133-134-y",
+				createConnection(
+					"133-134-y",
+					cosineNode.id,
+					"out",
+					composeNode.id,
+					"y",
+					"float",
+				),
+			],
+			[
+				"130-134-z",
+				createConnection(
+					"130-134-z",
+					floatA.id,
+					"out",
+					composeNode.id,
+					"z",
+					"float",
+				),
+			],
+			[
+				"131-134-w",
+				createConnection(
+					"131-134-w",
+					floatB.id,
+					"out",
+					composeNode.id,
+					"w",
+					"float",
+				),
+			],
+			[
+				"134-135",
+				createConnection(
+					"134-135",
+					composeNode.id,
+					"out",
+					fragmentNode.id,
+					"color",
+					"vec4",
+				),
+			],
+		]);
+
+		const result = compileGraphToGlsl(nodes, connections);
+
+		expect(result.messages).toHaveLength(0);
+		expect(result.fragmentSource).toContain("sin(");
+		expect(result.fragmentSource).toContain("cos(");
 	});
 
 	it("errors when shader graph has a cycle", () => {

@@ -8,6 +8,9 @@ import {
 import type {
 	NodeDefinition,
 	NodeParamSpec,
+	NodeSocket,
+	NodeSocketUiSpec,
+	NodeSocketValue,
 	NodeState,
 	PortType,
 	SerializablePort,
@@ -22,6 +25,15 @@ const defaultInputColor = { r: 1, g: 1, b: 1, a: 1 };
 const defaultInputOptions = ["Option A", "Option B", "Option C"];
 
 const mathTypes: MathNodeType[] = ["float", "vec2", "vec3", "vec4"];
+const rerouteTypes: PortType[] = [
+	"float",
+	"int",
+	"vec2",
+	"vec3",
+	"vec4",
+	"color",
+	"texture",
+];
 
 const formatTypeLabel = (type: string) =>
 	type === "float"
@@ -52,75 +64,111 @@ const formatDisplayColor = (color: { r: number; g: number; b: number }) => {
 	return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}`;
 };
 
-const isVector = (
-	value: unknown,
-): value is { x: number; y: number; z?: number; w?: number } => {
-	if (!value || typeof value !== "object") {
-		return false;
+const getDefaultSocketValue = (type: PortType): NodeSocketValue => {
+	switch (type) {
+		case "float":
+		case "int":
+			return 0;
+		case "vec2":
+			return { x: 0, y: 0 };
+		case "vec3":
+			return { x: 0, y: 0, z: 0 };
+		case "vec4":
+			return { x: 0, y: 0, z: 0, w: 0 };
+		case "color":
+			return { r: 1, g: 1, b: 1, a: 1 };
+		case "texture":
+			return "u_texture";
 	}
-	const record = value as Record<string, unknown>;
-	return (
-		typeof record.x === "number" &&
-		typeof record.y === "number" &&
-		(record.z === undefined || typeof record.z === "number") &&
-		(record.w === undefined || typeof record.w === "number")
-	);
 };
 
-const isColor = (
-	value: unknown,
-): value is { r: number; g: number; b: number; a: number } => {
-	if (!value || typeof value !== "object") {
-		return false;
+const getInputSocketUiSpec = (
+	port: SerializablePort,
+): NodeSocketUiSpec | undefined => {
+	if (port.direction !== "input") {
+		return undefined;
 	}
-	const record = value as Record<string, unknown>;
-	return (
-		typeof record.r === "number" &&
-		typeof record.g === "number" &&
-		typeof record.b === "number" &&
-		typeof record.a === "number"
-	);
+	switch (port.type) {
+		case "float":
+			return {
+				kind: "float",
+				label: port.name,
+				tab: "Details",
+				section: "Inputs",
+			};
+		case "int":
+			return {
+				kind: "int",
+				label: port.name,
+				tab: "Details",
+				section: "Inputs",
+			};
+		case "vec2":
+			return {
+				kind: "vec2",
+				label: port.name,
+				tab: "Details",
+				section: "Inputs",
+			};
+		case "vec3":
+			return {
+				kind: "vec3",
+				label: port.name,
+				tab: "Details",
+				section: "Inputs",
+			};
+		case "vec4":
+			return {
+				kind: "vec4",
+				label: port.name,
+				tab: "Details",
+				section: "Inputs",
+			};
+		case "color":
+			return {
+				kind: "color",
+				label: port.name,
+				tab: "Details",
+				section: "Inputs",
+			};
+		case "texture":
+			return undefined;
+	}
 };
+
+const buildSocket = (
+	port: SerializablePort,
+	overrides: Partial<NodeSocket> = {},
+): NodeSocket => {
+	const uiSpec = overrides.uiSpec ?? getInputSocketUiSpec(port);
+	return {
+		id: port.id,
+		label: port.name,
+		direction: port.direction,
+		dataType: port.type,
+		defaultValue: getDefaultSocketValue(port.type),
+		...(uiSpec ? { uiSpec } : {}),
+		...overrides,
+	};
+};
+
+const buildSocketsFromPorts = (
+	ports: SerializablePort[],
+	overrides: Record<string, Partial<NodeSocket>> = {},
+): NodeSocket[] => ports.map((port) => buildSocket(port, overrides[port.id]));
 
 const getStringParam = (state: NodeState, id: string, fallback: string) => {
 	const value = state.params[id];
 	return typeof value === "string" ? value : fallback;
 };
 
-const getNumberParam = (state: NodeState, id: string, fallback: number) => {
-	const value = state.params[id];
-	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-};
-
-const getBooleanParam = (state: NodeState, id: string, fallback: boolean) => {
-	const value = state.params[id];
-	return typeof value === "boolean" ? value : fallback;
-};
-
-const getVectorParam = (
-	state: NodeState,
+const getSocketValue = <T extends NodeSocketValue>(
+	socketValues: Record<string, NodeSocketValue> | undefined,
 	id: string,
-	fallback: { x: number; y: number; z?: number; w?: number },
+	fallback: T,
 ) => {
-	const value = state.params[id];
-	if (isVector(value)) {
-		return {
-			x: value.x,
-			y: value.y,
-			z: value.z ?? fallback.z,
-			w: value.w ?? fallback.w,
-		};
-	}
-	return fallback;
-};
-
-const getColorParam = (
-	state: NodeState,
-	id: string,
-	fallback: { r: number; g: number; b: number; a: number },
-) => {
-	const value = state.params[id];
-	return isColor(value) ? value : fallback;
+	const value = socketValues?.[id];
+	return (value !== undefined ? value : fallback) as T;
 };
 
 type OperationDefinition = {
@@ -577,13 +625,13 @@ const buildMathDefinition = (): NodeDefinition => {
 		tags: ["math", "numeric", "operation"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const op = getMathOperationId(getStringParam(state, "operation", "add"));
 			const type = getStringParam(state, "type", "float");
 			const mathType = mathTypes.includes(type as MathNodeType)
 				? (type as MathNodeType)
 				: "float";
-			return buildMathPorts(mathType, op);
+			return buildSocketsFromPorts(buildMathPorts(mathType, op));
 		},
 		getBodyLabel: (state) => {
 			const op = getMathOperationId(getStringParam(state, "operation", "add"));
@@ -641,7 +689,7 @@ const buildVectorDefinition = (): NodeDefinition => {
 		tags: ["vector", "compose", "split", "normalize", "dot", "cross"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const operation = getVectorOperation(
 				getStringParam(state, "operation", "compose"),
 			);
@@ -649,7 +697,7 @@ const buildVectorDefinition = (): NodeDefinition => {
 				operation,
 				getStringParam(state, "type", "vec2"),
 			);
-			return operation.buildPorts(type);
+			return buildSocketsFromPorts(operation.buildPorts(type));
 		},
 		getBodyLabel: (state) => {
 			const operation = getVectorOperation(
@@ -685,8 +733,13 @@ const buildColorDefinition = (): NodeDefinition => {
 		tags: ["color", "mix", "multiply"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) =>
-			buildColorPorts(getStringParam(state, "operation", "mix")),
+		buildSockets: (state) =>
+			buildSocketsFromPorts(
+				buildColorPorts(getStringParam(state, "operation", "mix")),
+				{
+					gamma: { defaultValue: 1 },
+				},
+			),
 		getBodyLabel: (state) => {
 			const op = colorOperations.find(
 				(entry) => entry.id === getStringParam(state, "operation", "mix"),
@@ -717,12 +770,14 @@ const buildConversionDefinition = (): NodeDefinition => {
 		tags: ["convert", "cast"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const op = conversionOperations.find(
 				(entry) =>
 					entry.id === getStringParam(state, "operation", "float-to-int"),
 			);
-			return op?.ports ?? conversionOperations[0]?.ports ?? [];
+			return buildSocketsFromPorts(
+				op?.ports ?? conversionOperations[0]?.ports ?? [],
+			);
 		},
 		getBodyLabel: (state) => {
 			const op = conversionOperations.find(
@@ -755,11 +810,13 @@ const buildLogicDefinition = (): NodeDefinition => {
 		tags: ["logic", "and", "or", "select"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const op = logicOperations.find(
 				(entry) => entry.id === getStringParam(state, "operation", "and"),
 			);
-			return op?.ports ?? logicOperations[0]?.ports ?? [];
+			return buildSocketsFromPorts(
+				op?.ports ?? logicOperations[0]?.ports ?? [],
+			);
 		},
 		getBodyLabel: (state) => {
 			const op = logicOperations.find(
@@ -791,11 +848,27 @@ const buildTextureDefinition = (): NodeDefinition => {
 		tags: ["texture", "uv", "sample"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const op = textureOperations.find(
 				(entry) => entry.id === getStringParam(state, "operation", "uv-input"),
 			);
-			return op?.ports ?? textureOperations[0]?.ports ?? [];
+			const sockets = buildSocketsFromPorts(
+				op?.ports ?? textureOperations[0]?.ports ?? [],
+				{
+					scale: { defaultValue: { x: 1, y: 1 } },
+					center: { defaultValue: { x: 0.5, y: 0.5 } },
+					uv: { defaultValue: "v_uv" },
+				},
+			);
+			const textureOp = getStringParam(state, "operation", "uv-input");
+			if (textureOp !== "texture-sample") {
+				return sockets.map((socket) =>
+					socket.id === "uv"
+						? { ...socket, defaultValue: { x: 0, y: 0 } }
+						: socket,
+				);
+			}
+			return sockets;
 		},
 		getBodyLabel: (state) => {
 			const op = textureOperations.find(
@@ -827,11 +900,13 @@ const buildOutputDefinition = (): NodeDefinition => {
 		tags: ["output", "fragment", "vertex"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const op = outputOperations.find(
 				(entry) => entry.id === getStringParam(state, "stage", "fragment"),
 			);
-			return op?.ports ?? outputOperations[0]?.ports ?? [];
+			return buildSocketsFromPorts(
+				op?.ports ?? outputOperations[0]?.ports ?? [],
+			);
 		},
 		getBodyLabel: (state) => {
 			const op = outputOperations.find(
@@ -858,34 +933,6 @@ const buildConstantsDefinition = (): NodeDefinition => {
 			],
 			ui: { tab: "Details", section: "Type", order: 1, inline: true },
 		},
-		{
-			id: "floatValue",
-			kind: "float",
-			label: "Value",
-			defaultValue: 0,
-			step: 0.01,
-			isVisible: (state) => getStringParam(state, "type", "float") === "float",
-			ui: { tab: "Details", section: "Value", order: 2 },
-		},
-		{
-			id: "vectorValue",
-			kind: "vec4",
-			label: "Vector",
-			defaultValue: defaultVector,
-			isVisible: (state) => {
-				const type = getStringParam(state, "type", "float");
-				return type === "vec2" || type === "vec3" || type === "vec4";
-			},
-			ui: { tab: "Details", section: "Value", order: 3 },
-		},
-		{
-			id: "colorValue",
-			kind: "color",
-			label: "Color",
-			defaultValue: defaultConstColor,
-			isVisible: (state) => getStringParam(state, "type", "float") === "color",
-			ui: { tab: "Details", section: "Value", order: 4 },
-		},
 	];
 	return {
 		id: "constants",
@@ -894,31 +941,54 @@ const buildConstantsDefinition = (): NodeDefinition => {
 		tags: ["constant", "float", "vector", "color"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const constType = getStringParam(state, "type", "float");
 			const outputType: PortType =
 				constType === "color" ? "color" : (constType as PortType);
+			const defaultValue =
+				constType === "color"
+					? defaultConstColor
+					: constType === "vec2"
+						? { x: defaultVector.x, y: defaultVector.y }
+						: constType === "vec3"
+							? { x: defaultVector.x, y: defaultVector.y, z: defaultVector.z }
+							: constType === "vec4"
+								? defaultVector
+								: 0;
+			const uiSpec: NodeSocketUiSpec = {
+				kind:
+					constType === "color"
+						? "color"
+						: (constType as NodeSocketUiSpec["kind"]),
+				label: constType === "color" ? "Color" : "Value",
+				tab: "Details",
+				section: "Value",
+				order: 1,
+			};
 			return [
-				{
-					id: "out",
-					name: constType === "color" ? "Color" : "Value",
-					type: outputType,
-					direction: "output",
-				},
+				buildSocket(
+					{
+						id: "out",
+						name: constType === "color" ? "Color" : "Value",
+						type: outputType,
+						direction: "output",
+					},
+					{ defaultValue, uiSpec },
+				),
 			];
 		},
-		getFooterLabel: (state) => {
+		getFooterLabel: (state, socketValues) => {
 			const constType = getStringParam(state, "type", "float");
 			if (constType === "float") {
-				const value = getNumberParam(state, "floatValue", 0);
+				const value = getSocketValue(socketValues, "out", 0);
 				return `Value: ${formatDisplayFloat(value)}`;
 			}
 			if (constType === "color") {
-				const color = getColorParam(state, "colorValue", defaultConstColor);
+				const color = getSocketValue(socketValues, "out", defaultConstColor);
 				const alpha = clamp01(color.a);
 				return `Color: ${formatDisplayColor(color)}  a:${formatDisplayFloat(alpha)}`;
 			}
-			const vector = getVectorParam(state, "vectorValue", defaultVector);
+			const vector = getSocketValue(socketValues, "out", defaultVector);
 			if (constType === "vec2") {
 				return `Value: (${formatDisplayVector([vector.x, vector.y])})`;
 			}
@@ -953,43 +1023,6 @@ const buildInputsDefinition = (): NodeDefinition => {
 			ui: { tab: "Details", section: "Type", order: 1, inline: true },
 		},
 		{
-			id: "numberValue",
-			kind: "float",
-			label: "Value",
-			defaultValue: 0,
-			step: 0.01,
-			isVisible: (state) => {
-				const type = getStringParam(state, "type", "number");
-				return type === "number" || type === "range";
-			},
-			ui: { tab: "Details", section: "Value", order: 2 },
-		},
-		{
-			id: "checked",
-			kind: "boolean",
-			label: "Checked",
-			defaultValue: false,
-			isVisible: (state) =>
-				getStringParam(state, "type", "number") === "checkbox",
-			ui: { tab: "Details", section: "Value", order: 3 },
-		},
-		{
-			id: "textValue",
-			kind: "string",
-			label: "Text",
-			defaultValue: "",
-			isVisible: (state) => getStringParam(state, "type", "number") === "text",
-			ui: { tab: "Details", section: "Value", order: 4 },
-		},
-		{
-			id: "colorValue",
-			kind: "color",
-			label: "Color",
-			defaultValue: defaultInputColor,
-			isVisible: (state) => getStringParam(state, "type", "number") === "color",
-			ui: { tab: "Details", section: "Value", order: 5 },
-		},
-		{
 			id: "options",
 			kind: "string",
 			label: "Options (comma separated)",
@@ -997,15 +1030,6 @@ const buildInputsDefinition = (): NodeDefinition => {
 			isVisible: (state) =>
 				getStringParam(state, "type", "number") === "select",
 			ui: { tab: "Details", section: "Options", order: 6 },
-		},
-		{
-			id: "selection",
-			kind: "enum",
-			label: "Selection",
-			defaultValue: defaultInputOptions[0],
-			isVisible: (state) =>
-				getStringParam(state, "type", "number") === "select",
-			ui: { tab: "Details", section: "Options", order: 7 },
 		},
 	];
 	return {
@@ -1015,7 +1039,7 @@ const buildInputsDefinition = (): NodeDefinition => {
 		tags: ["input", "number", "checkbox", "text", "color", "select"],
 		parameters,
 		uiTabs: [{ id: "Details", label: "Details" }],
-		buildPorts: (state) => {
+		buildSockets: (state) => {
 			const inputType = getStringParam(state, "type", "number");
 			const portType: PortType = inputType === "color" ? "color" : "float";
 			const portName =
@@ -1024,35 +1048,120 @@ const buildInputsDefinition = (): NodeDefinition => {
 					: inputType === "checkbox"
 						? "Checked"
 						: "Value";
+			const options = getInputSelectOptions(state);
+			const defaultSelection = options[0] ?? "";
+			const defaultValue =
+				inputType === "color"
+					? defaultInputColor
+					: inputType === "checkbox"
+						? false
+						: inputType === "text"
+							? ""
+							: inputType === "select"
+								? defaultSelection
+								: 0;
+			const uiSpec: NodeSocketUiSpec = {
+				kind:
+					inputType === "color"
+						? "color"
+						: inputType === "checkbox"
+							? "boolean"
+							: inputType === "text"
+								? "string"
+								: inputType === "select"
+									? "enum"
+									: "float",
+				label: portName,
+				tab: "Details",
+				section: "Value",
+				order: 1,
+				...(inputType === "select"
+					? {
+							options: options.map((option) => ({
+								value: option,
+								label: option,
+							})),
+						}
+					: {}),
+			};
 			return [
-				{
-					id: "out",
-					name: portName,
-					type: portType,
-					direction: "output",
-				},
+				buildSocket(
+					{
+						id: "out",
+						name: portName,
+						type: portType,
+						direction: "output",
+					},
+					{ defaultValue, uiSpec },
+				),
 			];
 		},
-		getFooterLabel: (state) => {
+		getFooterLabel: (state, socketValues) => {
 			const inputType = getStringParam(state, "type", "number");
 			if (inputType === "color") {
-				const color = getColorParam(state, "colorValue", defaultInputColor);
+				const color = getSocketValue(socketValues, "out", defaultInputColor);
 				const alpha = clamp01(color.a);
 				return `Color: ${formatDisplayColor(color)}  a:${formatDisplayFloat(alpha)}`;
 			}
 			if (inputType === "checkbox") {
-				return getBooleanParam(state, "checked", false)
+				return getSocketValue(socketValues, "out", false)
 					? "Checked"
 					: "Unchecked";
 			}
 			if (inputType === "text") {
-				return `Text: ${getStringParam(state, "textValue", "")}`;
+				return `Text: ${getSocketValue(socketValues, "out", "")}`;
 			}
 			if (inputType === "select") {
-				return `Selection: ${getStringParam(state, "selection", "")}`;
+				return `Selection: ${getSocketValue(socketValues, "out", "")}`;
 			}
-			const value = getNumberParam(state, "numberValue", 0);
+			const value = getSocketValue(socketValues, "out", 0);
 			return `Value: ${formatDisplayFloat(value)}`;
+		},
+	};
+};
+
+const buildRerouteDefinition = (): NodeDefinition => {
+	const parameters: NodeParamSpec[] = [
+		{
+			id: "type",
+			kind: "enum",
+			label: "Type",
+			defaultValue: "float",
+			options: rerouteTypes.map((type) => ({
+				value: type,
+				label: formatTypeLabel(type),
+			})),
+			ui: { tab: "Details", section: "Type", order: 1, inline: true },
+		},
+	];
+	return {
+		id: "reroute",
+		label: "Reroute",
+		category: "General",
+		tags: ["reroute", "junction", "wire"],
+		parameters,
+		uiTabs: [{ id: "Details", label: "Details" }],
+		buildSockets: (state) => {
+			const type = getStringParam(state, "type", "float");
+			const portType = rerouteTypes.includes(type as PortType)
+				? (type as PortType)
+				: "float";
+			return buildSocketsFromPorts([
+				{ id: "in", name: "In", type: portType, direction: "input" },
+				{ id: "out", name: "Out", type: portType, direction: "output" },
+			]);
+		},
+		compile: (context) => {
+			const type = getStringParam(context.state, "type", "float");
+			const portType = rerouteTypes.includes(type as PortType)
+				? (type as PortType)
+				: "float";
+			const inputType = context.getInputPortType("in", portType);
+			return context.getInputExpression(
+				"in",
+				inputType,
+				context.defaultValueForPort(portType),
+			);
 		},
 	};
 };
@@ -1067,6 +1176,7 @@ const definitions: NodeDefinition[] = [
 	buildOutputDefinition(),
 	buildConstantsDefinition(),
 	buildInputsDefinition(),
+	buildRerouteDefinition(),
 ];
 
 definitions.forEach(registerDefinition);
@@ -1100,9 +1210,17 @@ export const normalizeNodeState = (
 	if (!state) {
 		return defaults;
 	}
+	const params: Record<string, NodeState["params"][string]> = {
+		...defaults.params,
+	};
+	Object.keys(defaults.params).forEach((key) => {
+		if (Object.hasOwn(state.params, key)) {
+			params[key] = state.params[key] as NodeState["params"][string];
+		}
+	});
 	const normalized: NodeState = {
 		version: state.version ?? defaults.version,
-		params: { ...defaults.params, ...state.params },
+		params,
 	};
 	const resolvedUi = state.ui ?? defaults.ui;
 	if (resolvedUi) {
@@ -1126,12 +1244,45 @@ export const getDefinitionPorts = (
 	if (!normalized) {
 		return [];
 	}
-	return definition.buildPorts(normalized);
+	const sockets = definition
+		.buildSockets(normalized)
+		.filter(
+			(socket) => !socket.visibilityRules || socket.visibilityRules(normalized),
+		);
+	return sockets.map((socket) => ({
+		id: socket.id,
+		name: socket.label,
+		type: socket.dataType,
+		direction: socket.direction,
+	}));
+};
+
+export const getDefinitionSockets = (
+	typeId: string | undefined,
+	state?: NodeState,
+) => {
+	if (!typeId) {
+		return [];
+	}
+	const definition = nodeDefinitions.get(typeId);
+	if (!definition) {
+		return [];
+	}
+	const normalized = normalizeNodeState(typeId, state);
+	if (!normalized) {
+		return [];
+	}
+	return definition
+		.buildSockets(normalized)
+		.filter(
+			(socket) => !socket.visibilityRules || socket.visibilityRules(normalized),
+		);
 };
 
 export const getDefinitionBodyLabel = (
 	typeId: string | undefined,
 	state?: NodeState,
+	socketValues?: Record<string, NodeSocketValue>,
 ) => {
 	if (!typeId) {
 		return null;
@@ -1141,12 +1292,13 @@ export const getDefinitionBodyLabel = (
 		return null;
 	}
 	const normalized = normalizeNodeState(typeId, state);
-	return normalized ? definition.getBodyLabel(normalized) : null;
+	return normalized ? definition.getBodyLabel(normalized, socketValues) : null;
 };
 
 export const getDefinitionFooterLabel = (
 	typeId: string | undefined,
 	state?: NodeState,
+	socketValues?: Record<string, NodeSocketValue>,
 ) => {
 	if (!typeId) {
 		return null;
@@ -1156,7 +1308,9 @@ export const getDefinitionFooterLabel = (
 		return null;
 	}
 	const normalized = normalizeNodeState(typeId, state);
-	return normalized ? definition.getFooterLabel(normalized) : null;
+	return normalized
+		? definition.getFooterLabel(normalized, socketValues)
+		: null;
 };
 
 export const buildNodeTemplate = (definition: NodeDefinition) => {
@@ -1166,7 +1320,17 @@ export const buildNodeTemplate = (definition: NodeDefinition) => {
 		label: definition.label,
 		title: definition.label,
 		category: definition.category,
-		ports: definition.buildPorts(state),
+		ports: definition
+			.buildSockets(state)
+			.filter(
+				(socket) => !socket.visibilityRules || socket.visibilityRules(state),
+			)
+			.map((socket) => ({
+				id: socket.id,
+				name: socket.label,
+				type: socket.dataType,
+				direction: socket.direction,
+			})),
 	};
 };
 
@@ -1178,8 +1342,12 @@ export const getInputSelectOptions = (state: NodeState) => {
 		.filter((option) => option.length > 0);
 };
 
-export const getInputSelection = (state: NodeState) => {
+export const getInputSelection = (
+	state: NodeState,
+	socketValues?: Record<string, NodeSocketValue>,
+) => {
 	const options = getInputSelectOptions(state);
-	const selection = getStringParam(state, "selection", options[0] ?? "");
+	const rawSelection = socketValues?.out;
+	const selection = typeof rawSelection === "string" ? rawSelection : "";
 	return options.includes(selection) ? selection : (options[0] ?? "");
 };

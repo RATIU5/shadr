@@ -11,3 +11,15 @@
 		@apply h-full w-full;
 	}
 }
+
+@layer utilities {
+	button:focus-visible,
+	[role="button"]:focus-visible,
+	input:focus-visible,
+	select:focus-visible,
+	textarea:focus-visible,
+	[tabindex]:focus-visible {
+		outline: 2px solid #5fa8ff;
+		outline-offset: 2px;
+	}
+}

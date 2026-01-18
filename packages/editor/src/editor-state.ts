@@ -30,7 +30,10 @@ export type DragState = {
 	offsetX: number;
 	offsetY: number;
 	startPositions: Map<number, { x: number; y: number }>;
+	groupStartPositions: Map<number, { x: number; y: number }>;
 	groupStart: { x: number; y: number } | null;
+	isDuplicating: boolean;
+	duplicateIds: number[];
 };
 
 export type NodeCollectionState = {
@@ -67,6 +70,7 @@ export type ContextMenuStateInternal = {
 	screenY: number;
 	worldX: number;
 	worldY: number;
+	targetConnectionId: string | null;
 };
 
 export type EditorState = {
@@ -133,15 +137,67 @@ export const connectionStyles: ConnectionStyles = {
 	...defaultVisualSettings.connections,
 };
 
-export const arePortTypesCompatible = (first: PortType, second: PortType) =>
-	first === second ||
-	(first === "color" && second === "vec4") ||
-	(first === "vec4" && second === "color");
+type PortTypeConversionMap = Partial<
+	Record<PortType, Partial<Record<PortType, (expression: string) => string>>>
+>;
+
+const portTypeConversions: PortTypeConversionMap = {
+	float: {
+		int: (expression) => `int(${expression})`,
+		vec2: (expression) => `vec2(${expression})`,
+		vec3: (expression) => `vec3(${expression})`,
+		vec4: (expression) => `vec4(${expression})`,
+	},
+	int: {
+		float: (expression) => `float(${expression})`,
+	},
+	vec2: {
+		vec3: (expression) => `vec3(${expression}, 0.0)`,
+		vec4: (expression) => `vec4(${expression}, 0.0, 0.0)`,
+	},
+	vec3: {
+		vec2: (expression) => `(${expression}).xy`,
+		vec4: (expression) => `vec4(${expression}, 0.0)`,
+		color: (expression) => `vec4(${expression}, 1.0)`,
+	},
+	vec4: {
+		vec2: (expression) => `(${expression}).xy`,
+		vec3: (expression) => `(${expression}).xyz`,
+		color: (expression) => expression,
+	},
+	color: {
+		vec4: (expression) => expression,
+		vec3: (expression) => `(${expression}).rgb`,
+	},
+};
+
+export const arePortTypesCompatible = (from: PortType, to: PortType) =>
+	from === to || Boolean(portTypeConversions[from]?.[to]);
+
+export const convertPortExpression = (
+	from: PortType,
+	to: PortType,
+	expression: string,
+) => {
+	const convert = portTypeConversions[from]?.[to];
+	return convert ? convert(expression) : expression;
+};
 
 export const resolveConnectionType = (
-	first: PortType,
-	second: PortType,
-): PortType => (first === "color" || second === "color" ? "color" : first);
+	from: PortType,
+	to: PortType,
+): PortType => {
+	if (from === to) {
+		return from;
+	}
+	if (
+		(from === "color" && to === "vec4") ||
+		(from === "vec4" && to === "color")
+	) {
+		return "color";
+	}
+	return to;
+};
 
 export const createEditorState = (): EditorState => ({
 	interactionState: {
@@ -162,7 +218,10 @@ export const createEditorState = (): EditorState => ({
 		offsetX: 0,
 		offsetY: 0,
 		startPositions: new Map<number, { x: number; y: number }>(),
+		groupStartPositions: new Map<number, { x: number; y: number }>(),
 		groupStart: null,
+		isDuplicating: false,
+		duplicateIds: [],
 	},
 	nodeState: {
 		nextId: 1,
@@ -194,5 +253,6 @@ export const createEditorState = (): EditorState => ({
 		screenY: 0,
 		worldX: 0,
 		worldY: 0,
+		targetConnectionId: null,
 	},
 });

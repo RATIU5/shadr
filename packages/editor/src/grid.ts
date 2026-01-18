@@ -12,6 +12,23 @@ type GridState = {
 
 const defaultGridSettings: GridSettings = defaultVisualSettings.grid;
 
+export const getAdaptiveGridSteps = (settings: GridSettings, scale: number) => {
+	if (scale <= 1.5) {
+		return {
+			minorStep: settings.minorStep,
+			majorStep: settings.majorStep,
+		};
+	}
+
+	const zoomFactor = scale / 1.5;
+	const level = Math.min(2, Math.floor(Math.log2(zoomFactor)) + 1);
+	const divisor = 2 ** level;
+	return {
+		minorStep: settings.minorStep / divisor,
+		majorStep: settings.majorStep / divisor,
+	};
+};
+
 export const createGridRenderer = ({
 	app,
 	camera,
@@ -51,8 +68,12 @@ export const createGridRenderer = ({
 			settings.axisAlpha,
 		].join("|");
 
-	const getMinorFade = (scale: number, settings: GridSettings) => {
-		const screenSpacing = settings.minorStep * scale;
+	const getMinorFade = (
+		scale: number,
+		settings: GridSettings,
+		minorStep: number,
+	) => {
+		const screenSpacing = minorStep * scale;
 		const range = settings.maxScreenSpacing - settings.minScreenSpacing;
 		const clamped =
 			range > 0
@@ -67,9 +88,8 @@ export const createGridRenderer = ({
 
 	const drawGrid = (width: number, height: number, settings: GridSettings) => {
 		const scale = camera.scale.x || 1;
-		const minorStep = settings.minorStep;
-		const majorStep = settings.majorStep;
-		const minorFade = getMinorFade(scale, settings);
+		const { minorStep, majorStep } = getAdaptiveGridSteps(settings, scale);
+		const minorFade = getMinorFade(scale, settings, minorStep);
 		const halfWidth = width / (2 * scale);
 		const halfHeight = height / (2 * scale);
 		const left = camera.pivot.x - halfWidth;

@@ -5,23 +5,35 @@ import type { PortType } from "../types";
 describe("port type compatibility", () => {
 	const truthyPairs: Array<[PortType, PortType]> = [
 		["float", "float"],
+		["float", "int"],
+		["int", "float"],
+		["float", "vec2"],
+		["float", "vec3"],
+		["float", "vec4"],
 		["vec2", "vec2"],
+		["vec2", "vec3"],
+		["vec2", "vec4"],
 		["vec3", "vec3"],
+		["vec3", "vec2"],
+		["vec3", "vec4"],
 		["vec4", "vec4"],
+		["vec4", "vec2"],
+		["vec4", "vec3"],
 		["color", "color"],
 		["color", "vec4"],
+		["color", "vec3"],
 		["vec4", "color"],
+		["vec3", "color"],
 	];
 
 	for (const [first, second] of truthyPairs) {
-		it(`allows ${first} <-> ${second}`, () => {
+		it(`allows ${first} -> ${second}`, () => {
 			expect(arePortTypesCompatible(first, second)).toBe(true);
 		});
 	}
 
-	it("rejects mismatched types that are not color/vec4 compatible", () => {
-		expect(arePortTypesCompatible("float", "vec2")).toBe(false);
-		expect(arePortTypesCompatible("color", "vec3")).toBe(false);
+	it("rejects mismatched types that are not compatible", () => {
+		expect(arePortTypesCompatible("vec2", "float")).toBe(false);
 		expect(arePortTypesCompatible("texture", "color")).toBe(false);
 	});
 });
@@ -31,6 +43,11 @@ describe("connection type resolution", () => {
 		expect(resolveConnectionType("color", "vec4")).toBe("color");
 		expect(resolveConnectionType("vec4", "color")).toBe("color");
 		expect(resolveConnectionType("color", "color")).toBe("color");
+	});
+
+	it("uses the input type when converting color to vec3", () => {
+		expect(resolveConnectionType("color", "vec3")).toBe("vec3");
+		expect(resolveConnectionType("vec3", "color")).toBe("color");
 	});
 
 	it("preserves the non-color type for matching connections", () => {

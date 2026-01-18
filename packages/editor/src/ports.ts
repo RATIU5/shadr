@@ -21,11 +21,11 @@ export const portTypeLabels: Record<PortType, string> = {
 };
 
 export const portTypeColors: Record<PortType, number> = {
-	float: 0x4fb6f5,
-	int: 0x9aa0a6,
-	vec2: 0x55c181,
-	vec3: 0x46a664,
-	vec4: 0x2d8f48,
-	texture: 0xf3a552,
-	color: 0xd96bd8,
+	float: 0x808080,
+	int: 0x808080,
+	vec2: 0x2196f3,
+	vec3: 0x2196f3,
+	vec4: 0x2196f3,
+	texture: 0x4caf50,
+	color: 0xffeb3b,
 };

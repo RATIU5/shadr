@@ -17,16 +17,20 @@ import {
 	getDefaultNodeState,
 	getDefinitionBodyLabel,
 	getDefinitionFooterLabel,
-	getDefinitionPorts,
+	getDefinitionSockets,
 	getNodeDefinition,
 } from "./node-definitions";
 import type {
+	DebugVisualizationState,
 	NodePort,
+	NodeSocket,
+	NodeSocketValue,
 	NodeState,
 	NodeView,
 	PortRef,
 	PortType,
 	SerializablePort,
+	ShaderPerformanceWarnings,
 } from "./types";
 import type { NodeStyleSettings } from "./visual-settings";
 
@@ -37,6 +41,7 @@ type CreateNodeOptions = {
 	select?: boolean;
 	typeId?: string;
 	state?: NodeState;
+	socketValues?: Record<string, NodeSocketValue>;
 };
 
 type PortTypeColorMap = Record<PortType, number>;
@@ -59,9 +64,21 @@ type NodeSystemDeps = {
 		portId: string,
 	) => void;
 	onCancelConnectionDrag: () => void;
+	onStartSocketEdit?: (nodeId: number, portId: string) => void;
+	onRequestNodeRename?: (nodeId: number) => void;
+	onSocketHoverChange?: (
+		state: { nodeId: number; portId: string } | null,
+	) => void;
+	onSocketQuickDisconnect?: (
+		nodeId: number,
+		portId: string,
+		direction: "input" | "output",
+	) => void;
+	getActiveSocketEditor?: () => { nodeId: number; socketId: string } | null;
 	onSelectionChange?: () => void;
 	onNodeHoverChange?: (nodeId: number | null) => void;
 	onConnectionsPruned?: (count: number) => void;
+	getDebugState?: () => DebugVisualizationState | null;
 };
 
 export const createNodeSystem = ({
@@ -78,9 +95,15 @@ export const createNodeSystem = ({
 	onStartNodeDrag,
 	onStartConnectionDrag,
 	onCancelConnectionDrag,
+	onStartSocketEdit,
+	onRequestNodeRename,
+	onSocketHoverChange,
+	onSocketQuickDisconnect,
+	getActiveSocketEditor,
 	onSelectionChange,
 	onNodeHoverChange,
 	onConnectionsPruned,
+	getDebugState,
 }: NodeSystemDeps) => {
 	const layoutPadding = {
 		left: 10,
@@ -103,9 +126,73 @@ export const createNodeSystem = ({
 	};
 	const bodyTextColor = 0x2b2b2b;
 	const footerTextColor = 0x747474;
+	const portLabelTextColor = 0x2b2b2b;
 	const headerMix = 0.7;
 	const nodeHitPadding = Math.max(6, portStyles.hitRadius - portStyles.radius);
 	const bodyTop = headerHeight + bodyPaddingTop;
+	const rerouteSize = Math.max(10, portStyles.radius * 2 + 2);
+	const warningBadgeRadius = 7;
+	const warningBadgePadding = 6;
+	const warningBadgeColor = 0xf6b44f;
+	const warningBadgeTextColor = 0x1f2937;
+
+	const formatNumber = (value: number) => {
+		if (!Number.isFinite(value)) {
+			return "0";
+		}
+		const rounded = Math.round(value * 1000) / 1000;
+		return rounded.toString();
+	};
+
+	const formatColor = (color: { r: number; g: number; b: number }) => {
+		const channel = (value: number) =>
+			Math.min(255, Math.max(0, Math.round(value * 255)))
+				.toString(16)
+				.padStart(2, "0");
+		return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}`;
+	};
+
+	const formatSocketPreview = (type: PortType, value: NodeSocketValue) => {
+		if (typeof value === "number") {
+			return type === "int"
+				? Math.round(value).toString()
+				: formatNumber(value);
+		}
+		if (typeof value === "boolean") {
+			return value ? "On" : "Off";
+		}
+		if (typeof value === "string") {
+			return value;
+		}
+		if (Array.isArray(value)) {
+			return value.join(", ");
+		}
+		if (
+			typeof value === "object" &&
+			value !== null &&
+			"x" in value &&
+			"y" in value
+		) {
+			const vector = value as { x: number; y: number; z?: number; w?: number };
+			const axes = [
+				formatNumber(vector.x),
+				formatNumber(vector.y),
+				...(vector.z !== undefined ? [formatNumber(vector.z)] : []),
+				...(vector.w !== undefined ? [formatNumber(vector.w)] : []),
+			];
+			return `(${axes.join(", ")})`;
+		}
+		if (
+			typeof value === "object" &&
+			value !== null &&
+			"r" in value &&
+			"g" in value &&
+			"b" in value
+		) {
+			return formatColor(value as { r: number; g: number; b: number });
+		}
+		return "";
+	};
 
 	const clampText = (text: Text, maxWidth: number) => {
 		if (maxWidth <= 0) {
@@ -150,11 +237,24 @@ export const createNodeSystem = ({
 		return (r << 16) | (g << 8) | b;
 	};
 
+	const headerCategoryColors: Record<string, number> = {
+		Math: 0x3b82f6,
+		Vector: 0x8b5cf6,
+		"Texture/UV": 0xf59e0b,
+		Output: 0x22c55e,
+	};
+
 	const getHeaderColor = (node: NodeView) => {
+		const definition = getNodeDefinition(node.typeId ?? undefined);
+		const categoryColor = definition?.category
+			? headerCategoryColors[definition.category]
+			: undefined;
 		const primaryPort =
 			node.ports.find((port) => port.direction === "output") ??
 			node.ports.find((port) => port.direction === "input");
-		const baseColor = primaryPort ? portTypeColors[primaryPort.type] : 0xb0b0b0;
+		const baseColor =
+			categoryColor ??
+			(primaryPort ? portTypeColors[primaryPort.type] : 0xb0b0b0);
 		return mixColor(baseColor, 0xffffff, headerMix);
 	};
 
@@ -167,6 +267,9 @@ export const createNodeSystem = ({
 	};
 
 	const measureNodeWidth = (node: NodeView) => {
+		if (node.typeId === "reroute") {
+			return rerouteSize;
+		}
 		const inputs = node.ports.filter((port) => port.direction === "input");
 		const outputs = node.ports.filter((port) => port.direction === "output");
 		const maxInputLabelWidth = inputs.reduce(
@@ -206,6 +309,9 @@ export const createNodeSystem = ({
 	};
 
 	const measureNodeHeight = (node: NodeView) => {
+		if (node.typeId === "reroute") {
+			return rerouteSize;
+		}
 		const inputs = node.ports.filter((port) => port.direction === "input");
 		const outputs = node.ports.filter((port) => port.direction === "output");
 		const inputBlockHeight = getPortGroupHeight(inputs.length);
@@ -250,6 +356,23 @@ export const createNodeSystem = ({
 	};
 
 	const updateNodeLayout = (node: NodeView, isSelected: boolean) => {
+		if (node.typeId === "reroute") {
+			node.title.alpha = 0;
+			if (node.bodyLabel) {
+				node.bodyLabel.alpha = 0;
+			}
+			if (node.valueLabel) {
+				node.valueLabel.alpha = 0;
+			}
+		} else {
+			node.title.alpha = 1;
+			if (node.bodyLabel) {
+				node.bodyLabel.alpha = 1;
+			}
+			if (node.valueLabel) {
+				node.valueLabel.alpha = 1;
+			}
+		}
 		positionNodeLabels(node, false);
 		const nextWidth = measureNodeWidth(node);
 		const nextHeight = measureNodeHeight(node);
@@ -271,10 +394,59 @@ export const createNodeSystem = ({
 			nextHeight + nodeHitPadding * 2,
 		);
 		renderNode(node, isSelected);
+		renderWarningBadge(node);
 		renderPorts(node);
 	};
 
 	const renderNode = (node: NodeView, isSelected: boolean) => {
+		const debugState = getDebugState?.();
+		const debugEnabled = Boolean(
+			debugState?.enabled && debugState?.dimInactive,
+		);
+		const isDebugActive = debugEnabled
+			? (debugState?.activeNodes.includes(node.id) ?? false)
+			: true;
+		const nodeAlpha = debugEnabled ? (isDebugActive ? 1 : 0.18) : 1;
+		const isFocused = debugState?.focusNodeId === node.id;
+		node.container.alpha = nodeAlpha;
+		if (node.typeId === "reroute") {
+			const port = node.ports[0];
+			const baseColor = port ? portTypeColors[port.type] : 0xb0b0b0;
+			const fillColor = node.isHover
+				? mixColor(baseColor, 0xffffff, 0.2)
+				: baseColor;
+			const radius = Math.max(4, portStyles.radius - 1);
+			const centerX = node.width / 2;
+			const centerY = node.height / 2;
+
+			node.background.clear();
+			node.background.circle(centerX, centerY, radius);
+			node.background.fill({ color: fillColor, alpha: 0.95 });
+
+			if (isSelected) {
+				node.background.setStrokeStyle({
+					width: 2,
+					color: getNodeStyles().selectedBorderColor,
+					alpha: 1,
+					cap: "round",
+					join: "round",
+				});
+				node.background.circle(centerX, centerY, radius + 2);
+				node.background.stroke();
+			}
+			if (isFocused) {
+				node.background.setStrokeStyle({
+					width: 3,
+					color: 0x9cc4ff,
+					alpha: 0.9,
+					cap: "round",
+					join: "round",
+				});
+				node.background.circle(centerX, centerY, radius + 4);
+				node.background.stroke();
+			}
+			return;
+		}
 		const styles = getNodeStyles();
 		const isHover = node.isHover && !isSelected;
 		const fillColor = isHover ? styles.hoverFillColor : styles.fillColor;
@@ -324,10 +496,31 @@ export const createNodeSystem = ({
 			);
 			node.background.stroke();
 		}
+		if (isFocused) {
+			node.background.setStrokeStyle({
+				width: 3,
+				color: 0x9cc4ff,
+				alpha: 0.9,
+				cap: "round",
+				join: "round",
+			});
+			node.background.roundRect(
+				-selectionOutlineOffset - 1,
+				-selectionOutlineOffset - 1,
+				node.width + selectionOutlineWidth + 2,
+				node.height + selectionOutlineWidth + 2,
+				cornerRadius + selectionOutlineOffset + 1,
+			);
+			node.background.stroke();
+		}
 	};
 
 	const renderFooterLabel = (node: NodeView) => {
-		const label = getDefinitionFooterLabel(node.typeId, node.state);
+		const label = getDefinitionFooterLabel(
+			node.typeId,
+			node.state,
+			node.socketValues,
+		);
 		if (node.valueLabel) {
 			node.valueLabel.text = label ?? "";
 			clampText(node.valueLabel, maxFooterLabelWidth);
@@ -335,46 +528,111 @@ export const createNodeSystem = ({
 	};
 
 	const renderBodyLabel = (node: NodeView) => {
-		const label = getDefinitionBodyLabel(node.typeId, node.state);
+		const label = getDefinitionBodyLabel(
+			node.typeId,
+			node.state,
+			node.socketValues,
+		);
 		if (node.bodyLabel) {
 			node.bodyLabel.text = label ?? "";
 			clampText(node.bodyLabel, maxBodyLabelWidth);
 		}
 	};
 
+	const renderWarningBadge = (node: NodeView) => {
+		if (!node.warningBadge || !node.warningLabel) {
+			return;
+		}
+		if (node.typeId === "reroute") {
+			node.warningBadge.visible = false;
+			node.warningLabel.visible = false;
+			return;
+		}
+		const warnings = node.performanceWarnings ?? [];
+		const hasWarning = warnings.length > 0;
+		node.warningBadge.visible = hasWarning;
+		node.warningLabel.visible = hasWarning;
+		if (!hasWarning) {
+			return;
+		}
+		const badgeX = Math.max(
+			warningBadgePadding + warningBadgeRadius,
+			node.width - warningBadgePadding - warningBadgeRadius,
+		);
+		const badgeY = Math.max(
+			warningBadgePadding + warningBadgeRadius,
+			Math.min(headerHeight / 2, headerHeight - warningBadgeRadius - 2),
+		);
+		node.warningBadge.clear();
+		node.warningBadge.circle(badgeX, badgeY, warningBadgeRadius);
+		node.warningBadge.fill({ color: warningBadgeColor, alpha: 1 });
+		node.warningLabel.position.set(
+			badgeX - node.warningLabel.width / 2,
+			badgeY - node.warningLabel.height / 2,
+		);
+	};
+
 	const renderPort = (node: NodeView, port: NodePort) => {
+		const isReroute = node.typeId === "reroute";
+		const activeEditor = getActiveSocketEditor?.();
+		const isEditing =
+			activeEditor?.nodeId === node.id && activeEditor.socketId === port.id;
 		const inputCount = node.ports.filter(
 			(candidate) => candidate.direction === "input",
 		).length;
 		const outputStartY = getOutputStartY();
 		const inputStartY = getInputStartY(node, inputCount);
-		const y =
-			port.direction === "input"
+		const isInput = port.direction === "input";
+		const x = isReroute ? node.width / 2 : isInput ? 0 : node.width;
+		const y = isReroute
+			? node.height / 2
+			: isInput
 				? inputStartY + port.directionIndex * portStyles.spacing
 				: outputStartY + port.directionIndex * portStyles.spacing;
 		const shouldStroke = port.isHover || port.isDragTarget;
 		const radius = shouldStroke ? portStyles.hoverRadius : portStyles.radius;
 		const hitRadius = Math.max(portStyles.hitRadius, radius);
-		const isInput = port.direction === "input";
-		const x = isInput ? 0 : node.width;
+		const isConnected = Array.from(connectionState.connections.values()).some(
+			(connection) =>
+				isInput
+					? connection.to.nodeId === node.id && connection.to.portId === port.id
+					: connection.from.nodeId === node.id &&
+						connection.from.portId === port.id,
+		);
+		port.isConnected = isConnected;
 
 		port.graphics.clear();
-		if (shouldStroke) {
+		const baseColor = portTypeColors[port.type];
+		const strokeColor = shouldStroke
+			? port.isDragTarget
+				? port.isDragValid
+					? portStyles.dragStrokeValid
+					: portStyles.dragStrokeInvalid
+				: baseColor
+			: baseColor;
+		const strokeAlpha = port.isDragTarget ? portStyles.dragStrokeAlpha : 0.85;
+		if (isReroute) {
+			if (shouldStroke || port.isDragTarget) {
+				port.graphics.setStrokeStyle({
+					width: shouldStroke ? portStyles.hoverStroke : 1.5,
+					color: strokeColor,
+					alpha: strokeAlpha,
+					cap: "round",
+					join: "round",
+				});
+				port.graphics.circle(x, y, radius);
+				port.graphics.stroke();
+			}
+		} else {
 			port.graphics.setStrokeStyle({
-				width: portStyles.hoverStroke,
-				color: port.isDragTarget
-					? port.isDragValid
-						? portStyles.dragStrokeValid
-						: portStyles.dragStrokeInvalid
-					: 0xffffff,
-				alpha: port.isDragTarget ? portStyles.dragStrokeAlpha : 0.9,
+				width: shouldStroke ? portStyles.hoverStroke : 1.5,
+				color: strokeColor,
+				alpha: strokeAlpha,
 				cap: "round",
 				join: "round",
 			});
-		}
-		port.graphics.circle(x, y, radius);
-		port.graphics.fill({ color: portTypeColors[port.type], alpha: 1 });
-		if (shouldStroke) {
+			port.graphics.circle(x, y, radius);
+			port.graphics.fill({ color: baseColor, alpha: isConnected ? 1 : 0 });
 			port.graphics.stroke();
 		}
 		port.hitGraphics.clear();
@@ -387,15 +645,34 @@ export const createNodeSystem = ({
 			hitRadius * 2,
 		);
 
-		port.label.text = `${port.name}: ${port.type}`;
-		clampText(port.label, maxPortLabelWidth);
+		const baseLabel = `${port.name}: ${port.type}`;
+		const canEdit =
+			!isReroute && isInput && Boolean(port.uiSpec) && !isConnected;
+		const shouldShowValue = canEdit && !isEditing;
+		const shouldHideLabel =
+			isReroute || (isConnected && !port.isHover && !isEditing);
+		if (shouldShowValue) {
+			const socketValue =
+				node.socketValues?.[port.id] ?? port.defaultValue ?? null;
+			const formatted =
+				socketValue !== null ? formatSocketPreview(port.type, socketValue) : "";
+			port.label.text = formatted ? `${baseLabel} = ${formatted}` : baseLabel;
+		} else {
+			port.label.text = baseLabel;
+		}
+		port.label.alpha = shouldHideLabel ? 0 : 1;
+		port.label.eventMode = canEdit ? "static" : "none";
+		port.label.cursor = canEdit ? "text" : "default";
+		if (!isReroute) {
+			clampText(port.label, maxPortLabelWidth);
+		}
 
-		if (isInput) {
+		if (isInput && !isReroute) {
 			port.label.position.set(
 				portStyles.radius + portStyles.labelOffset,
 				y - portStyles.radius,
 			);
-		} else {
+		} else if (!isReroute) {
 			const outputLabelX = Math.max(
 				layoutPadding.left,
 				node.width - layoutPadding.right - port.label.width,
@@ -410,17 +687,31 @@ export const createNodeSystem = ({
 		});
 	};
 
-	const createPortViews = (ports: SerializablePort[]) => {
+	const createPortViews = (
+		ports: SerializablePort[],
+		socketLookup?: Map<string, NodeSocket>,
+	) => {
 		let inputIndex = 0;
 		let outputIndex = 0;
 		return ports.map((port) => {
+			const socket = socketLookup?.get(port.id);
+			const extras: Partial<NodePort> = {};
+			if (socket?.uiSpec) {
+				extras.uiSpec = socket.uiSpec;
+			}
+			if (socket?.defaultValue !== undefined) {
+				extras.defaultValue = socket.defaultValue;
+			}
+			if (socket?.conversionRules) {
+				extras.conversionRules = socket.conversionRules;
+			}
 			const graphics = new Graphics();
 			const hitGraphics = new Graphics();
 			const label = registerText(
 				new Text({
 					text: "",
 					style: {
-						fill: portTypeColors[port.type],
+						fill: portLabelTextColor,
 						fontFamily: "Arial",
 						fontSize: 11,
 					},
@@ -432,6 +723,7 @@ export const createNodeSystem = ({
 			hitGraphics.cursor = "crosshair";
 			label.text = `${port.name}: ${port.type}`;
 			clampText(label, maxPortLabelWidth);
+			label.eventMode = "none";
 
 			return {
 				...port,
@@ -443,6 +735,7 @@ export const createNodeSystem = ({
 				isHover: false,
 				isDragTarget: false,
 				isDragValid: false,
+				...extras,
 			};
 		});
 	};
@@ -453,17 +746,36 @@ export const createNodeSystem = ({
 			node.container.addChild(port.graphics);
 			node.container.addChild(port.label);
 			port.hitGraphics.on("pointerdown", (event) => {
-				const data = event as unknown as { stopPropagation?: () => void };
+				const data = event as unknown as {
+					stopPropagation?: () => void;
+					button?: number;
+					ctrlKey?: boolean;
+				};
 				data.stopPropagation?.();
+				const isRightClick =
+					data.button === 2 || (data.button === 0 && data.ctrlKey);
+				if (isRightClick) {
+					onSocketQuickDisconnect?.(node.id, port.id, port.direction);
+					return;
+				}
 				onStartConnectionDrag(event, node.id, port.id);
 			});
 			port.hitGraphics.on("pointerover", () => {
 				port.isHover = true;
 				renderPort(node, port);
+				onSocketHoverChange?.({ nodeId: node.id, portId: port.id });
 			});
 			port.hitGraphics.on("pointerout", () => {
 				port.isHover = false;
 				renderPort(node, port);
+				onSocketHoverChange?.(null);
+			});
+			port.label.on("pointerdown", (event) => {
+				const data = event as unknown as { stopPropagation?: () => void };
+				data.stopPropagation?.();
+				if (port.direction === "input") {
+					onStartSocketEdit?.(node.id, port.id);
+				}
 			});
 		});
 	};
@@ -486,11 +798,17 @@ export const createNodeSystem = ({
 		).length;
 		const outputStartY = getOutputStartY();
 		const inputStartY = getInputStartY(node, inputCount);
-		const y =
-			port.direction === "input"
+		const isReroute = node.typeId === "reroute";
+		const y = isReroute
+			? node.height / 2
+			: port.direction === "input"
 				? inputStartY + port.directionIndex * portStyles.spacing
 				: outputStartY + port.directionIndex * portStyles.spacing;
-		const x = port.direction === "input" ? 0 : node.width;
+		const x = isReroute
+			? node.width / 2
+			: port.direction === "input"
+				? 0
+				: node.width;
 
 		return {
 			x: node.container.position.x + x,
@@ -598,23 +916,62 @@ export const createNodeSystem = ({
 			}),
 		);
 		title.position.set(headerPadding.x, headerPadding.y);
+		const warningBadge = new Graphics();
+		const warningLabel = registerText(
+			new Text({
+				text: "!",
+				style: {
+					fill: warningBadgeTextColor,
+					fontFamily: "Arial",
+					fontSize: 10,
+				},
+			}),
+		);
+		warningBadge.visible = false;
+		warningLabel.visible = false;
 
 		const nodeStateValue =
 			options.state ??
 			(typeId ? (getDefaultNodeState(typeId) ?? undefined) : undefined);
+		const sockets = typeId ? getDefinitionSockets(typeId, nodeStateValue) : [];
+		const socketLookup = new Map(sockets.map((socket) => [socket.id, socket]));
+		const defaultSocketValues: Record<string, NodeSocketValue> = {};
+		sockets.forEach((socket) => {
+			const value = socket.value ?? socket.defaultValue;
+			if (value !== undefined) {
+				defaultSocketValues[socket.id] = value;
+			}
+		});
+		const socketValues = {
+			...defaultSocketValues,
+			...(options.socketValues ?? {}),
+		};
 		const ports =
 			options.ports ??
-			(typeId ? getDefinitionPorts(typeId, nodeStateValue) : defaultPorts);
+			(typeId
+				? sockets.map((socket) => ({
+						id: socket.id,
+						name: socket.label,
+						type: socket.dataType,
+						direction: socket.direction,
+					}))
+				: defaultPorts);
 
-		const portViews = createPortViews(ports);
+		const portViews = createPortViews(ports, socketLookup);
 
 		container.addChild(hitGraphics);
 		container.addChild(background);
 		container.addChild(title);
+		container.addChild(warningBadge);
+		container.addChild(warningLabel);
 
 		let valueLabel: Text | undefined;
 		let bodyLabel: Text | undefined;
-		const footerLabel = getDefinitionFooterLabel(typeId, nodeStateValue);
+		const footerLabel = getDefinitionFooterLabel(
+			typeId,
+			nodeStateValue,
+			socketValues,
+		);
 		if (footerLabel !== null) {
 			valueLabel = registerText(
 				new Text({
@@ -630,7 +987,11 @@ export const createNodeSystem = ({
 			container.addChild(valueLabel);
 		}
 
-		const bodyText = getDefinitionBodyLabel(typeId, nodeStateValue);
+		const bodyText = getDefinitionBodyLabel(
+			typeId,
+			nodeStateValue,
+			socketValues,
+		);
 		if (bodyText !== null) {
 			bodyLabel = registerText(
 				new Text({
@@ -652,11 +1013,14 @@ export const createNodeSystem = ({
 			hitGraphics,
 			background,
 			title,
+			warningBadge,
+			warningLabel,
 			ports: portViews,
 			width: nodeDimensions.width,
 			height: nodeDimensions.height,
 			isHover: false,
 			...(nodeStateValue ? { state: nodeStateValue } : {}),
+			...(Object.keys(socketValues).length > 0 ? { socketValues } : {}),
 			...(valueLabel ? { valueLabel } : {}),
 			...(bodyLabel ? { bodyLabel } : {}),
 			...(typeId ? { typeId } : {}),
@@ -675,6 +1039,17 @@ export const createNodeSystem = ({
 		}
 
 		hitGraphics.on("pointerdown", (event) => {
+			const clientEvent = event as unknown as PointerEvent;
+			if (clientEvent.detail === 2 && clientEvent.button === 0) {
+				const local = event as unknown as {
+					getLocalPosition: (container: Container) => { x: number; y: number };
+				};
+				const position = local.getLocalPosition(node.container);
+				if (position.y <= headerHeight) {
+					onRequestNodeRename?.(id);
+					return;
+				}
+			}
 			onStartNodeDrag(event, id);
 		});
 		hitGraphics.on("pointerover", () => {
@@ -744,10 +1119,9 @@ export const createNodeSystem = ({
 
 	const renderAllNodes = () => {
 		nodeState.nodes.forEach((node) => {
-			renderNode(node, nodeState.selectedIds.has(node.id));
-			renderPorts(node);
 			renderBodyLabel(node);
 			renderFooterLabel(node);
+			updateNodeLayout(node, nodeState.selectedIds.has(node.id));
 		});
 	};
 
@@ -843,7 +1217,15 @@ export const createNodeSystem = ({
 		}
 
 		destroyPortViews(node);
-		const portViews = createPortViews(nextPortsWithNames);
+		const socketLookup = node.typeId
+			? new Map(
+					getDefinitionSockets(node.typeId, node.state).map((socket) => [
+						socket.id,
+						socket,
+					]),
+				)
+			: undefined;
+		const portViews = createPortViews(nextPortsWithNames, socketLookup);
 		node.ports = portViews;
 		mountPortViews(node, portViews);
 		renderPorts(node);
@@ -851,9 +1233,26 @@ export const createNodeSystem = ({
 		return true;
 	};
 
+	const updatePerformanceWarnings = (warnings?: ShaderPerformanceWarnings) => {
+		const textureSet = new Set(warnings?.textureSampleNodes ?? []);
+		const mathSet = new Set(warnings?.complexMathNodes ?? []);
+		nodeState.nodes.forEach((node) => {
+			const nextWarnings: string[] = [];
+			if (textureSet.has(node.id)) {
+				nextWarnings.push("texture-sample");
+			}
+			if (mathSet.has(node.id)) {
+				nextWarnings.push("complex-math");
+			}
+			node.performanceWarnings = nextWarnings;
+			renderWarningBadge(node);
+		});
+	};
+
 	return {
 		renderNode,
 		renderPorts,
+		updateNodeLayout,
 		renderPort,
 		renderFooterLabel: (node: NodeView) => {
 			renderFooterLabel(node);
@@ -888,5 +1287,6 @@ export const createNodeSystem = ({
 		deleteSelectedNode,
 		renderAllNodes,
 		updateNodePorts,
+		updatePerformanceWarnings,
 	};
 };

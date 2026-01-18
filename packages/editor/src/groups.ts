@@ -6,6 +6,7 @@ import {
 	Text,
 } from "pixi.js";
 import type {
+	ConnectionState,
 	GroupState,
 	NodeCollectionState,
 	NodeDimensions,
@@ -20,6 +21,7 @@ type GroupSystemDeps = {
 	groupLayer: Container;
 	nodeState: NodeCollectionState;
 	groupState: GroupState;
+	connectionState: ConnectionState;
 	nodeDimensions: NodeDimensions;
 	portStyles: PortStyles;
 	portTypeColors: PortTypeColorMap;
@@ -32,6 +34,7 @@ type GroupSystemDeps = {
 		portId: string,
 	) => void;
 	onSelectGroup: (groupId: number, event: FederatedPointerEvent) => void;
+	onToggleGroupCollapsed: (groupId: number) => void;
 };
 
 const groupPadding = 20;
@@ -45,10 +48,13 @@ type GroupBounds = {
 	maxY: number;
 };
 
+export const maxGroupDepth = 10;
+
 export const createGroupSystem = ({
 	groupLayer,
 	nodeState,
 	groupState,
+	connectionState,
 	nodeDimensions,
 	portStyles,
 	portTypeColors,
@@ -57,59 +63,275 @@ export const createGroupSystem = ({
 	onStartGroupDrag,
 	onStartConnectionDrag,
 	onSelectGroup,
+	onToggleGroupCollapsed,
 }: GroupSystemDeps) => {
 	const groupHitPadding = Math.max(6, portStyles.hitRadius - portStyles.radius);
+	const groupBackgroundHitPadding = 6;
+	const getGroupDepth = (groupId: number) => {
+		let depth = 1;
+		let current = groupState.groups.get(groupId);
+		const visited = new Set<number>();
+		while (current && current.parentId !== null) {
+			if (visited.has(current.parentId)) {
+				break;
+			}
+			visited.add(current.parentId);
+			const parent = groupState.groups.get(current.parentId);
+			if (!parent) {
+				break;
+			}
+			depth += 1;
+			current = parent;
+		}
+		return depth;
+	};
+	const getGroupAncestors = (groupId: number) => {
+		const ancestors: number[] = [];
+		let current = groupState.groups.get(groupId);
+		const visited = new Set<number>();
+		while (current && current.parentId !== null) {
+			if (visited.has(current.parentId)) {
+				break;
+			}
+			visited.add(current.parentId);
+			const parent = groupState.groups.get(current.parentId);
+			if (!parent) {
+				break;
+			}
+			ancestors.push(parent.id);
+			current = parent;
+		}
+		return ancestors;
+	};
+	const getGroupSubtreeDepth = (groupId: number): number => {
+		const group = groupState.groups.get(groupId);
+		if (!group) {
+			return 1;
+		}
+		let maxDepth = 1;
+		group.childGroupIds.forEach((childId) => {
+			const childDepth = 1 + getGroupSubtreeDepth(childId);
+			if (childDepth > maxDepth) {
+				maxDepth = childDepth;
+			}
+		});
+		return maxDepth;
+	};
+	const isGroupHidden = (groupId: number) => {
+		let current = groupState.groups.get(groupId);
+		const visited = new Set<number>();
+		while (current && current.parentId !== null) {
+			if (visited.has(current.parentId)) {
+				break;
+			}
+			visited.add(current.parentId);
+			const parent = groupState.groups.get(current.parentId);
+			if (!parent) {
+				break;
+			}
+			if (parent.collapsed) {
+				return true;
+			}
+			current = parent;
+		}
+		return false;
+	};
+	const getGroupNodeIds = (groupId: number) => {
+		const group = groupState.groups.get(groupId);
+		if (!group) {
+			return [];
+		}
+		const nodes = new Set<number>(group.nodeIds);
+		const stack = Array.from(group.childGroupIds);
+		while (stack.length > 0) {
+			const nextId = stack.pop();
+			if (typeof nextId !== "number") {
+				continue;
+			}
+			const child = groupState.groups.get(nextId);
+			if (!child) {
+				continue;
+			}
+			child.nodeIds.forEach((nodeId) => {
+				nodes.add(nodeId);
+			});
+			child.childGroupIds.forEach((childId) => {
+				stack.push(childId);
+			});
+		}
+		return Array.from(nodes);
+	};
+	const canSetGroupParent = (childId: number, parentId: number | null) => {
+		if (childId === parentId) {
+			return { ok: false, reason: "A group cannot contain itself." };
+		}
+		if (parentId !== null) {
+			let current = groupState.groups.get(parentId);
+			const visited = new Set<number>();
+			while (current) {
+				if (current.id === childId) {
+					return { ok: false, reason: "A group cannot contain its parent." };
+				}
+				if (current.parentId === null) {
+					break;
+				}
+				if (visited.has(current.parentId)) {
+					break;
+				}
+				visited.add(current.parentId);
+				current = groupState.groups.get(current.parentId);
+			}
+		}
+		const parentDepth = parentId !== null ? getGroupDepth(parentId) : 0;
+		const subtreeDepth = getGroupSubtreeDepth(childId);
+		if (parentDepth + subtreeDepth > maxGroupDepth) {
+			return {
+				ok: false,
+				reason: `Group nesting limit (${maxGroupDepth}) reached.`,
+			};
+		}
+		return { ok: true };
+	};
+	const setGroupParent = (childId: number, parentId: number | null) => {
+		const child = groupState.groups.get(childId);
+		if (!child) {
+			return;
+		}
+		if (child.parentId === parentId) {
+			return;
+		}
+		if (child.parentId !== null) {
+			const prevParent = groupState.groups.get(child.parentId);
+			prevParent?.childGroupIds.delete(childId);
+		}
+		child.parentId = parentId;
+		if (parentId !== null) {
+			const parent = groupState.groups.get(parentId);
+			parent?.childGroupIds.add(childId);
+		}
+		updateGroupVisibility();
+	};
+	const updateGroupVisibility = () => {
+		groupState.groups.forEach((group) => {
+			group.container.visible = !isGroupHidden(group.id);
+		});
+		nodeState.nodes.forEach((node) => {
+			node.container.visible = !isNodeHidden(node.id);
+		});
+	};
 	const getGroupBounds = (group: GroupView): GroupBounds | null => {
 		const nodes = Array.from(group.nodeIds)
 			.map((id) => nodeState.nodes.get(id))
 			.filter((node): node is NonNullable<typeof node> => Boolean(node));
+		const childGroups = Array.from(group.childGroupIds)
+			.map((id) => groupState.groups.get(id))
+			.filter((child): child is GroupView => Boolean(child));
 
-		if (nodes.length === 0) {
+		if (nodes.length === 0 && childGroups.length === 0) {
 			return null;
 		}
 
-		return nodes.reduce<GroupBounds>(
-			(acc, node) => {
-				const x = node.container.position.x;
-				const y = node.container.position.y;
-				return {
-					minX: Math.min(acc.minX, x),
-					minY: Math.min(acc.minY, y),
-					maxX: Math.max(acc.maxX, x + node.width),
-					maxY: Math.max(acc.maxY, y + node.height),
+		const initial = nodes[0]
+			? {
+					minX: nodes[0].container.position.x,
+					minY: nodes[0].container.position.y,
+					maxX: nodes[0].container.position.x + nodes[0].width,
+					maxY: nodes[0].container.position.y + nodes[0].height,
+				}
+			: {
+					minX: childGroups[0].container.position.x,
+					minY: childGroups[0].container.position.y,
+					maxX: childGroups[0].container.position.x + childGroups[0].width,
+					maxY: childGroups[0].container.position.y + childGroups[0].height,
 				};
-			},
-			{
-				minX: nodes[0].container.position.x,
-				minY: nodes[0].container.position.y,
-				maxX: nodes[0].container.position.x + nodes[0].width,
-				maxY: nodes[0].container.position.y + nodes[0].height,
-			},
-		);
+
+		const nodeBounds = nodes.reduce<GroupBounds>((acc, node) => {
+			const x = node.container.position.x;
+			const y = node.container.position.y;
+			return {
+				minX: Math.min(acc.minX, x),
+				minY: Math.min(acc.minY, y),
+				maxX: Math.max(acc.maxX, x + node.width),
+				maxY: Math.max(acc.maxY, y + node.height),
+			};
+		}, initial);
+
+		return childGroups.reduce<GroupBounds>((acc, child) => {
+			const x = child.container.position.x;
+			const y = child.container.position.y;
+			return {
+				minX: Math.min(acc.minX, x),
+				minY: Math.min(acc.minY, y),
+				maxX: Math.max(acc.maxX, x + child.width),
+				maxY: Math.max(acc.maxY, y + child.height),
+			};
+		}, nodeBounds);
 	};
 
 	const buildGroupPortSpecs = (group: GroupView) => {
-		const specs: Array<
+		const specs = new Map<
+			string,
 			Pick<GroupPort, "id" | "name" | "type" | "direction" | "target">
-		> = [];
+		>();
+		const nodeIds = getGroupNodeIds(group.id);
+		const nodeIdSet = new Set(nodeIds);
 
-		Array.from(group.nodeIds)
-			.map((id) => nodeState.nodes.get(id))
-			.filter((node): node is NonNullable<typeof node> => Boolean(node))
-			.forEach((node) => {
-				node.ports.forEach((port) => {
-					specs.push({
-						id: `${node.id}:${port.id}`,
-						name: `${node.title.text}.${port.name}`,
-						type: port.type,
-						direction: port.direction,
-						target: { nodeId: node.id, portId: port.id },
-					});
-				});
+		const addSpec = (
+			nodeId: number,
+			portId: string,
+			direction: "input" | "output",
+		) => {
+			const node = nodeState.nodes.get(nodeId);
+			if (!node) {
+				return;
+			}
+			const port = node.ports.find((candidate) => candidate.id === portId);
+			if (!port) {
+				return;
+			}
+			const key = `${direction}:${nodeId}:${portId}`;
+			if (specs.has(key)) {
+				return;
+			}
+			specs.set(key, {
+				id: `${nodeId}:${portId}`,
+				name: `${node.title.text}.${port.name}`,
+				type: port.type,
+				direction,
+				target: { nodeId, portId },
 			});
+		};
 
-		return specs;
+		connectionState.connections.forEach((connection) => {
+			const fromInside = nodeIdSet.has(connection.from.nodeId);
+			const toInside = nodeIdSet.has(connection.to.nodeId);
+			if (fromInside && !toInside) {
+				addSpec(connection.from.nodeId, connection.from.portId, "output");
+				return;
+			}
+			if (toInside && !fromInside) {
+				addSpec(connection.to.nodeId, connection.to.portId, "input");
+			}
+		});
+
+		const ordered = Array.from(specs.values());
+		ordered.sort((a, b) => {
+			if (a.direction !== b.direction) {
+				return a.direction === "input" ? -1 : 1;
+			}
+			return a.name.localeCompare(b.name);
+		});
+		return ordered;
 	};
+
+	const isPortConnected = (port: GroupPort) =>
+		Array.from(connectionState.connections.values()).some((connection) =>
+			port.direction === "input"
+				? connection.to.nodeId === port.target.nodeId &&
+					connection.to.portId === port.target.portId
+				: connection.from.nodeId === port.target.nodeId &&
+					connection.from.portId === port.target.portId,
+		);
 
 	const renderGroupPorts = (group: GroupView) => {
 		if (!group.collapsed) {
@@ -124,6 +346,7 @@ export const createGroupSystem = ({
 			const shouldStroke = port.isHover || port.isDragTarget;
 			const radius = shouldStroke ? portStyles.hoverRadius : portStyles.radius;
 			const hitRadius = Math.max(portStyles.hitRadius, radius);
+			const isConnected = isPortConnected(port);
 			port.graphics.clear();
 			if (shouldStroke) {
 				port.graphics.setStrokeStyle({
@@ -139,7 +362,10 @@ export const createGroupSystem = ({
 				});
 			}
 			port.graphics.circle(0, y, radius);
-			port.graphics.fill({ color: portTypeColors[port.type], alpha: 1 });
+			port.graphics.fill({
+				color: portTypeColors[port.type],
+				alpha: isConnected ? 1 : 0,
+			});
 			if (shouldStroke) {
 				port.graphics.stroke();
 			}
@@ -157,6 +383,7 @@ export const createGroupSystem = ({
 				portStyles.radius + portStyles.labelOffset,
 				y - portStyles.radius,
 			);
+			port.label.alpha = isConnected && !port.isHover ? 0 : 1;
 		});
 
 		outputs.forEach((port, index) => {
@@ -164,6 +391,7 @@ export const createGroupSystem = ({
 			const shouldStroke = port.isHover || port.isDragTarget;
 			const radius = shouldStroke ? portStyles.hoverRadius : portStyles.radius;
 			const hitRadius = Math.max(portStyles.hitRadius, radius);
+			const isConnected = isPortConnected(port);
 			port.graphics.clear();
 			if (shouldStroke) {
 				port.graphics.setStrokeStyle({
@@ -179,7 +407,10 @@ export const createGroupSystem = ({
 				});
 			}
 			port.graphics.circle(group.width, y, radius);
-			port.graphics.fill({ color: portTypeColors[port.type], alpha: 1 });
+			port.graphics.fill({
+				color: portTypeColors[port.type],
+				alpha: isConnected ? 1 : 0,
+			});
 			if (shouldStroke) {
 				port.graphics.stroke();
 			}
@@ -197,6 +428,7 @@ export const createGroupSystem = ({
 				group.width - portStyles.outputLabelOffset,
 				y - 6,
 			);
+			port.label.alpha = isConnected && !port.isHover ? 0 : 1;
 		});
 	};
 
@@ -288,6 +520,22 @@ export const createGroupSystem = ({
 		});
 	};
 
+	const teardownCollapsedPortVisuals = (group: GroupView) => {
+		if (group.ports.length === 0) {
+			return;
+		}
+		group.ports.forEach((port) => {
+			group.container.removeChild(port.hitGraphics);
+			group.container.removeChild(port.graphics);
+			group.container.removeChild(port.label);
+			port.hitGraphics.destroy();
+			port.graphics.destroy();
+			port.label.destroy();
+		});
+		group.ports = [];
+		group.portKeys = [];
+	};
+
 	const renderGroup = (group: GroupView, isSelected: boolean) => {
 		const styles = getGroupStyles();
 		const isHover = group.isHover && !isSelected;
@@ -296,12 +544,13 @@ export const createGroupSystem = ({
 			: isHover
 				? styles.hoverBorderColor
 				: styles.borderColor;
+		const baseFillColor = group.color ?? styles.fillColor;
 		const fillAlpha = group.collapsed
 			? styles.collapsedFillAlpha
 			: styles.fillAlpha;
 		const fillColor = group.collapsed
-			? styles.collapsedFillColor
-			: styles.fillColor;
+			? (group.color ?? styles.collapsedFillColor)
+			: baseFillColor;
 		const borderWidth = group.collapsed
 			? styles.collapsedBorderWidth
 			: styles.borderWidth;
@@ -318,7 +567,7 @@ export const createGroupSystem = ({
 		group.background.fill({ color: fillColor, alpha: fillAlpha });
 		group.background.stroke();
 
-		group.title.text = group.collapsed ? group.label : `Group: ${group.label}`;
+		group.title.text = group.label;
 		group.title.position.set(10, 6);
 	};
 
@@ -378,27 +627,43 @@ export const createGroupSystem = ({
 			y: bounds.minY - groupPadding,
 		};
 		group.hitGraphics.clear();
-		group.hitGraphics.hitArea = new Rectangle(0, 0, 0, 0);
-		group.hitGraphics.eventMode = "none";
+		group.hitGraphics.rect(
+			-groupBackgroundHitPadding,
+			-groupBackgroundHitPadding,
+			group.width + groupBackgroundHitPadding * 2,
+			group.height + groupBackgroundHitPadding * 2,
+		);
+		group.hitGraphics.fill({ color: 0xffffff, alpha: 0 });
+		group.hitGraphics.hitArea = new Rectangle(
+			-groupBackgroundHitPadding,
+			-groupBackgroundHitPadding,
+			group.width + groupBackgroundHitPadding * 2,
+			group.height + groupBackgroundHitPadding * 2,
+		);
+		group.hitGraphics.eventMode = "static";
+		group.hitGraphics.cursor = "move";
 		group.container.eventMode = "passive";
 		renderGroup(group, groupState.selectedIds.has(group.id));
 	};
 
 	const updateAllGroupLayouts = () => {
-		groupState.groups.forEach((group) => {
+		const ordered = Array.from(groupState.groups.values()).sort(
+			(a, b) => getGroupDepth(b.id) - getGroupDepth(a.id),
+		);
+		ordered.forEach((group) => {
 			updateGroupLayout(group);
 		});
 	};
 
 	const setGroupCollapsed = (group: GroupView, collapsed: boolean) => {
+		if (group.collapsed === collapsed) {
+			return;
+		}
 		group.collapsed = collapsed;
-		group.nodeIds.forEach((nodeId) => {
-			const node = nodeState.nodes.get(nodeId);
-			if (node) {
-				node.container.visible = !collapsed;
-			}
-		});
-		group.container.visible = true;
+		if (!collapsed) {
+			teardownCollapsedPortVisuals(group);
+		}
+		updateGroupVisibility();
 		updateGroupLayout(group);
 	};
 
@@ -410,6 +675,9 @@ export const createGroupSystem = ({
 			collapsed?: boolean;
 			x?: number;
 			y?: number;
+			parentId?: number | null;
+			childGroupIds?: number[];
+			color?: number | null;
 		} = {},
 	) => {
 		const id = options.id ?? groupState.nextId++;
@@ -448,11 +716,14 @@ export const createGroupSystem = ({
 			background,
 			title,
 			label,
+			color: options.color ?? null,
 			ports: [],
 			width: groupMinWidth,
 			height: nodeDimensions.height,
 			isHover: false,
 			nodeIds: new Set(nodeIds),
+			childGroupIds: new Set(options.childGroupIds ?? []),
+			parentId: options.parentId ?? null,
 			collapsed: options.collapsed ?? false,
 			collapsedPosition: { x: 0, y: 0 },
 			portKeys: [],
@@ -460,6 +731,11 @@ export const createGroupSystem = ({
 
 		hitGraphics.on("pointerdown", (event) => {
 			onSelectGroup(group.id, event);
+			const clientEvent = event as unknown as PointerEvent;
+			if (clientEvent.detail === 2) {
+				onToggleGroupCollapsed(group.id);
+				return;
+			}
 			onStartGroupDrag(event, group.id);
 		});
 		hitGraphics.on("pointerover", () => {
@@ -481,6 +757,23 @@ export const createGroupSystem = ({
 		group.nodeIds.forEach((nodeId) => {
 			groupState.nodeToGroup.set(nodeId, id);
 		});
+		if (group.parentId !== null) {
+			const parent = groupState.groups.get(group.parentId);
+			parent?.childGroupIds.add(group.id);
+			group.nodeIds.forEach((nodeId) => {
+				parent?.nodeIds.delete(nodeId);
+			});
+		}
+		group.childGroupIds.forEach((childId) => {
+			const child = groupState.groups.get(childId);
+			if (child) {
+				if (child.parentId !== null) {
+					const previousParent = groupState.groups.get(child.parentId);
+					previousParent?.childGroupIds.delete(childId);
+				}
+				child.parentId = group.id;
+			}
+		});
 
 		const bounds = getGroupBounds(group);
 		if (bounds) {
@@ -494,6 +787,7 @@ export const createGroupSystem = ({
 		}
 
 		setGroupCollapsed(group, options.collapsed ?? false);
+		updateGroupVisibility();
 		return group;
 	};
 
@@ -516,6 +810,10 @@ export const createGroupSystem = ({
 	};
 
 	const removeGroup = (group: GroupView) => {
+		if (group.parentId !== null) {
+			const parent = groupState.groups.get(group.parentId);
+			parent?.childGroupIds.delete(group.id);
+		}
 		group.nodeIds.forEach((nodeId) => {
 			groupState.nodeToGroup.delete(nodeId);
 			const node = nodeState.nodes.get(nodeId);
@@ -538,13 +836,29 @@ export const createGroupSystem = ({
 	};
 
 	const deleteGroups = (groupIds: number[]) => {
-		const removals: number[] = [];
+		const removals = new Set<number>();
 		groupIds.forEach((id) => {
-			const group = groupState.groups.get(id);
-			if (group) {
-				removals.push(id);
+			if (groupState.groups.has(id)) {
+				removals.add(id);
 			}
 		});
+		const queue = Array.from(removals);
+		while (queue.length > 0) {
+			const id = queue.pop();
+			if (typeof id !== "number") {
+				continue;
+			}
+			const group = groupState.groups.get(id);
+			if (!group) {
+				continue;
+			}
+			group.childGroupIds.forEach((childId) => {
+				if (!removals.has(childId)) {
+					removals.add(childId);
+					queue.push(childId);
+				}
+			});
+		}
 		removals.forEach((id) => {
 			const group = groupState.groups.get(id);
 			if (!group) {
@@ -556,7 +870,21 @@ export const createGroupSystem = ({
 					node.container.destroy({ children: true });
 				}
 				nodeState.nodes.delete(nodeId);
+				groupState.nodeToGroup.delete(nodeId);
 			});
+		});
+		removals.forEach((id) => {
+			const group = groupState.groups.get(id);
+			if (!group) {
+				return;
+			}
+			group.childGroupIds.forEach((childId) => {
+				const child = groupState.groups.get(childId);
+				if (child) {
+					child.parentId = null;
+				}
+			});
+			group.childGroupIds.clear();
 			removeGroup(group);
 		});
 	};
@@ -565,9 +893,26 @@ export const createGroupSystem = ({
 		groupIds.forEach((id) => {
 			const group = groupState.groups.get(id);
 			if (group) {
+				const parentId = group.parentId;
+				if (parentId !== null) {
+					const parent = groupState.groups.get(parentId);
+					group.nodeIds.forEach((nodeId) => {
+						parent?.nodeIds.add(nodeId);
+						groupState.nodeToGroup.set(nodeId, parentId);
+					});
+				} else {
+					group.nodeIds.forEach((nodeId) => {
+						groupState.nodeToGroup.delete(nodeId);
+					});
+				}
+				group.nodeIds.clear();
+				group.childGroupIds.forEach((childId) => {
+					setGroupParent(childId, parentId);
+				});
 				removeGroup(group);
 			}
 		});
+		updateGroupVisibility();
 	};
 
 	const removeNodesFromGroups = (nodeIds: number[]) => {
@@ -588,7 +933,7 @@ export const createGroupSystem = ({
 			nodeIds.forEach((nodeId) => {
 				group.nodeIds.delete(nodeId);
 			});
-			if (group.nodeIds.size === 0) {
+			if (group.nodeIds.size === 0 && group.childGroupIds.size === 0) {
 				removeGroup(group);
 				return;
 			}
@@ -605,7 +950,13 @@ export const createGroupSystem = ({
 			return false;
 		}
 		const group = groupState.groups.get(groupId);
-		return group?.collapsed ?? false;
+		if (!group) {
+			return false;
+		}
+		if (group.collapsed) {
+			return true;
+		}
+		return isGroupHidden(group.id);
 	};
 
 	const getGroupPortForRef = (ref: PortRef) => {
@@ -614,7 +965,7 @@ export const createGroupSystem = ({
 			return null;
 		}
 		const group = groupState.groups.get(groupId);
-		if (!group || !group.collapsed) {
+		if (!group || !group.collapsed || isGroupHidden(group.id)) {
 			return null;
 		}
 		const port = group.ports.find(
@@ -649,7 +1000,7 @@ export const createGroupSystem = ({
 		const thresholdSquared = threshold * threshold;
 
 		for (const group of groupState.groups.values()) {
-			if (!group.collapsed) {
+			if (!group.collapsed || isGroupHidden(group.id)) {
 				continue;
 			}
 			for (const port of group.ports) {
@@ -674,6 +1025,32 @@ export const createGroupSystem = ({
 		});
 	};
 
+	const updateGroupLabel = (groupId: number, label: string) => {
+		const group = groupState.groups.get(groupId);
+		if (!group) {
+			return false;
+		}
+		group.label = label;
+		renderGroup(group, groupState.selectedIds.has(group.id));
+		if (group.collapsed) {
+			renderGroupPorts(group);
+		}
+		return true;
+	};
+
+	const updateGroupColor = (groupId: number, color: number | null) => {
+		const group = groupState.groups.get(groupId);
+		if (!group) {
+			return false;
+		}
+		group.color = color;
+		renderGroup(group, groupState.selectedIds.has(group.id));
+		if (group.collapsed) {
+			renderGroupPorts(group);
+		}
+		return true;
+	};
+
 	return {
 		createGroup,
 		updateAllGroupLayouts,
@@ -687,9 +1064,17 @@ export const createGroupSystem = ({
 		removeNodesFromGroups,
 		getGroupForNode,
 		isNodeHidden,
+		isGroupHidden,
+		getGroupDepth,
+		getGroupAncestors,
+		getGroupNodeIds,
+		canSetGroupParent,
+		setGroupParent,
 		getGroupPortForRef,
 		getGroupPortWorldPosition,
 		findGroupPortAt,
 		renderAllGroups,
+		updateGroupLabel,
+		updateGroupColor,
 	};
 };

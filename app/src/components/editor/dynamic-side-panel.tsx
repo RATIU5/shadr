@@ -1,5 +1,7 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { createStore } from "solid-js/store";
+import { FilterableSelect } from "./filterable-select";
+import { NumberInput } from "./number-input";
 
 type DynamicPanelValue = string | number | boolean;
 
@@ -44,11 +46,11 @@ type DynamicSidePanelProps = {
 };
 
 const inputClass =
-	"w-full rounded-lg border border-[#2a3342] bg-[#0f131b] px-2 py-1.5 text-[12px] text-[#f4f5f7] focus:outline-none focus:border-[#4f8dd9] focus:ring-2 focus:ring-[rgba(79,141,217,0.2)]";
+	"w-full rounded border border-[#2a3342] bg-[#0f131b] px-2 py-1.5 text-[12px] text-[#f4f5f7] focus:outline-none focus:border-[#4f8dd9] focus:ring-2 focus:ring-[rgba(79,141,217,0.2)]";
 
 const labelClass = "text-[10px] uppercase tracking-[0.16em] text-[#7f8796]";
 
-const sectionClass = "rounded-xl border border-[#232b3a] bg-[#0f131c] p-3";
+const sectionClass = "rounded-lg border border-[#232b3a] bg-[#0f131c] p-3";
 
 export const DynamicSidePanel = (props: DynamicSidePanelProps) => {
 	const [activeTabId, setActiveTabId] = createSignal(
@@ -112,13 +114,13 @@ export const DynamicSidePanel = (props: DynamicSidePanelProps) => {
 		<div
 			class={`absolute z-[6] w-[min(360px,calc(100%-32px))] ${props.class ?? "right-4 top-4"}`}
 		>
-			<div class="flex max-h-[calc(100vh-140px)] flex-col gap-3 overflow-hidden rounded-2xl border border-[#2a3241] bg-[rgba(13,17,25,0.94)] p-3 shadow-[0_18px_42px_rgba(0,0,0,0.45)] backdrop-blur">
+			<div class="flex max-h-[calc(100vh-140px)] flex-col gap-3 overflow-hidden rounded-lg border border-[#2a3241] bg-[rgba(13,17,25,0.94)] p-3 shadow-[0_18px_42px_rgba(0,0,0,0.45)] backdrop-blur">
 				<div class="flex items-center justify-between gap-2">
 					<div class="text-[11px] uppercase tracking-[0.18em] text-[#9aa6b5]">
 						{props.title}
 					</div>
 				</div>
-				<div class="flex flex-wrap gap-1 rounded-xl border border-[#1f2430] bg-[#0b0f16] p-1">
+				<div class="flex flex-wrap gap-1 rounded-lg border border-[#1f2430] bg-[#0b0f16] p-1">
 					<For each={props.tabs}>
 						{(tab) => (
 							<button
@@ -155,7 +157,7 @@ export const DynamicSidePanel = (props: DynamicSidePanelProps) => {
 
 									if (item.type === "paragraph") {
 										return (
-											<div class="rounded-xl border border-[#1f2430] bg-[#0b0f16] p-3 text-[12px] leading-[1.5] text-[#b9c2cf]">
+											<div class="rounded-lg border border-[#1f2430] bg-[#0b0f16] p-3 text-[12px] leading-[1.5] text-[#b9c2cf]">
 												{item.text}
 											</div>
 										);
@@ -196,21 +198,13 @@ export const DynamicSidePanel = (props: DynamicSidePanelProps) => {
 										<div class={sectionClass}>
 											<div class={labelClass}>{item.label}</div>
 											<Show when={item.inputType === "select"}>
-												<select
+												<FilterableSelect
+													value={String(displayValue)}
+													options={item.options ?? []}
+													onChange={(value) => updateValue(item.id, value)}
 													class={`mt-2 ${inputClass}`}
-													value={displayValue}
-													onChange={(event) =>
-														updateValue(item.id, event.currentTarget.value)
-													}
-												>
-													<For each={item.options ?? []}>
-														{(option) => (
-															<option value={option.value}>
-																{option.label}
-															</option>
-														)}
-													</For>
-												</select>
+													ariaLabel={item.label}
+												/>
 											</Show>
 											<Show when={item.inputType === "textarea"}>
 												<textarea
@@ -235,15 +229,19 @@ export const DynamicSidePanel = (props: DynamicSidePanelProps) => {
 												/>
 											</Show>
 											<Show when={item.inputType === "number"}>
-												<input
-													type="number"
-													class={`mt-2 ${inputClass}`}
-													value={displayValue}
+												<NumberInput
+													value={
+														typeof value === "number"
+															? value
+															: Number.parseFloat(String(value)) || 0
+													}
 													min={item.min}
 													max={item.max}
 													step={item.step}
-													onInput={(event) =>
-														updateValue(item.id, event.currentTarget.value)
+													class={`mt-2 ${inputClass}`}
+													ariaLabel={item.label}
+													onChange={(nextValue) =>
+														updateValue(item.id, nextValue)
 													}
 												/>
 											</Show>

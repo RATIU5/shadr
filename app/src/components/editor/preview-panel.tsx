@@ -10,10 +10,23 @@ type PreviewPanelProps = {
 
 export const PreviewPanel = (props: PreviewPanelProps) => (
 	<div class="absolute bottom-24 right-4 z-[5] w-[min(360px,calc(100%-32px))]">
-		<div class="flex flex-col gap-2 rounded-2xl border border-[#2a3241] bg-[rgba(13,17,25,0.94)] p-3 shadow-[0_18px_42px_rgba(0,0,0,0.45)] backdrop-blur">
+		<div class="flex flex-col gap-2 rounded-lg border border-[#2a3241] bg-[rgba(13,17,25,0.94)] p-3 shadow-[0_18px_42px_rgba(0,0,0,0.45)] backdrop-blur">
 			<div class="flex items-center justify-between gap-2">
-				<div class="text-[11px] uppercase tracking-[0.16em] text-[#9aa6b5]">
-					Shader Preview
+				<div class="flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-[#9aa6b5]">
+					<span>Shader Preview</span>
+					<span
+						class="rounded-full border border-[#2a3241] bg-[#121822] px-2 py-0.5 text-[9px] uppercase tracking-[0.18em] text-[#9aa6b5]"
+						classList={{
+							"border-[#244a39] bg-[#0f1c16] text-[#98f5c3]":
+								props.status.tone === "ready",
+							"border-[#4c3a20] bg-[#201a12] text-[#ffd07a]":
+								props.status.tone === "warning",
+							"border-[#4c2c2c] bg-[#201417] text-[#ff9a8a]":
+								props.status.tone === "error",
+						}}
+					>
+						{props.status.tone}
+					</span>
 				</div>
 				<div class="flex flex-col items-end text-[10px] text-[#7f8796]">
 					<span>{props.textureName}</span>
@@ -25,7 +38,7 @@ export const PreviewPanel = (props: PreviewPanelProps) => (
 					</Show>
 				</div>
 			</div>
-			<div class="h-[190px] overflow-hidden rounded-xl border border-[#1f2430] bg-[#0b0d12]">
+			<div class="h-[190px] overflow-hidden rounded-lg border border-[#1f2430] bg-[#0b0d12]">
 				<canvas
 					ref={(element) => props.setPreviewRef(element)}
 					id="preview-canvas"

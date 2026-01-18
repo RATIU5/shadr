@@ -1,6 +1,6 @@
 # Targets
 
-Last updated: 2026-01-16
+Last updated: 2026-01-17
 
 **FOCUS ON ONE TASK OR FEATURE AT A TIME**
 
@@ -10,18 +10,18 @@ Last updated: 2026-01-16
 
 ## Feature Targets
 
-- [ ] User can navigate around an infinite grid in WebGL (zoom, pan, drag)
-- [ ] Editor supports creating/deleting nodes (WebGL rendered, not DOM nodes) via context menu or hotkeys
-- [ ] Nodes have typed input/output ports (float, vec2/3/4, texture, color)
-- [ ] User can connect/disconnect ports by click-dragging between compatible types
-- [ ] Real-time shader preview window showing compiled output on test geometry
-- [ ] Node library with common operations (math, texture sampling, vertex/fragment inputs/outputs, constants)
-- [ ] Graph compiles to valid GLSL vertex/fragment shader code
-- [ ] Save/load graph as JSON
-- [ ] Undo/redo for all graph operations
-- [ ] Node selection (single/multi) and batch operations (delete, move)
-- [ ] Type validation prevents invalid connections
-- [ ] Export compiled GLSL code
+- [x] User can navigate around an infinite grid in WebGL (zoom, pan, drag)
+- [x] Editor supports creating/deleting nodes (WebGL rendered, not DOM nodes) via context menu or hotkeys
+- [x] Nodes have typed input/output ports (float, vec2/3/4, texture, color)
+- [x] User can connect/disconnect ports by click-dragging between compatible types
+- [x] Real-time shader preview window showing compiled output on test geometry
+- [x] Node library with common operations (math, texture sampling, vertex/fragment inputs/outputs, constants)
+- [x] Graph compiles to valid GLSL vertex/fragment shader code
+- [x] Save/load graph as JSON
+- [x] Undo/redo for all graph operations
+- [x] Node selection (single/multi) and batch operations (delete, move)
+- [x] Type validation prevents invalid connections
+- [x] Export compiled GLSL code
 
 ## Quality Targets
 

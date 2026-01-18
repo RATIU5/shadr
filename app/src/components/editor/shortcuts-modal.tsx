@@ -11,7 +11,7 @@ type ShortcutsModalProps = {
 export const ShortcutsModal = (props: ShortcutsModalProps) => (
 	<Show when={props.open}>
 		<div
-			class="fixed inset-0 z-[9] flex items-start justify-center bg-[rgba(8,10,14,0.72)] px-4 py-10"
+			class="fixed inset-0 z-[9] flex items-start justify-center bg-transparent px-4 py-10"
 			onPointerDown={(event) => {
 				if (event.target === event.currentTarget) {
 					props.onClose();
@@ -19,7 +19,7 @@ export const ShortcutsModal = (props: ShortcutsModalProps) => (
 			}}
 		>
 			<div
-				class="w-full max-w-3xl max-h-[calc(100vh-80px)] overflow-y-auto rounded-2xl border border-[#2a3241] bg-[#0f131c] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
+				class="w-full max-w-3xl max-h-[calc(100vh-80px)] overflow-y-auto rounded-lg border border-[#2a3241] bg-[#0f131c] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
 				onPointerDown={(event) => event.stopPropagation()}
 			>
 				<div class="flex items-center justify-between gap-2">
@@ -37,7 +37,7 @@ export const ShortcutsModal = (props: ShortcutsModalProps) => (
 				<div class="mt-4 grid gap-4">
 					<For each={props.groups}>
 						{(group) => (
-							<div class="rounded-xl border border-[#1f2430] bg-[#0c1018] p-3">
+							<div class="rounded-lg border border-[#1f2430] bg-[#0c1018] p-3">
 								<div class="flex flex-wrap items-center justify-between gap-2">
 									<div class="text-[12px] uppercase tracking-[0.12em] text-[#b9c2cf]">
 										{group.label}

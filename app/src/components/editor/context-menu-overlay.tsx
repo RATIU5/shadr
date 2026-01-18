@@ -21,7 +21,7 @@ export const ContextMenuOverlay = (props: ContextMenuOverlayProps) => (
 				}}
 			>
 				<div
-					class="absolute min-w-[180px] max-h-[60vh] overflow-y-auto bg-[#151924] border border-[#262d3a] rounded-[10px] p-2 shadow-[0_16px_36px_rgba(0,0,0,0.45)] flex flex-col gap-1"
+					class="absolute min-w-[180px] max-h-[60vh] overflow-y-auto bg-[#151924] border border-[#262d3a] rounded-lg p-2 shadow-[0_16px_36px_rgba(0,0,0,0.45)] flex flex-col gap-1"
 					ref={(element) => props.setMenuRef(element)}
 					style={{
 						left: `${props.position.x}px`,

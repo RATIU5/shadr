@@ -33,7 +33,7 @@ export type GroupStyleSettings = {
 };
 
 export type ConnectionStyleSettings = {
-	style: "curved" | "straight";
+	style: "curved" | "straight" | "step" | "orthogonal";
 	width: number;
 	hoverWidth: number;
 	hoverDistance: number;
@@ -46,6 +46,11 @@ export type ConnectionStyleSettings = {
 	flowSpeed: number;
 	flowRadius: number;
 	flowAlpha: number;
+	emphasisMode: boolean;
+	bundleConnections: boolean;
+	lodEnabled: boolean;
+	lodDistance: number;
+	showLabels: boolean;
 };
 
 export type EditorVisualSettings = {
@@ -68,12 +73,12 @@ export const defaultVisualSettings: EditorVisualSettings = {
 		minorColor: 0xd6d6d6,
 		majorColor: 0xb0b0b0,
 		axisColor: 0x8a8a8a,
-		minorAlpha: 0.35,
-		majorAlpha: 0.6,
-		axisAlpha: 0.9,
+		minorAlpha: 0.05,
+		majorAlpha: 0.05,
+		axisAlpha: 0.05,
 	},
 	nodes: {
-		cornerRadius: 8,
+		cornerRadius: 6,
 		fillColor: 0xf4f4f4,
 		hoverFillColor: 0xfafafa,
 		borderColor: 0x6b6b6b,
@@ -93,8 +98,8 @@ export const defaultVisualSettings: EditorVisualSettings = {
 	},
 	connections: {
 		style: "curved",
-		width: 2,
-		hoverWidth: 4,
+		width: 1,
+		hoverWidth: 3,
 		hoverDistance: 10,
 		hoverSegments: 12,
 		ghostAlpha: 0.45,
@@ -105,5 +110,10 @@ export const defaultVisualSettings: EditorVisualSettings = {
 		flowSpeed: 120,
 		flowRadius: 2.5,
 		flowAlpha: 0.7,
+		emphasisMode: false,
+		bundleConnections: false,
+		lodEnabled: true,
+		lodDistance: 900,
+		showLabels: false,
 	},
 };

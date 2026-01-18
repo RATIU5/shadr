@@ -1,7 +1,7 @@
+import { convertPortExpression } from "./editor-state";
 import { getMathOperationId } from "./math-ops";
 import {
 	getDefaultNodeState,
-	getInputSelection,
 	getInputSelectOptions,
 	getNodeDefinition,
 	normalizeNodeState,
@@ -14,7 +14,12 @@ import type {
 	PortRef,
 	PortType,
 	ShaderCompileMessage,
+	ShaderCompileOptions,
 	ShaderCompileResult,
+	ShaderComplexity,
+	ShaderDebugTrace,
+	ShaderPerformanceWarnings,
+	ShaderPreviewTarget,
 } from "./types";
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
@@ -32,22 +37,24 @@ const getParamString = (state: NodeState, id: string, fallback: string) => {
 	return typeof value === "string" ? value : fallback;
 };
 
-const getParamNumber = (state: NodeState, id: string, fallback: number) => {
-	const value = state.params[id];
-	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-};
+const defaultVector = { x: 0, y: 0, z: 0, w: 0 };
+const defaultColor = { r: 1, g: 1, b: 1, a: 1 };
+const getNow = () =>
+	typeof performance === "undefined" ? Date.now() : performance.now();
 
-const getParamBoolean = (state: NodeState, id: string, fallback: boolean) => {
-	const value = state.params[id];
-	return typeof value === "boolean" ? value : fallback;
-};
+const getSocketNumber = (value: unknown, fallback: number) =>
+	typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
-const getParamVector = (
-	state: NodeState,
-	id: string,
+const getSocketBoolean = (value: unknown, fallback: boolean) =>
+	typeof value === "boolean" ? value : fallback;
+
+const getSocketString = (value: unknown, fallback: string) =>
+	typeof value === "string" ? value : fallback;
+
+const getSocketVector = (
+	value: unknown,
 	fallback: { x: number; y: number; z?: number; w?: number },
 ) => {
-	const value = state.params[id];
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		return fallback;
 	}
@@ -63,12 +70,10 @@ const getParamVector = (
 	};
 };
 
-const getParamColor = (
-	state: NodeState,
-	id: string,
+const getSocketColor = (
+	value: unknown,
 	fallback: { r: number; g: number; b: number; a: number },
 ) => {
-	const value = state.params[id];
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		return fallback;
 	}
@@ -89,8 +94,52 @@ const getParamColor = (
 	};
 };
 
-const defaultVector = { x: 0, y: 0, z: 0, w: 0 };
-const defaultColor = { r: 1, g: 1, b: 1, a: 1 };
+const formatSocketValue = (value: unknown, type: PortType) => {
+	if (typeof value === "string") {
+		return value;
+	}
+	if (type === "float") {
+		if (typeof value === "boolean") {
+			return value ? "1.0" : "0.0";
+		}
+		return formatFloat(
+			typeof value === "number" && Number.isFinite(value) ? value : 0,
+		);
+	}
+	if (type === "int") {
+		const numeric =
+			typeof value === "number" && Number.isFinite(value) ? value : 0;
+		return `${Math.round(numeric)}`;
+	}
+	if (type === "vec2") {
+		const vector = getSocketVector(value, defaultVector);
+		return `vec2(${formatFloat(vector.x)}, ${formatFloat(vector.y)})`;
+	}
+	if (type === "vec3") {
+		const vector = getSocketVector(value, defaultVector);
+		return `vec3(${formatFloat(vector.x)}, ${formatFloat(vector.y)}, ${formatFloat(
+			vector.z ?? 0,
+		)})`;
+	}
+	if (type === "vec4") {
+		const vector = getSocketVector(value, defaultVector);
+		return `vec4(${formatFloat(vector.x)}, ${formatFloat(vector.y)}, ${formatFloat(
+			vector.z ?? 0,
+		)}, ${formatFloat(vector.w ?? 0)})`;
+	}
+	if (type === "color") {
+		const color = getSocketColor(value, defaultColor);
+		const r = formatFloat(clamp01(color.r));
+		const g = formatFloat(clamp01(color.g));
+		const b = formatFloat(clamp01(color.b));
+		const a = formatFloat(clamp01(color.a));
+		return `vec4(${r}, ${g}, ${b}, ${a})`;
+	}
+	if (type === "texture") {
+		return "u_texture";
+	}
+	return formatFloat(0);
+};
 
 const getOutputPortType = (context: NodeCompileContext): PortType => {
 	const port = context.node.ports.find(
@@ -171,6 +220,26 @@ const buildBinaryFunctionExpression = (
 	return `${fn}(${aExpr}, ${bExpr})`;
 };
 
+const buildComparisonExpression = (
+	context: NodeCompileContext,
+	portType: PortType,
+	kind: "less" | "greater",
+) => {
+	const aType = context.getInputPortType("a", portType);
+	const bType = context.getInputPortType("b", portType);
+	const aExpr = context.getInputExpression("a", aType);
+	const bExpr = context.getInputExpression("b", bType);
+	const op = kind === "less" ? "<" : ">";
+	const vectorOp = kind === "less" ? "lessThan" : "greaterThan";
+	if (portType === "float") {
+		return `(${aExpr} ${op} ${bExpr} ? 1.0 : 0.0)`;
+	}
+	if (portType === "vec2" || portType === "vec3" || portType === "vec4") {
+		return `${portType}(${vectorOp}(${aExpr}, ${bExpr}))`;
+	}
+	return `(${aExpr} ${op} ${bExpr} ? 1.0 : 0.0)`;
+};
+
 const buildCompareExpression = (
 	context: NodeCompileContext,
 	portType: PortType,
@@ -182,6 +251,23 @@ const buildCompareExpression = (
 	const epsilonExpr = context.getInputExpression("epsilon", "float", "0.001");
 	const deltaExpr = `abs(${aExpr} - ${bExpr})`;
 	return `1.0 - step(max(${epsilonExpr}, 0.000001), ${deltaExpr})`;
+};
+
+const buildHyperbolicExpression = (
+	context: NodeCompileContext,
+	portType: PortType,
+	inputId: string,
+	kind: "sinh" | "cosh" | "tanh",
+) => {
+	const inputType = context.getInputPortType(inputId, portType);
+	const inputExpr = context.getInputExpression(inputId, inputType);
+	if (kind === "sinh") {
+		return `0.5 * (exp(${inputExpr}) - exp(-(${inputExpr})))`;
+	}
+	if (kind === "cosh") {
+		return `0.5 * (exp(${inputExpr}) + exp(-(${inputExpr})))`;
+	}
+	return `(exp(2.0 * (${inputExpr})) - 1.0) / (exp(2.0 * (${inputExpr})) + 1.0)`;
 };
 
 const buildSmoothMinExpression = (
@@ -274,9 +360,9 @@ const buildPingPongExpression = (
 	portType: PortType,
 ) => {
 	const valueType = context.getInputPortType("value", portType);
-	const lengthType = context.getInputPortType("length", portType);
+	const lengthType = context.getInputPortType("scale", portType);
 	const valueExpr = context.getInputExpression("value", valueType);
-	const lengthExpr = context.getInputExpression("length", lengthType, "1.0");
+	const lengthExpr = context.getInputExpression("scale", lengthType, "1.0");
 	const doubleLength = `(${lengthExpr} * 2.0)`;
 	const modExpr = `mod(${valueExpr}, ${doubleLength})`;
 	return `(${lengthExpr} - abs(${modExpr} - ${lengthExpr}))`;
@@ -313,34 +399,36 @@ const buildSelectExpression = (
 
 const compileConstantsNode = (context: NodeCompileContext) => {
 	const type = getParamString(context.state, "type", "float");
+	const socketValue = context.getSocketValue("out");
 	if (type === "vec2") {
-		const vector = getParamVector(context.state, "vectorValue", defaultVector);
+		const vector = getSocketVector(socketValue, defaultVector);
 		return `vec2(${formatFloat(vector.x)}, ${formatFloat(vector.y)})`;
 	}
 	if (type === "vec3") {
-		const vector = getParamVector(context.state, "vectorValue", defaultVector);
+		const vector = getSocketVector(socketValue, defaultVector);
 		return `vec3(${formatFloat(vector.x)}, ${formatFloat(vector.y)}, ${formatFloat(vector.z ?? 0)})`;
 	}
 	if (type === "vec4") {
-		const vector = getParamVector(context.state, "vectorValue", defaultVector);
+		const vector = getSocketVector(socketValue, defaultVector);
 		return `vec4(${formatFloat(vector.x)}, ${formatFloat(vector.y)}, ${formatFloat(vector.z ?? 0)}, ${formatFloat(vector.w ?? 0)})`;
 	}
 	if (type === "color") {
-		const color = getParamColor(context.state, "colorValue", defaultColor);
+		const color = getSocketColor(socketValue, defaultColor);
 		const r = formatFloat(clamp01(color.r));
 		const g = formatFloat(clamp01(color.g));
 		const b = formatFloat(clamp01(color.b));
 		const a = formatFloat(clamp01(color.a));
 		return `vec4(${r}, ${g}, ${b}, ${a})`;
 	}
-	const value = getParamNumber(context.state, "floatValue", 0);
+	const value = getSocketNumber(socketValue, 0);
 	return formatFloat(value);
 };
 
 const compileInputsNode = (context: NodeCompileContext) => {
 	const inputType = getParamString(context.state, "type", "number");
+	const socketValue = context.getSocketValue("out");
 	if (inputType === "color") {
-		const color = getParamColor(context.state, "colorValue", defaultColor);
+		const color = getSocketColor(socketValue, defaultColor);
 		const r = formatFloat(clamp01(color.r));
 		const g = formatFloat(clamp01(color.g));
 		const b = formatFloat(clamp01(color.b));
@@ -348,24 +436,24 @@ const compileInputsNode = (context: NodeCompileContext) => {
 		return `vec4(${r}, ${g}, ${b}, ${a})`;
 	}
 	if (inputType === "checkbox") {
-		return getParamBoolean(context.state, "checked", false) ? "1.0" : "0.0";
+		return getSocketBoolean(socketValue, false) ? "1.0" : "0.0";
 	}
 	if (inputType === "text") {
-		const text = getParamString(context.state, "textValue", "");
+		const text = getSocketString(socketValue, "");
 		const parsed = Number.parseFloat(text);
 		return formatFloat(Number.isFinite(parsed) ? parsed : 0);
 	}
 	if (inputType === "select") {
-		const selection = getInputSelection(context.state);
+		const options = getInputSelectOptions(context.state);
+		const selection = getSocketString(socketValue, options[0] ?? "");
 		const parsed = Number.parseFloat(selection);
 		if (Number.isFinite(parsed)) {
 			return formatFloat(parsed);
 		}
-		const options = getInputSelectOptions(context.state);
 		const index = options.indexOf(selection);
 		return formatFloat(index >= 0 ? index : 0);
 	}
-	const value = getParamNumber(context.state, "numberValue", 0);
+	const value = getSocketNumber(socketValue, 0);
 	return formatFloat(value);
 };
 
@@ -426,6 +514,10 @@ const compileMathNode = (context: NodeCompileContext) => {
 			return buildBinaryFunctionExpression(context, portType, "min", "a", "b");
 		case "max":
 			return buildBinaryFunctionExpression(context, portType, "max", "a", "b");
+		case "less-than":
+			return buildComparisonExpression(context, portType, "less");
+		case "greater-than":
+			return buildComparisonExpression(context, portType, "greater");
 		case "sign":
 			return buildUnaryExpression(context, portType, "in", "sign");
 		case "compare":
@@ -448,18 +540,31 @@ const compileMathNode = (context: NodeCompileContext) => {
 			return buildTruncatedModuloExpression(context, portType);
 		case "mod-float":
 			return buildBinaryFunctionExpression(context, portType, "mod", "a", "b");
+		case "mod-trunc":
+			return buildTruncatedModuloExpression(context, portType);
+		case "mod-floor":
+			return buildBinaryFunctionExpression(context, portType, "mod", "a", "b");
 		case "wrap":
 			return buildWrapExpression(context, portType);
 		case "snap":
 			return buildSnapExpression(context, portType);
+		case "pingpong":
 		case "ping-pong":
 			return buildPingPongExpression(context, portType);
 		case "sin":
+		case "sine":
 			return buildUnaryExpression(context, portType, "in", "sin");
 		case "cos":
+		case "cosine":
 			return buildUnaryExpression(context, portType, "in", "cos");
 		case "tan":
 			return buildUnaryExpression(context, portType, "in", "tan");
+		case "sinh":
+			return buildHyperbolicExpression(context, portType, "in", "sinh");
+		case "cosh":
+			return buildHyperbolicExpression(context, portType, "in", "cosh");
+		case "tanh":
+			return buildHyperbolicExpression(context, portType, "in", "tanh");
 		case "asin":
 			return buildUnaryExpression(context, portType, "in", "asin");
 		case "acos":
@@ -809,6 +914,7 @@ attachCompileHandlers();
 export const compileGraphToGlsl = (
 	nodes: Map<number, NodeView>,
 	connections: Map<string, Connection>,
+	options: ShaderCompileOptions = {},
 ): ShaderCompileResult => {
 	const messages: ShaderCompileMessage[] = [];
 	const addError = (message: string) => {
@@ -873,6 +979,14 @@ export const compileGraphToGlsl = (
 		);
 	});
 
+	const previewTarget = options.previewTarget ?? null;
+	const traceEnabled = options.trace === true;
+	const traceSteps: ShaderDebugTrace["steps"] = [];
+	const tracePortExpressions: Record<string, string> = {};
+	const traceConnectionExpressions: Record<string, string> = {};
+	const traceNodeTimings: Record<number, number> = {};
+	const traceUsedConnections = new Set<string>();
+
 	type ShaderStage = "vertex" | "fragment";
 	const usedNodes = new Set<number>();
 
@@ -880,7 +994,7 @@ export const compileGraphToGlsl = (
 		const outputVars = new Map<string, string>();
 		const visiting = new Set<string>();
 		const lines: string[] = [];
-		const emitPortExpression = (ref: PortRef): string => {
+		const emitPortExpression = (ref: PortRef, depth = 0): string => {
 			const key = `${ref.nodeId}:${ref.portId}`;
 			const cached = outputVars.get(key);
 			if (cached) {
@@ -914,6 +1028,8 @@ export const compileGraphToGlsl = (
 
 			const varName = `n${node.id}_${sanitizeName(port.id)}`;
 			const glslType = glslTypeForPort(port.type);
+			const getSocketValue = (socketId: string) =>
+				node.socketValues?.[socketId] ?? null;
 			const getInputExpression = (
 				inputId: string,
 				type: PortType,
@@ -921,9 +1037,31 @@ export const compileGraphToGlsl = (
 			) => {
 				const connection = inputConnections.get(`${node.id}:${inputId}`);
 				if (!connection) {
-					return fallback ?? defaultValueForPort(type);
+					const socketValue = getSocketValue(inputId);
+					const socketExpression =
+						socketValue !== null ? formatSocketValue(socketValue, type) : null;
+					return socketExpression ?? fallback ?? defaultValueForPort(type);
 				}
-				return emitPortExpression(connection.from);
+				const outputNode = nodes.get(connection.from.nodeId);
+				const outputPort = outputNode?.ports.find(
+					(candidate) => candidate.id === connection.from.portId,
+				);
+				const inputPort = node.ports.find(
+					(candidate) => candidate.id === inputId,
+				);
+				const outputType = outputPort?.type ?? type;
+				const inputType = inputPort?.type ?? type;
+				const expression = emitPortExpression(connection.from, depth + 1);
+				if (traceEnabled) {
+					traceUsedConnections.add(connection.id);
+					const traceKey = `${stage}:${connection.id}`;
+					const portKey = `${stage}:${connection.from.nodeId}:${connection.from.portId}`;
+					traceConnectionExpressions[traceKey] =
+						tracePortExpressions[portKey] ?? expression;
+				}
+				return outputType === inputType
+					? expression
+					: convertPortExpression(outputType, inputType, expression);
 			};
 
 			const getInputPortType = (inputId: string, fallback: PortType) => {
@@ -931,6 +1069,25 @@ export const compileGraphToGlsl = (
 					(candidate) => candidate.id === inputId,
 				);
 				return inputPort?.type ?? fallback;
+			};
+			const getBypassExpression = () => {
+				const inputPorts = node.ports.filter(
+					(candidate) => candidate.direction === "input",
+				);
+				if (inputPorts.length === 0) {
+					return defaultValueForPort(port.type);
+				}
+				const directMatch =
+					inputPorts.find((candidate) => candidate.id === port.id) ??
+					inputPorts.find((candidate) => candidate.type === port.type) ??
+					inputPorts[0];
+				const inputExpression = getInputExpression(
+					directMatch.id,
+					directMatch.type,
+				);
+				return directMatch.type === port.type
+					? inputExpression
+					: convertPortExpression(directMatch.type, port.type, inputExpression);
 			};
 
 			const typeId = node.typeId;
@@ -946,6 +1103,7 @@ export const compileGraphToGlsl = (
 				state: normalizedState ?? { version: 1, params: {} },
 				portId: port.id,
 				stage,
+				getSocketValue,
 				getInputExpression,
 				getInputPortType,
 				defaultValueForPort,
@@ -956,8 +1114,11 @@ export const compileGraphToGlsl = (
 				},
 			};
 
+			const compileStart = traceEnabled ? getNow() : 0;
 			let expression: string | null = null;
-			if (!typeId) {
+			if (normalizedState?.ui?.isBypassed) {
+				expression = getBypassExpression();
+			} else if (!typeId) {
 				addError(`Node "${node.title.text}" is missing a type id.`);
 				expression = defaultValueForPort(port.type);
 			} else {
@@ -968,6 +1129,17 @@ export const compileGraphToGlsl = (
 			}
 			if (!expression) {
 				expression = compileFallbackNode(context);
+			}
+			if (traceEnabled) {
+				const duration = getNow() - compileStart;
+				traceNodeTimings[node.id] = (traceNodeTimings[node.id] ?? 0) + duration;
+				traceSteps.push({
+					nodeId: node.id,
+					portId: port.id,
+					stage,
+					depth,
+				});
+				tracePortExpressions[`${stage}:${node.id}:${port.id}`] = expression;
 			}
 
 			lines.push(`${glslType} ${varName} = ${expression};`);
@@ -981,6 +1153,47 @@ export const compileGraphToGlsl = (
 
 	const fragmentEmitter = createEmitter("fragment");
 	const vertexEmitter = createEmitter("vertex");
+
+	const resolvePreviewTarget = (target: ShaderPreviewTarget | null) => {
+		if (!target) {
+			return null;
+		}
+		const node = nodes.get(target.nodeId);
+		if (!node) {
+			return null;
+		}
+		const outputPorts = node.ports.filter(
+			(port) => port.direction === "output",
+		);
+		if (outputPorts.length === 0) {
+			return null;
+		}
+		const port =
+			(target.portId &&
+				outputPorts.find((candidate) => candidate.id === target.portId)) ||
+			outputPorts[0];
+		return { node, port };
+	};
+
+	const formatPreviewOutput = (expression: string, type: PortType) => {
+		switch (type) {
+			case "float":
+				return `vec4(vec3(${expression}), 1.0)`;
+			case "int":
+				return `vec4(vec3(float(${expression})), 1.0)`;
+			case "vec2":
+				return `vec4(${expression}, 0.0, 1.0)`;
+			case "vec3":
+				return `vec4(${expression}, 1.0)`;
+			case "vec4":
+			case "color":
+				return expression;
+			case "texture":
+				needs.texture = true;
+				needs.uv = true;
+				return `texture2D(${expression}, v_uv)`;
+		}
+	};
 
 	const getNormalizedState = (node: NodeView): NodeState | null => {
 		if (!node.typeId) {
@@ -997,41 +1210,111 @@ export const compileGraphToGlsl = (
 		);
 	};
 
-	const fragmentNodes = Array.from(nodes.values()).filter((node) => {
-		if (node.typeId !== "output") {
-			return false;
-		}
-		const state = getNormalizedState(node);
-		return (
-			getParamString(
-				state ?? { version: 1, params: {} },
-				"stage",
-				"fragment",
-			) === "fragment"
-		);
-	});
+	const mathTypeIds = new Set([
+		"math",
+		"vector",
+		"color",
+		"logic",
+		"conversion",
+	]);
+	const textureSampleWarningThreshold = 4;
+	const mathWarningThreshold = 40;
 
-	if (fragmentNodes.length === 0) {
-		addError("No Fragment Output node found.");
-	} else if (fragmentNodes.length > 1) {
-		addWarning("Multiple Fragment Output nodes found. Using the first.");
-	}
+	const collectPerformanceStats = () => {
+		const nodesForPerf =
+			usedNodes.size > 0
+				? Array.from(usedNodes)
+						.map((id) => nodes.get(id))
+						.filter((node): node is NodeView => Boolean(node))
+				: Array.from(nodes.values());
+		let textureSampleCount = 0;
+		let mathOpCount = 0;
+		const textureSampleNodes: number[] = [];
+		const complexMathNodes: number[] = [];
 
-	const fragmentNode = fragmentNodes[0];
-	const fragmentColorPort = fragmentNode?.ports.find(
-		(port) => port.direction === "input",
-	);
+		nodesForPerf.forEach((node) => {
+			const state = getNormalizedState(node);
+			if (state?.ui?.isBypassed) {
+				return;
+			}
+			if (node.typeId === "texture-uv") {
+				const op = getParamString(
+					state ?? { version: 1, params: {} },
+					"operation",
+					"uv-input",
+				);
+				if (op === "texture-sample") {
+					textureSampleCount += 1;
+					textureSampleNodes.push(node.id);
+				}
+			}
+			if (node.typeId && mathTypeIds.has(node.typeId)) {
+				mathOpCount += 1;
+				complexMathNodes.push(node.id);
+			}
+		});
+
+		return {
+			textureSampleCount,
+			mathOpCount,
+			textureSampleNodes,
+			complexMathNodes,
+		};
+	};
+
+	const previewSelection = resolvePreviewTarget(previewTarget);
 	let fragmentOutput = "vec4(0.0)";
-	if (fragmentNode && fragmentColorPort) {
-		const connection = inputConnections.get(
-			`${fragmentNode.id}:${fragmentColorPort.id}`,
+	let hasFragmentOutput = false;
+	if (previewSelection) {
+		const previewExpression = fragmentEmitter.emitPortExpression(
+			{
+				nodeId: previewSelection.node.id,
+				portId: previewSelection.port.id,
+			},
+			0,
 		);
-		if (!connection) {
-			addWarning("Fragment Output input is unconnected.");
-			fragmentOutput = defaultValueForPort(fragmentColorPort.type);
-		} else {
-			fragmentOutput = fragmentEmitter.emitPortExpression(connection.from);
+		fragmentOutput = formatPreviewOutput(
+			previewExpression,
+			previewSelection.port.type,
+		);
+		hasFragmentOutput = true;
+	} else if (!previewTarget) {
+		const fragmentNodes = Array.from(nodes.values()).filter((node) => {
+			if (node.typeId !== "output") {
+				return false;
+			}
+			const state = getNormalizedState(node);
+			return (
+				getParamString(
+					state ?? { version: 1, params: {} },
+					"stage",
+					"fragment",
+				) === "fragment"
+			);
+		});
+
+		if (fragmentNodes.length === 0) {
+			addError("No Fragment Output node found.");
+		} else if (fragmentNodes.length > 1) {
+			addWarning("Multiple Fragment Output nodes found. Using the first.");
 		}
+
+		const fragmentNode = fragmentNodes[0];
+		const fragmentColorPort = fragmentNode?.ports.find(
+			(port) => port.direction === "input",
+		);
+		if (fragmentNode && fragmentColorPort) {
+			const connection = inputConnections.get(
+				`${fragmentNode.id}:${fragmentColorPort.id}`,
+			);
+			if (!connection) {
+				addWarning("Fragment Output input is unconnected.");
+				fragmentOutput = defaultValueForPort(fragmentColorPort.type);
+			} else {
+				fragmentOutput = fragmentEmitter.emitPortExpression(connection.from, 0);
+			}
+		}
+		hasFragmentOutput = Boolean(fragmentNode && fragmentColorPort);
 	}
 
 	const vertexNodes = Array.from(nodes.values()).filter((node) => {
@@ -1067,7 +1350,7 @@ export const compileGraphToGlsl = (
 			`${vertexNode.id}:${vertexPositionPort.id}`,
 		);
 		if (connection) {
-			vertexPositionExpr = vertexEmitter.emitPortExpression(connection.from);
+			vertexPositionExpr = vertexEmitter.emitPortExpression(connection.from, 0);
 		} else {
 			addWarning("Vertex Output input is unconnected.");
 		}
@@ -1170,12 +1453,96 @@ export const compileGraphToGlsl = (
 	fragmentLines.push(`\tgl_FragColor = ${fragmentOutput};`);
 	fragmentLines.push("}");
 
+	const countInstructions = (lines: string[]) => {
+		const startIndex = lines.findIndex((line) =>
+			line.trim().startsWith("void main"),
+		);
+		if (startIndex < 0) {
+			return 0;
+		}
+		let count = 0;
+		for (let i = startIndex + 1; i < lines.length; i += 1) {
+			const line = lines[i]?.trim() ?? "";
+			if (!line || line === "}") {
+				continue;
+			}
+			count += 1;
+		}
+		return count;
+	};
+
+	const countOccurrences = (source: string, needle: string) => {
+		if (!source) {
+			return 0;
+		}
+		let count = 0;
+		let index = source.indexOf(needle);
+		while (index !== -1) {
+			count += 1;
+			index = source.indexOf(needle, index + needle.length);
+		}
+		return count;
+	};
+
+	const performanceStats = collectPerformanceStats();
+	const vertexSource = `${vertexLines.join("\n")}\n`;
+	const fragmentSource = `${fragmentLines.join("\n")}\n`;
+	const textureSamplesFromSource = countOccurrences(
+		fragmentSource,
+		"texture2D(",
+	);
+	const complexity: ShaderComplexity = {
+		vertexInstructions: countInstructions(vertexLines),
+		fragmentInstructions: countInstructions(fragmentLines),
+		textureSamples: Math.max(
+			performanceStats.textureSampleCount,
+			textureSamplesFromSource,
+		),
+		mathOps: performanceStats.mathOpCount,
+	};
+	const performanceWarnings: ShaderPerformanceWarnings = {
+		textureSampleNodes:
+			performanceStats.textureSampleCount > textureSampleWarningThreshold
+				? performanceStats.textureSampleNodes
+				: [],
+		complexMathNodes:
+			performanceStats.mathOpCount > mathWarningThreshold
+				? performanceStats.complexMathNodes
+				: [],
+	};
+	const debugTrace: ShaderDebugTrace | undefined = traceEnabled
+		? {
+				steps: traceSteps,
+				usedNodes: Array.from(usedNodes),
+				usedConnections: Array.from(traceUsedConnections),
+				nodeTimings: traceNodeTimings,
+				portExpressions: tracePortExpressions,
+				connectionExpressions: traceConnectionExpressions,
+				nodes: Array.from(usedNodes)
+					.map((id) => {
+						const node = nodes.get(id);
+						if (!node) {
+							return null;
+						}
+						return {
+							id: node.id,
+							title: node.title.text,
+							...(node.typeId ? { typeId: node.typeId } : {}),
+						};
+					})
+					.filter((node): node is NonNullable<typeof node> => Boolean(node)),
+			}
+		: undefined;
+
 	return {
-		vertexSource: `${vertexLines.join("\n")}\n`,
-		fragmentSource: `${fragmentLines.join("\n")}\n`,
+		vertexSource,
+		fragmentSource,
 		messages,
-		hasFragmentOutput: Boolean(fragmentNode && fragmentColorPort),
+		hasFragmentOutput,
 		nodeCount: nodes.size,
 		connectionCount: connections.size,
+		complexity,
+		performanceWarnings,
+		...(debugTrace ? { debugTrace } : {}),
 	};
 };

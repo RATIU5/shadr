@@ -10,37 +10,40 @@ type SearchPaletteOptions = {
 	container: HTMLElement;
 	entries: SearchEntry[];
 	categoryOrder?: string[];
+	recentEntryIds?: string[];
 };
 
 export type SearchPaletteController = {
 	isOpen: () => boolean;
-	open: () => void;
+	open: (query?: string) => void;
 	close: () => void;
+	setRecentEntryIds: (ids: string[]) => void;
 	dispose: () => void;
 };
 
 export const createSearchPalette = (
 	options: SearchPaletteOptions,
 ): SearchPaletteController => {
-	const { container, entries, categoryOrder } = options;
+	const { container, entries, categoryOrder, recentEntryIds } = options;
 	const searchState = {
 		isOpen: false,
 		query: "",
 		selectedIndex: 0,
 		results: [] as SearchEntry[],
 		groupedResults: [] as { category: string; entries: SearchEntry[] }[],
+		recentEntryIds: recentEntryIds ?? [],
 	};
 
 	const searchOverlay = document.createElement("div");
 	searchOverlay.className =
-		"absolute inset-0 hidden items-start justify-center pt-24 bg-[rgba(8,10,14,0.72)] pointer-events-none";
+		"absolute inset-0 hidden items-center justify-center bg-transparent pointer-events-none";
 	const searchPanel = document.createElement("div");
 	searchPanel.className =
-		"w-[min(360px,80%)] bg-[#0f131c] border border-[#1f2430] rounded-2xl p-3 shadow-[0_20px_44px_rgba(0,0,0,0.5)] flex flex-col gap-2.5 pointer-events-auto";
+		"w-[min(360px,80%)] bg-[#0f131c] border border-[#1f2430] rounded-lg p-3 shadow-[0_20px_44px_rgba(0,0,0,0.5)] flex flex-col gap-2.5 pointer-events-auto";
 	const searchInput = document.createElement("input");
 	searchInput.type = "text";
 	searchInput.className =
-		"w-full px-2.5 py-2 rounded-lg border border-[#1f2430] bg-[#0b0f16] text-[#f4f5f7] text-[13px] focus:outline-none focus:border-[#4f8dd9] focus:ring-2 focus:ring-[rgba(79,141,217,0.2)]";
+		"w-full px-2.5 py-2 rounded border border-[#1f2430] bg-[#0b0f16] text-[#f4f5f7] text-[13px] focus:outline-none focus:border-[#4f8dd9] focus:ring-2 focus:ring-[rgba(79,141,217,0.2)]";
 	searchInput.placeholder = "Search nodes...";
 	const searchList = document.createElement("div");
 	searchList.className = "flex flex-col gap-1.5 max-h-[360px] overflow-y-auto";
@@ -84,7 +87,7 @@ export const createSearchPalette = (
 		return index === -1 ? Number.POSITIVE_INFINITY : index;
 	};
 
-	const buildGroupedResults = (query: string) => {
+	const buildGroupedResults = (query: string, recents: string[]) => {
 		const normalizedQuery = normalizeSearchText(query);
 		const scoredEntries = entries
 			.map((entry) => {
@@ -103,8 +106,29 @@ export const createSearchPalette = (
 					entry !== null,
 			);
 
+		const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+		const scoredById = new Map(
+			scoredEntries.map(({ entry, score }) => [entry.id, score]),
+		);
+		const recentEntries = recents
+			.map((id) => {
+				const entry = entriesById.get(id);
+				if (!entry) {
+					return null;
+				}
+				if (!scoredById.has(id)) {
+					return null;
+				}
+				return entry;
+			})
+			.filter((entry): entry is SearchEntry => Boolean(entry));
+		const recentIds = new Set(recentEntries.map((entry) => entry.id));
+
 		const groups = new Map<string, { entry: SearchEntry; score: number }[]>();
 		scoredEntries.forEach(({ entry, score }) => {
+			if (recentIds.has(entry.id)) {
+				return;
+			}
 			const group = entry.category;
 			const items = groups.get(group);
 			if (items) {
@@ -136,6 +160,13 @@ export const createSearchPalette = (
 				entries: items.map((item) => item.entry),
 			};
 		});
+
+		if (recentEntries.length > 0) {
+			groupedResults.unshift({
+				category: "Recent",
+				entries: recentEntries,
+			});
+		}
 
 		const flatEntries = groupedResults.flatMap((group) => group.entries);
 		return { groupedResults, flatEntries };
@@ -187,7 +218,10 @@ export const createSearchPalette = (
 		const query = normalizeSearchText(searchInput.value);
 		searchState.query = query;
 
-		const { groupedResults, flatEntries } = buildGroupedResults(query);
+		const { groupedResults, flatEntries } = buildGroupedResults(
+			query,
+			searchState.recentEntryIds,
+		);
 		searchState.groupedResults = groupedResults;
 		searchState.results = flatEntries;
 		if (searchState.selectedIndex >= searchState.results.length) {
@@ -218,15 +252,20 @@ export const createSearchPalette = (
 		close();
 	};
 
-	const open = () => {
-		if (searchState.isOpen) {
-			return;
+	const open = (query?: string) => {
+		const wasOpen = searchState.isOpen;
+		if (!wasOpen) {
+			searchState.isOpen = true;
+			searchOverlay.classList.remove("hidden", "pointer-events-none");
+			searchOverlay.classList.add("flex", "pointer-events-auto");
 		}
-		searchState.isOpen = true;
+
+		if (typeof query === "string") {
+			searchInput.value = query;
+		} else if (!wasOpen) {
+			searchInput.value = "";
+		}
 		searchState.selectedIndex = 0;
-		searchInput.value = "";
-		searchOverlay.classList.remove("hidden", "pointer-events-none");
-		searchOverlay.classList.add("flex", "pointer-events-auto");
 		updateSearchResults();
 		searchInput.focus();
 		searchInput.select();
@@ -295,6 +334,12 @@ export const createSearchPalette = (
 		isOpen: () => searchState.isOpen,
 		open,
 		close,
+		setRecentEntryIds: (ids) => {
+			searchState.recentEntryIds = ids;
+			if (searchState.isOpen) {
+				updateSearchResults();
+			}
+		},
 		dispose,
 	};
 };

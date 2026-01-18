@@ -38,7 +38,7 @@ export const ExportModal = (props: ExportModalProps) => {
 	return (
 		<Show when={props.open}>
 			<div
-				class="fixed inset-0 z-[9] flex items-start justify-center bg-[rgba(8,10,14,0.72)] px-4 py-10"
+				class="fixed inset-0 z-[9] flex items-start justify-center bg-transparent px-4 py-10"
 				onPointerDown={(event) => {
 					if (event.target === event.currentTarget) {
 						props.onClose();
@@ -46,7 +46,7 @@ export const ExportModal = (props: ExportModalProps) => {
 				}}
 			>
 				<div
-					class="w-full max-w-xl max-h-[calc(100vh-80px)] overflow-y-auto rounded-2xl border border-[#2a3241] bg-[#0f131c] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
+					class="w-full max-w-xl max-h-[calc(100vh-80px)] overflow-y-auto rounded-lg border border-[#2a3241] bg-[#0f131c] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
 					onPointerDown={(event) => event.stopPropagation()}
 				>
 					<div class="flex items-center justify-between gap-2">
@@ -62,7 +62,7 @@ export const ExportModal = (props: ExportModalProps) => {
 						</button>
 					</div>
 					<div class="mt-4 grid gap-3">
-						<div class="rounded-xl border border-[#1f2430] bg-[#0c1018] p-3">
+						<div class="rounded-lg border border-[#1f2430] bg-[#0c1018] p-3">
 							<div class="text-[12px] text-[#b9c2cf]">
 								Choose the shader files you want to download.
 							</div>
@@ -115,12 +115,12 @@ export const ExportModal = (props: ExportModalProps) => {
 							</div>
 						</div>
 						<Show when={!hasResult()}>
-							<div class="rounded-xl border border-[#412328] bg-[#1a0f12] px-3 py-2 text-[11px] text-[#f1b5b9]">
+							<div class="rounded-lg border border-[#412328] bg-[#1a0f12] px-3 py-2 text-[11px] text-[#f1b5b9]">
 								Export data is unavailable. Compile the graph before exporting.
 							</div>
 						</Show>
 						<Show when={warnings().length > 0}>
-							<div class="rounded-xl border border-[#3f3522] bg-[#17130c] p-3">
+							<div class="rounded-lg border border-[#3f3522] bg-[#17130c] p-3">
 								<div class="text-[11px] uppercase tracking-[0.14em] text-[#d9c38b]">
 									Warnings
 								</div>

@@ -6,15 +6,21 @@ import {
 	type EditorHoverState,
 	type EditorSelectionState,
 	type EditorVisualSettings,
-	getDefaultNodeState,
 	getNodeDefinition,
 	initCanvas,
-	type NodeParamValue,
 	type NodeRenameState,
+	type NodeSocketValue,
 	type NodeState,
 	type SelectedConnection,
 	type SelectedNode,
+	type SelectionBounds,
+	type SelectionClipboardPayload,
 	type ShaderCompileResult,
+	type ShaderCompileStatus,
+	type ShaderComplexity,
+	type ShaderDebugTrace,
+	type ShaderPreviewTarget,
+	type SocketEditorState,
 	type UiMessage,
 	type UiMessageTone,
 } from "@shadr/lib-editor";
@@ -27,27 +33,52 @@ import {
 } from "solid-js";
 
 import { ActionBar } from "./editor/action-bar";
+import { ConnectionTooltip } from "./editor/connection-tooltip";
 import { ContextMenuOverlay } from "./editor/context-menu-overlay";
 import { ExportModal } from "./editor/export-modal";
+import { FloatingSelectionToolbar } from "./editor/floating-selection-toolbar";
+import { LeftSidebar, type ShaderLibraryItem } from "./editor/left-sidebar";
 import { NodeRenameOverlay } from "./editor/node-rename-overlay";
-import { PreviewPanel } from "./editor/preview-panel";
+import { PresetModal } from "./editor/preset-modal";
 import { SelectionPanel } from "./editor/selection-panel";
 import { SettingsModal } from "./editor/settings-modal";
 import { ShortcutsModal } from "./editor/shortcuts-modal";
+import { SocketEditorOverlay } from "./editor/socket-editor-overlay";
+import { SocketTooltip } from "./editor/socket-tooltip";
 import { StatusBar } from "./editor/status-bar";
 import type {
 	ActionMenuDefinition,
 	ActionMenuId,
+	PreviewSample,
 	PreviewStatus,
 	ShortcutGroup,
 	UiMessageItem,
 } from "./editor/types";
 import { UiMessageStack } from "./editor/ui-message-stack";
 
+type PreviewRenderOptions = {
+	clampOutput: boolean;
+	precision: "mediump" | "highp";
+};
+
 type PreviewHandle = {
-	updateShader: (result: ShaderCompileResult) => void;
+	updateShader: (
+		result: ShaderCompileResult,
+		options?: PreviewRenderOptions,
+	) => void;
 	updateTexture: (file: File | null) => void;
+	setResolution: (value: number) => void;
+	clear: () => void;
 	destroy: () => void;
+};
+
+type EditorMode = "edit" | "preview" | "debug";
+type PreviewFocus = "output" | "selection";
+type PendingPreviewUpdate = {
+	focus: PreviewFocus;
+	selection: EditorSelectionState;
+	options: PreviewRenderOptions;
+	latest: ShaderCompileResult | null;
 };
 
 const uiMessageTimeouts: Record<UiMessageTone, number> = {
@@ -55,6 +86,193 @@ const uiMessageTimeouts: Record<UiMessageTone, number> = {
 	warning: 6000,
 	error: 8000,
 };
+
+type PresetDefinition = {
+	id: string;
+	name: string;
+	description?: string;
+	payload: string;
+	builtIn: boolean;
+	updatedAt?: string;
+};
+
+type StoredPreset = {
+	id: string;
+	name: string;
+	description?: string;
+	updatedAt: string;
+	payload: string;
+};
+
+const presetStorageKey = "shadr-node-presets-v1";
+
+const serializePresetPayload = (payload: SelectionClipboardPayload) =>
+	JSON.stringify(payload);
+
+const basicLightingPresetPayload: SelectionClipboardPayload = {
+	version: 4,
+	nodes: [
+		{
+			id: 1,
+			title: "Light Intensity",
+			x: 0,
+			y: 0,
+			typeId: "inputs",
+			state: { version: 1, params: { type: "number" } },
+			socketValues: { out: 1 },
+			ports: [{ id: "out", name: "Value", type: "float", direction: "output" }],
+		},
+		{
+			id: 2,
+			title: "Base Color",
+			x: 0,
+			y: 140,
+			typeId: "constants",
+			state: { version: 1, params: { type: "color" } },
+			socketValues: { out: { r: 0.92, g: 0.78, b: 0.62, a: 1 } },
+			ports: [{ id: "out", name: "Color", type: "color", direction: "output" }],
+		},
+		{
+			id: 3,
+			title: "Black",
+			x: -200,
+			y: 140,
+			typeId: "constants",
+			state: { version: 1, params: { type: "color" } },
+			socketValues: { out: { r: 0, g: 0, b: 0, a: 1 } },
+			ports: [{ id: "out", name: "Color", type: "color", direction: "output" }],
+		},
+		{
+			id: 4,
+			title: "Lambert Mix",
+			x: 220,
+			y: 100,
+			typeId: "color",
+			state: { version: 1, params: { operation: "mix" } },
+			ports: [
+				{ id: "a", name: "A", type: "color", direction: "input" },
+				{ id: "b", name: "B", type: "color", direction: "input" },
+				{ id: "t", name: "T", type: "float", direction: "input" },
+				{ id: "out", name: "Color", type: "color", direction: "output" },
+			],
+		},
+		{
+			id: 5,
+			title: "Fragment Output",
+			x: 440,
+			y: 110,
+			typeId: "output",
+			state: { version: 1, params: { stage: "fragment" } },
+			ports: [{ id: "color", name: "Color", type: "vec4", direction: "input" }],
+		},
+	],
+	connections: [
+		{
+			from: { nodeId: 3, portId: "out" },
+			to: { nodeId: 4, portId: "a" },
+			type: "color",
+		},
+		{
+			from: { nodeId: 2, portId: "out" },
+			to: { nodeId: 4, portId: "b" },
+			type: "color",
+		},
+		{
+			from: { nodeId: 1, portId: "out" },
+			to: { nodeId: 4, portId: "t" },
+			type: "float",
+		},
+		{
+			from: { nodeId: 4, portId: "out" },
+			to: { nodeId: 5, portId: "color" },
+			type: "color",
+		},
+	],
+	bounds: { minX: -200, minY: 0, maxX: 440, maxY: 140 },
+};
+
+const pbrSetupPresetPayload: SelectionClipboardPayload = {
+	version: 4,
+	nodes: [
+		{
+			id: 1,
+			title: "UV Input",
+			x: 0,
+			y: 0,
+			typeId: "texture",
+			state: { version: 1, params: { operation: "uv-input" } },
+			ports: [{ id: "out", name: "UV", type: "vec2", direction: "output" }],
+		},
+		{
+			id: 2,
+			title: "Albedo Texture",
+			x: 0,
+			y: 140,
+			typeId: "texture",
+			state: { version: 1, params: { operation: "texture-input" } },
+			ports: [
+				{ id: "out", name: "Texture", type: "texture", direction: "output" },
+			],
+		},
+		{
+			id: 3,
+			title: "Sample Albedo",
+			x: 220,
+			y: 80,
+			typeId: "texture",
+			state: { version: 1, params: { operation: "texture-sample" } },
+			ports: [
+				{ id: "tex", name: "Texture", type: "texture", direction: "input" },
+				{ id: "uv", name: "UV", type: "vec2", direction: "input" },
+				{ id: "out", name: "Color", type: "vec4", direction: "output" },
+			],
+		},
+		{
+			id: 4,
+			title: "Fragment Output",
+			x: 440,
+			y: 90,
+			typeId: "output",
+			state: { version: 1, params: { stage: "fragment" } },
+			ports: [{ id: "color", name: "Color", type: "vec4", direction: "input" }],
+		},
+	],
+	connections: [
+		{
+			from: { nodeId: 1, portId: "out" },
+			to: { nodeId: 3, portId: "uv" },
+			type: "vec2",
+		},
+		{
+			from: { nodeId: 2, portId: "out" },
+			to: { nodeId: 3, portId: "tex" },
+			type: "texture",
+		},
+		{
+			from: { nodeId: 3, portId: "out" },
+			to: { nodeId: 4, portId: "color" },
+			type: "vec4",
+		},
+	],
+	bounds: { minX: 0, minY: 0, maxX: 440, maxY: 140 },
+};
+
+const builtInPresets: PresetDefinition[] = [
+	{
+		id: "preset-basic-lighting",
+		name: "Basic Lighting",
+		description: "Mixes a base color with an intensity slider before output.",
+		payload: serializePresetPayload(basicLightingPresetPayload),
+		builtIn: true,
+	},
+	{
+		id: "preset-pbr-setup",
+		name: "PBR Setup",
+		description: "UV + texture sample chain for a base color texture.",
+		payload: serializePresetPayload(pbrSetupPresetPayload),
+		builtIn: true,
+	},
+];
 
 const getUiMessageToneClass = (tone: UiMessageTone) => {
 	if (tone === "error") {
@@ -202,6 +420,11 @@ const shortcutGroups: ShortcutGroup[] = [
 				description: "Delete the current selection.",
 			},
 			{
+				id: "duplicate-selection",
+				keys: ["Cmd/Ctrl + D"],
+				description: "Duplicate the current selection.",
+			},
+			{
 				id: "undo",
 				keys: ["Cmd/Ctrl + Z"],
 				description: "Undo the last action.",
@@ -225,6 +448,31 @@ const shortcutGroups: ShortcutGroup[] = [
 				id: "export",
 				keys: ["Cmd/Ctrl + E"],
 				description: "Export GLSL from the current graph.",
+			},
+			{
+				id: "compile",
+				keys: ["Cmd/Ctrl + Enter"],
+				description: "Compile the shader and refresh the preview.",
+			},
+			{
+				id: "mode-edit",
+				keys: ["Alt + 1"],
+				description: "Switch to Edit mode.",
+			},
+			{
+				id: "mode-preview",
+				keys: ["Alt + 2"],
+				description: "Switch to Preview mode.",
+			},
+			{
+				id: "mode-toggle-preview",
+				keys: ["Alt + P"],
+				description: "Toggle Preview mode.",
+			},
+			{
+				id: "mode-debug",
+				keys: ["Alt + 3"],
+				description: "Switch to Debug mode.",
 			},
 		],
 	},
@@ -379,12 +627,15 @@ const clampNumber = (value: number, min: number, max: number) =>
 
 const compileWarningThresholdMs = 100;
 const nodeWarningThreshold = 100;
+const previewThrottleMs = 1000 / 30;
 
 const createShaderPreview = (
 	canvas: HTMLCanvasElement,
 	setStatus: (status: PreviewStatus) => void,
+	setSample: (sample: PreviewSample | null) => void,
+	setFps: (value: number | null) => void,
 ): PreviewHandle => {
-	const gl = canvas.getContext("webgl");
+	const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true });
 	if (!gl) {
 		setStatus({
 			tone: "error",
@@ -393,6 +644,8 @@ const createShaderPreview = (
 		return {
 			updateShader: () => {},
 			updateTexture: () => {},
+			setResolution: () => {},
+			clear: () => {},
 			destroy: () => {},
 		};
 	}
@@ -414,6 +667,8 @@ const createShaderPreview = (
 		return {
 			updateShader: () => {},
 			updateTexture: () => {},
+			setResolution: () => {},
+			clear: () => {},
 			destroy: () => {},
 		};
 	}
@@ -462,11 +717,22 @@ const createShaderPreview = (
 	let textureLocation: WebGLUniformLocation | null = null;
 	let animationId = 0;
 	let textureLoadId = 0;
+	let overrideResolution: number | null = null;
+	let lastSampleTime = 0;
+	let frameCount = 0;
+	let lastFpsMark = performance.now();
+	const sampleBuffer = new Uint8Array(4);
 
 	const resizeCanvas = () => {
 		const dpr = window.devicePixelRatio || 1;
-		const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
-		const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+		const width = Math.max(
+			1,
+			overrideResolution ?? Math.floor(canvas.clientWidth * dpr),
+		);
+		const height = Math.max(
+			1,
+			overrideResolution ?? Math.floor(canvas.clientHeight * dpr),
+		);
 		if (canvas.width !== width || canvas.height !== height) {
 			canvas.width = width;
 			canvas.height = height;
@@ -577,13 +843,46 @@ const createShaderPreview = (
 			gl.drawArrays(gl.TRIANGLES, 0, 6);
 		}
 
+		const now = performance.now();
+		if (program && now - lastSampleTime > 250) {
+			const x = Math.max(0, Math.floor(canvas.width / 2));
+			const y = Math.max(0, Math.floor(canvas.height / 2));
+			gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, sampleBuffer);
+			setSample({
+				r: sampleBuffer[0],
+				g: sampleBuffer[1],
+				b: sampleBuffer[2],
+				a: sampleBuffer[3],
+			});
+			lastSampleTime = now;
+		}
+
+		if (!program) {
+			setFps(null);
+			frameCount = 0;
+			lastFpsMark = now;
+		} else {
+			frameCount += 1;
+			const fpsElapsed = now - lastFpsMark;
+			if (fpsElapsed >= 500) {
+				const fps = Math.round((frameCount * 1000) / fpsElapsed);
+				setFps(fps);
+				frameCount = 0;
+				lastFpsMark = now;
+			}
+		}
+
 		animationId = window.requestAnimationFrame(renderFrame);
 	};
 
 	animationId = window.requestAnimationFrame(renderFrame);
 
 	return {
-		updateShader: (result) => {
+		updateShader: (result, options) => {
+			const previewOptions: PreviewRenderOptions = {
+				clampOutput: options?.clampOutput ?? false,
+				precision: options?.precision ?? "mediump",
+			};
 			const compileMs = Number.isFinite(result.compileMs)
 				? result.compileMs
 				: undefined;
@@ -600,6 +899,7 @@ const createShaderPreview = (
 					gl.deleteProgram(program);
 					program = null;
 				}
+				setSample(null);
 				const details = [];
 				if (nodeCountWarning) {
 					details.push(nodeCountWarning);
@@ -615,11 +915,27 @@ const createShaderPreview = (
 				return;
 			}
 
-			const error = updateProgram(result.vertexSource, result.fragmentSource);
+			let fragmentSource = result.fragmentSource;
+			if (previewOptions.precision === "highp") {
+				fragmentSource = fragmentSource.replace(
+					/precision\s+mediump\s+float;/,
+					"precision highp float;",
+				);
+			}
+			if (previewOptions.clampOutput) {
+				fragmentSource = fragmentSource.replace(
+					/gl_FragColor\s*=\s*([^;]+);/,
+					"gl_FragColor = clamp($1, 0.0, 1.0);",
+				);
+			}
+
+			const error = updateProgram(result.vertexSource, fragmentSource);
 			if (error) {
+				setSample(null);
 				setStatus({
 					tone: "error",
-					message: `Preview compile failed: ${error}`,
+					message: "No Preview Available.",
+					details: [`Preview compile failed: ${error}`],
 					compileMs,
 				});
 				return;
@@ -637,6 +953,7 @@ const createShaderPreview = (
 					: null;
 
 			if (compileErrors.length > 0) {
+				setSample(null);
 				const details = [...compileErrors];
 				if (nodeCountWarning) {
 					details.push(nodeCountWarning);
@@ -645,7 +962,7 @@ const createShaderPreview = (
 				}
 				setStatus({
 					tone: "error",
-					message: "Preview errors:",
+					message: "No Preview Available.",
 					details,
 					compileMs,
 				});
@@ -653,6 +970,7 @@ const createShaderPreview = (
 			}
 
 			if (compileWarnings.length > 0) {
+				setSample(null);
 				const details = [...compileWarnings];
 				if (slowCompileWarning) {
 					details.push(slowCompileWarning);
@@ -672,6 +990,7 @@ const createShaderPreview = (
 			}
 
 			if (slowCompileWarning) {
+				setSample(null);
 				const details = [slowCompileWarning];
 				if (nodeCountWarning) {
 					details.push(nodeCountWarning);
@@ -688,6 +1007,7 @@ const createShaderPreview = (
 			}
 
 			if (nodeCountWarning) {
+				setSample(null);
 				setStatus({
 					tone: "warning",
 					message: "Graph is large.",
@@ -736,9 +1056,21 @@ const createShaderPreview = (
 			};
 			image.src = url;
 		},
+		setResolution: (value) => {
+			overrideResolution = value;
+			resizeCanvas();
+		},
+		clear: () => {
+			if (program) {
+				gl.deleteProgram(program);
+				program = null;
+			}
+			setSample(null);
+		},
 		destroy: () => {
 			window.cancelAnimationFrame(animationId);
 			resizeObserver.disconnect();
+			setFps(null);
 			if (program) {
 				gl.deleteProgram(program);
 			}
@@ -761,10 +1093,24 @@ export default function Editor() {
 	let previewHandle: PreviewHandle | null = null;
 	let uiMessageId = 0;
 	const uiMessageTimeoutMap = new Map<number, number>();
+	let previewUpdateTimer: number | null = null;
+	let previewUpdateLast = 0;
+	let pendingPreviewUpdate: PendingPreviewUpdate | null = null;
 	const [previewStatus, setPreviewStatus] = createSignal<PreviewStatus>({
 		tone: "info",
 		message: "Add a Fragment Output node to preview shaders.",
 	});
+	const [previewSample, setPreviewSample] = createSignal<PreviewSample | null>(
+		null,
+	);
+	const [previewFps, setPreviewFps] = createSignal<number | null>(null);
+	const [previewResolution, setPreviewResolution] = createSignal(512);
+	const [previewFocus, setPreviewFocus] = createSignal<PreviewFocus>("output");
+	const [previewOptions, setPreviewOptions] =
+		createSignal<PreviewRenderOptions>({
+			clampOutput: false,
+			precision: "mediump",
+		});
 	const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(
 		null,
 	);
@@ -773,28 +1119,82 @@ export default function Editor() {
 	const [textureName, setTextureName] = createSignal("No texture selected");
 	const [latestShaderResult, setLatestShaderResult] =
 		createSignal<ShaderCompileResult | null>(null);
+	const [compileStatus, setCompileStatus] =
+		createSignal<ShaderCompileStatus>("idle");
+	const [lastCompileAt, setLastCompileAt] = createSignal<Date | null>(null);
 	const [nodeRenameState, setNodeRenameState] =
 		createSignal<NodeRenameState | null>(null);
 	const [nodeRenameValue, setNodeRenameValue] = createSignal("");
+	const [socketEditorState, setSocketEditorState] =
+		createSignal<SocketEditorState | null>(null);
+	const [socketEditorValue, setSocketEditorValue] =
+		createSignal<NodeSocketValue | null>(null);
 	const [selectionState, setSelectionState] =
 		createSignal<EditorSelectionState>({
 			kind: "none",
 		});
+	const [selectionBounds, setSelectionBounds] =
+		createSignal<SelectionBounds | null>(null);
 	const [hoverState, setHoverState] = createSignal<EditorHoverState>({
 		kind: "none",
 	});
 	const [selectionTitle, setSelectionTitle] = createSignal("");
+	const [groupTitle, setGroupTitle] = createSignal("");
+	const [groupColor, setGroupColor] = createSignal(
+		formatPortColor(defaultVisualSettingsState.groups.fillColor),
+	);
 	const [visualSettings, setVisualSettings] =
 		createSignal<EditorVisualSettings>(defaultVisualSettingsState);
 	const [showSettings, setShowSettings] = createSignal(false);
 	const [showShortcuts, setShowShortcuts] = createSignal(false);
 	const [showExportModal, setShowExportModal] = createSignal(false);
+	const [showPresetModal, setShowPresetModal] = createSignal(false);
+	const [presetName, setPresetName] = createSignal("");
+	const [presetDescription, setPresetDescription] = createSignal("");
 	const [exportResult, setExportResult] =
 		createSignal<ShaderCompileResult | null>(null);
 	const [openActionMenu, setOpenActionMenu] = createSignal<ActionMenuId | null>(
 		null,
 	);
+	const [nodeSearchQuery, setNodeSearchQuery] = createSignal("");
+	const [editorMode, setEditorMode] = createSignal<EditorMode>("edit");
+	const [debugBreakpoints, setDebugBreakpoints] = createSignal<number[]>([]);
+	const [debugStepIndex, setDebugStepIndex] = createSignal(-1);
+	const [debugStatus, setDebugStatus] = createSignal<
+		"idle" | "paused" | "complete"
+	>("idle");
 	const [visualSettingsLoaded, setVisualSettingsLoaded] = createSignal(false);
+	const [storedPresets, setStoredPresets] = createSignal<StoredPreset[]>([]);
+	const debugTrace = createMemo<ShaderDebugTrace | null>(
+		() => latestShaderResult()?.debugTrace ?? null,
+	);
+	const debugSteps = createMemo(() => debugTrace()?.steps ?? []);
+	const activeDebugStep = createMemo(() => {
+		const steps = debugSteps();
+		const index = debugStepIndex();
+		if (index < 0 || index >= steps.length) {
+			return null;
+		}
+		return steps[index] ?? null;
+	});
+	const presets = createMemo<PresetDefinition[]>(() => [
+		...builtInPresets,
+		...storedPresets().map((preset) => ({
+			...preset,
+			builtIn: false,
+		})),
+	]);
+	const presetById = createMemo(
+		() => new Map(presets().map((preset) => [preset.id, preset])),
+	);
+	const groupHasCustomColor = createMemo(() => {
+		const selection = selectionState();
+		return (
+			selection.kind === "group" &&
+			selection.group.color !== null &&
+			selection.group.color !== undefined
+		);
+	});
 
 	const setMenuRef = (element: HTMLDivElement) => {
 		menuRef = element;
@@ -816,10 +1216,147 @@ export default function Editor() {
 		renameInputRef = element;
 	};
 
+	const runPreviewUpdate = (payload: PendingPreviewUpdate) => {
+		if (!previewHandle) {
+			return;
+		}
+		const { focus, selection, options, latest } = payload;
+		if (focus === "output") {
+			if (!latest) {
+				return;
+			}
+			previewHandle.updateShader(latest, options);
+			return;
+		}
+
+		const target = resolvePreviewTarget(selection);
+		if (!target || !editorHandle) {
+			previewHandle.clear();
+			setPreviewSample(null);
+			setPreviewStatus({
+				tone: "info",
+				message: "No Preview Available.",
+				details: ["Select a node with output sockets to preview."],
+			});
+			return;
+		}
+
+		const previewResult = editorHandle.compilePreviewShader(target);
+		previewHandle.updateShader(previewResult, options);
+	};
+
+	const schedulePreviewUpdate = (payload: PendingPreviewUpdate) => {
+		pendingPreviewUpdate = payload;
+		if (previewUpdateTimer !== null) {
+			return;
+		}
+		const now = performance.now();
+		const elapsed = now - previewUpdateLast;
+		const delay = Math.max(0, previewThrottleMs - elapsed);
+		previewUpdateTimer = window.setTimeout(() => {
+			previewUpdateTimer = null;
+			if (!pendingPreviewUpdate) {
+				return;
+			}
+			const next = pendingPreviewUpdate;
+			pendingPreviewUpdate = null;
+			previewUpdateLast = performance.now();
+			runPreviewUpdate(next);
+		}, delay);
+	};
+
 	const updateVisualSettings = (
 		update: (current: EditorVisualSettings) => EditorVisualSettings,
 	) => {
 		setVisualSettings((current) => update(current));
+	};
+
+	const updateEditorMode = (mode: EditorMode) => {
+		setEditorMode(mode);
+		updateVisualSettings((current) => ({
+			...current,
+			debugOverlay: mode === "debug",
+		}));
+		if (!editorHandle) {
+			return;
+		}
+		editorHandle.setDebugMode(mode === "debug");
+		if (mode === "debug") {
+			editorHandle.compileShader();
+		}
+	};
+
+	const resetDebugSession = () => {
+		setDebugStepIndex(-1);
+		setDebugStatus("idle");
+	};
+
+	const toggleDebugBreakpoint = (nodeId: number) => {
+		setDebugBreakpoints((current) => {
+			const next = new Set(current);
+			if (next.has(nodeId)) {
+				next.delete(nodeId);
+			} else {
+				next.add(nodeId);
+			}
+			return Array.from(next);
+		});
+	};
+
+	const stepIntoDebug = () => {
+		const steps = debugSteps();
+		if (steps.length === 0) {
+			return;
+		}
+		const nextIndex = Math.min(steps.length - 1, debugStepIndex() + 1);
+		setDebugStepIndex(nextIndex);
+		setDebugStatus(nextIndex >= steps.length - 1 ? "complete" : "paused");
+	};
+
+	const stepOverDebug = () => {
+		const steps = debugSteps();
+		if (steps.length === 0) {
+			return;
+		}
+		const currentIndex = debugStepIndex();
+		if (currentIndex < 0) {
+			stepIntoDebug();
+			return;
+		}
+		const currentDepth = steps[currentIndex]?.depth ?? 0;
+		let nextIndex = currentIndex + 1;
+		while (nextIndex < steps.length) {
+			const nextDepth = steps[nextIndex]?.depth ?? 0;
+			if (nextDepth <= currentDepth) {
+				break;
+			}
+			nextIndex += 1;
+		}
+		if (nextIndex >= steps.length) {
+			nextIndex = steps.length - 1;
+		}
+		setDebugStepIndex(nextIndex);
+		setDebugStatus(nextIndex >= steps.length - 1 ? "complete" : "paused");
+	};
+
+	const continueDebug = () => {
+		const steps = debugSteps();
+		if (steps.length === 0) {
+			return;
+		}
+		const breakpoints = new Set(debugBreakpoints());
+		let nextIndex = debugStepIndex() < 0 ? 0 : debugStepIndex() + 1;
+		while (nextIndex < steps.length) {
+			const step = steps[nextIndex];
+			if (step && breakpoints.has(step.nodeId)) {
+				setDebugStepIndex(nextIndex);
+				setDebugStatus("paused");
+				return;
+			}
+			nextIndex += 1;
+		}
+		setDebugStepIndex(steps.length - 1);
+		setDebugStatus("complete");
 	};
 
 	const resetVisualSettings = () => {
@@ -837,6 +1374,31 @@ export default function Editor() {
 	const closeExportModal = () => {
 		setShowExportModal(false);
 	};
+
+	createEffect(() => {
+		const debugOverlayEnabled = visualSettings().debugOverlay;
+		if (debugOverlayEnabled && editorMode() !== "debug") {
+			setEditorMode("debug");
+		} else if (!debugOverlayEnabled && editorMode() === "debug") {
+			setEditorMode("edit");
+		}
+	});
+
+	createEffect(() => {
+		const trace = debugTrace();
+		if (!trace) {
+			resetDebugSession();
+			setDebugBreakpoints([]);
+			return;
+		}
+		const validNodes = new Set(
+			trace.nodes.map((node: ShaderDebugTrace["nodes"][number]) => node.id),
+		);
+		setDebugBreakpoints((current) =>
+			current.filter((nodeId) => validNodes.has(nodeId)),
+		);
+		resetDebugSession();
+	});
 
 	const toggleActionMenu = (menu: ActionMenuId) => {
 		setOpenActionMenu((current) => (current === menu ? null : menu));
@@ -869,6 +1431,26 @@ export default function Editor() {
 		} else {
 			setNodeRenameState(null);
 		}
+	};
+
+	const closeSocketEditor = () => {
+		if (editorHandle) {
+			editorHandle.closeSocketEditor();
+		} else {
+			setSocketEditorState(null);
+			setSocketEditorValue(null);
+		}
+	};
+
+	const updateSocketEditorValue = (value: NodeSocketValue) => {
+		const state = socketEditorState();
+		if (!state || !editorHandle) {
+			return;
+		}
+		setSocketEditorValue(value);
+		editorHandle.updateNodeSocketValues(state.nodeId, {
+			[state.socketId]: value,
+		});
 	};
 
 	const applyNodeRename = () => {
@@ -921,6 +1503,125 @@ export default function Editor() {
 		uiMessageTimeoutMap.set(id, timeout);
 	};
 
+	const parseStoredPreset = (value: unknown): StoredPreset | null => {
+		if (typeof value !== "object" || value === null) {
+			return null;
+		}
+		const record = value as Record<string, unknown>;
+		if (typeof record.id !== "string" || typeof record.name !== "string") {
+			return null;
+		}
+		if (typeof record.updatedAt !== "string") {
+			return null;
+		}
+		if (typeof record.payload !== "string") {
+			return null;
+		}
+		const description =
+			typeof record.description === "string" ? record.description : undefined;
+		return {
+			id: record.id,
+			name: record.name,
+			updatedAt: record.updatedAt,
+			payload: record.payload,
+			...(description ? { description } : {}),
+		};
+	};
+
+	const loadStoredPresets = () => {
+		try {
+			const raw = localStorage.getItem(presetStorageKey);
+			if (!raw) {
+				return [];
+			}
+			const parsed = JSON.parse(raw);
+			if (!Array.isArray(parsed)) {
+				return [];
+			}
+			return parsed
+				.map((entry) => parseStoredPreset(entry))
+				.filter((entry): entry is StoredPreset => Boolean(entry));
+		} catch {
+			return [];
+		}
+	};
+
+	const saveStoredPresets = (next: StoredPreset[]) => {
+		try {
+			localStorage.setItem(presetStorageKey, JSON.stringify(next));
+		} catch {
+			// Ignore storage errors.
+		}
+		setStoredPresets(next);
+	};
+
+	const createPresetId = () => {
+		if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+			return `preset-${crypto.randomUUID()}`;
+		}
+		return `preset-${Date.now().toString(36)}-${Math.random()
+			.toString(36)
+			.slice(2, 8)}`;
+	};
+
+	const openPresetModal = () => {
+		if (!editorHandle) {
+			return;
+		}
+		const payload = editorHandle.getSelectionClipboardJson();
+		if (!payload) {
+			pushUiMessage({
+				tone: "warning",
+				message: "Select at least one node before saving a preset.",
+			});
+			return;
+		}
+		setPresetName("");
+		setPresetDescription("");
+		setShowPresetModal(true);
+	};
+
+	const closePresetModal = () => {
+		setShowPresetModal(false);
+	};
+
+	const savePreset = () => {
+		if (!editorHandle) {
+			return;
+		}
+		const name = presetName().trim();
+		if (!name) {
+			return;
+		}
+		const payload = editorHandle.getSelectionClipboardJson();
+		if (!payload) {
+			pushUiMessage({
+				tone: "warning",
+				message: "Select at least one node before saving a preset.",
+			});
+			return;
+		}
+		const description = presetDescription().trim();
+		const next: StoredPreset = {
+			id: createPresetId(),
+			name,
+			payload,
+			updatedAt: new Date().toISOString(),
+			...(description ? { description } : {}),
+		};
+		saveStoredPresets([next, ...storedPresets()]);
+		setShowPresetModal(false);
+		pushUiMessage({
+			tone: "info",
+			message: `Saved preset "${name}".`,
+		});
+	};
+
+	const deletePreset = (presetId: string) => {
+		const next = storedPresets().filter((preset) => preset.id !== presetId);
+		saveStoredPresets(next);
+	};
+
 	const handleTextureChange = (event: Event) => {
 		const input = event.currentTarget as HTMLInputElement;
 		const file = input.files?.[0] ?? null;
@@ -943,6 +1644,49 @@ export default function Editor() {
 		action(editorHandle);
 	};
 
+	const openNodeSearch = (query?: string) => {
+		runEditorAction((app) => app.openSearchPalette(query));
+	};
+
+	const createNodeFromPalette = (typeId: string) => {
+		runEditorAction((app) => {
+			app.createNodeFromTemplate(typeId);
+		});
+	};
+
+	const loadShaderFromLibrary = (shader: ShaderLibraryItem) => {
+		if (!editorHandle) {
+			return;
+		}
+		if (!shader.graph) {
+			pushUiMessage({
+				tone: "warning",
+				message: "This shader entry does not include saved graph data.",
+			});
+			return;
+		}
+		const loaded = editorHandle.loadGraphFromText(shader.graph);
+		if (!loaded) {
+			pushUiMessage({
+				tone: "error",
+				message: "Failed to load that shader graph.",
+			});
+		}
+	};
+
+	const handleNodeSearchInput = (value: string) => {
+		setNodeSearchQuery(value);
+		openNodeSearch(value);
+	};
+
+	const handleNodeSearchBlur = () => {
+		setNodeSearchQuery("");
+	};
+
+	const compileShader = () => {
+		editorHandle?.compileShader();
+	};
+
 	const exportGlsl = () => {
 		editorHandle?.exportGlsl();
 	};
@@ -956,6 +1700,46 @@ export default function Editor() {
 			result.fragmentSource.trimEnd(),
 			"",
 		].join("\n");
+
+	const formatCompileTime = (value: Date | null) => {
+		if (!value) {
+			return null;
+		}
+		const pad = (part: number) => part.toString().padStart(2, "0");
+		return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+	};
+
+	const buildOptimizationSuggestions = (result: ShaderCompileResult | null) => {
+		if (!result?.complexity) {
+			return [];
+		}
+		const complexity: ShaderComplexity = result.complexity;
+		const suggestions: string[] = [];
+		if (complexity.textureSamples > 4) {
+			suggestions.push(
+				"Reduce texture samples by reusing UVs or combining samples.",
+			);
+		}
+		if (complexity.fragmentInstructions > 140) {
+			suggestions.push(
+				"Collapse chained math nodes or bake constants to reduce fragment cost.",
+			);
+		}
+		if (complexity.vertexInstructions > 80) {
+			suggestions.push(
+				"Move heavy math from vertex stage into shared constants where possible.",
+			);
+		}
+		if (complexity.mathOps > 50) {
+			suggestions.push(
+				"Consolidate repeated math operations into shared nodes.",
+			);
+		}
+		if (suggestions.length === 0) {
+			suggestions.push("No obvious optimizations detected for this graph.");
+		}
+		return suggestions;
+	};
 
 	const copyTextToClipboard = async (text: string) => {
 		if (navigator.clipboard?.writeText) {
@@ -1053,6 +1837,32 @@ export default function Editor() {
 		pushUiMessage({ tone: "info", message: "Copied graph JSON to clipboard." });
 	};
 
+	const copySelectionJson = async () => {
+		if (!editorHandle) {
+			return;
+		}
+		const payload = editorHandle.getSelectionClipboardJson();
+		if (!payload) {
+			pushUiMessage({
+				tone: "warning",
+				message: "Select at least one node to copy selection JSON.",
+			});
+			return;
+		}
+		const copied = await copyTextToClipboard(payload);
+		if (!copied) {
+			pushUiMessage({
+				tone: "error",
+				message: "Unable to copy selection JSON to clipboard.",
+			});
+			return;
+		}
+		pushUiMessage({
+			tone: "info",
+			message: "Copied selection JSON to clipboard.",
+		});
+	};
+
 	const pasteGraphFromClipboard = async () => {
 		if (!editorHandle) {
 			return;
@@ -1088,6 +1898,68 @@ export default function Editor() {
 				message: "Unable to read graph JSON from clipboard.",
 			});
 		}
+	};
+
+	const pasteSelectionFromClipboard = async () => {
+		if (!editorHandle) {
+			return;
+		}
+		if (!navigator.clipboard?.readText) {
+			pushUiMessage({
+				tone: "error",
+				message: "Clipboard read is not supported in this browser.",
+			});
+			return;
+		}
+		try {
+			const text = await navigator.clipboard.readText();
+			if (!text.trim()) {
+				pushUiMessage({
+					tone: "warning",
+					message: "Clipboard is empty.",
+				});
+				return;
+			}
+			const pasted = editorHandle.pasteSelectionFromText(text);
+			if (pasted) {
+				pushUiMessage({
+					tone: "info",
+					message: "Pasted selection from clipboard.",
+				});
+			} else {
+				pushUiMessage({
+					tone: "warning",
+					message: "Clipboard selection JSON is invalid.",
+				});
+			}
+		} catch {
+			pushUiMessage({
+				tone: "error",
+				message: "Unable to read selection JSON from clipboard.",
+			});
+		}
+	};
+
+	const insertPreset = (presetId: string) => {
+		if (!editorHandle) {
+			return;
+		}
+		const preset = presetById().get(presetId);
+		if (!preset) {
+			return;
+		}
+		const pasted = editorHandle.pasteSelectionFromText(preset.payload);
+		if (!pasted) {
+			pushUiMessage({
+				tone: "error",
+				message: "Unable to insert preset selection.",
+			});
+			return;
+		}
+		pushUiMessage({
+			tone: "info",
+			message: `Inserted preset "${preset.name}".`,
+		});
 	};
 
 	const downloadTextFile = (payload: string, filename: string) => {
@@ -1126,8 +1998,8 @@ export default function Editor() {
 
 	const actionMenus = createMemo<ActionMenuDefinition[]>(() => [
 		{
-			id: "file",
-			label: "File",
+			id: "graph",
+			label: "Graph",
 			items: [
 				{
 					id: "save-graph",
@@ -1171,8 +2043,8 @@ export default function Editor() {
 			],
 		},
 		{
-			id: "edit",
-			label: "Edit",
+			id: "actions",
+			label: "Actions",
 			items: [
 				{
 					id: "undo",
@@ -1190,6 +2062,23 @@ export default function Editor() {
 					action: () => runEditorAction((app) => app.copySelected()),
 				},
 				{
+					id: "copy-selection-json",
+					label: "Copy Selection JSON",
+					action: () => {
+						void copySelectionJson();
+					},
+					disabled: (() => {
+						const selection = selectionState();
+						if (selection.kind === "node") {
+							return false;
+						}
+						if (selection.kind === "multi") {
+							return selection.nodes.length === 0;
+						}
+						return true;
+					})(),
+				},
+				{
 					id: "cut",
 					label: "Cut",
 					action: () => runEditorAction((app) => app.cutSelected()),
@@ -1200,16 +2089,39 @@ export default function Editor() {
 					action: () => runEditorAction((app) => app.paste()),
 				},
 				{
+					id: "paste-selection-json",
+					label: "Paste Selection JSON",
+					action: () => {
+						void pasteSelectionFromClipboard();
+					},
+					disabled: !navigator.clipboard?.readText,
+				},
+				{
 					id: "delete",
 					label: "Delete",
 					action: () => runEditorAction((app) => app.deleteSelected()),
 				},
-			],
-		},
-		{
-			id: "view",
-			label: "View",
-			items: [
+				{
+					id: "create-node-group",
+					label: "Create Node Group",
+					action: () => createNodeGroupFromSelection(),
+					disabled: (() => {
+						const selection = selectionState();
+						return !(selection.kind === "multi" && selection.nodes.length > 1);
+					})(),
+				},
+				{
+					id: "explode-group",
+					label: "Explode Group",
+					action: () => explodeGroupSelection(),
+					disabled: selectionState().kind !== "group",
+				},
+				{
+					id: "replace-node",
+					label: "Replace Node",
+					action: () => openReplaceNodePalette(),
+					disabled: selectionState().kind !== "node",
+				},
 				{
 					id: "reset-view",
 					label: "Reset View",
@@ -1254,95 +2166,226 @@ export default function Editor() {
 		}
 	};
 
-	const updateSelectionNodeState = (
-		params: Record<string, NodeParamValue>,
-		ui?: NodeState["ui"],
-	) => {
+	const updateGroupTitle = (value: string) => {
+		setGroupTitle(value);
+	};
+
+	const commitGroupTitle = () => {
 		const selection = selectionState();
-		if (!editorHandle || selection.kind !== "node") {
+		if (!editorHandle || selection.kind !== "group") {
 			return;
 		}
-		editorHandle.updateNodeState(selection.node.id, {
-			version: selection.node.state?.version ?? 1,
-			params,
-			ui,
-		});
+		const nextTitle = groupTitle().trim();
+		if (!nextTitle) {
+			setGroupTitle(selection.group.title);
+			return;
+		}
+		if (nextTitle !== selection.group.title) {
+			editorHandle.updateGroupTitle(selection.group.id, nextTitle);
+		}
+	};
+
+	const updateGroupColor = (value: string) => {
+		setGroupColor(value);
+		const selection = selectionState();
+		if (!editorHandle || selection.kind !== "group") {
+			return;
+		}
+		const parsed = parseHexColorNumber(value);
+		if (parsed === null) {
+			return;
+		}
+		editorHandle.updateGroupColor(selection.group.id, parsed);
+	};
+
+	const resetGroupColor = () => {
+		const selection = selectionState();
+		if (!editorHandle || selection.kind !== "group") {
+			return;
+		}
+		editorHandle.updateGroupColor(selection.group.id, null);
+		setGroupColor(formatPortColor(visualSettings().groups.fillColor));
 	};
 
 	const deleteSelection = () => {
 		editorHandle?.deleteSelected();
 	};
 
-	const selectionPortDefaults = createMemo<Record<string, string>>(() => {
+	const updatePreviewOptions = (next: Partial<PreviewRenderOptions>) => {
+		setPreviewOptions((current) => ({ ...current, ...next }));
+	};
+
+	const updatePreviewResolution = (value: number) => {
+		setPreviewResolution(value);
+	};
+
+	const updatePreviewFocus = (value: PreviewFocus) => {
+		setPreviewFocus(value);
+	};
+
+	const resolvePreviewTarget = (
+		selection: EditorSelectionState,
+	): ShaderPreviewTarget | null => {
+		if (selection.kind !== "node") {
+			return null;
+		}
+		const outputPorts = selection.node.ports.filter(
+			(port) => port.direction === "output",
+		);
+		if (outputPorts.length === 0) {
+			return null;
+		}
+		return { nodeId: selection.node.id, portId: outputPorts[0].id };
+	};
+
+	const exportPreviewPng = () => {
+		if (!previewRef) {
+			pushUiMessage({
+				tone: "error",
+				message: "Preview is not ready to export.",
+			});
+			return;
+		}
+		try {
+			const url = previewRef.toDataURL("image/png");
+			const link = document.createElement("a");
+			link.href = url;
+			link.download = "shader-preview.png";
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			pushUiMessage({
+				tone: "info",
+				message: "Preview PNG exported.",
+			});
+		} catch {
+			pushUiMessage({
+				tone: "error",
+				message: "Unable to export preview PNG.",
+			});
+		}
+	};
+
+	const selectionColorTag = createMemo(() => {
 		const selection = selectionState();
 		if (selection.kind !== "node") {
-			return {};
+			return null;
 		}
-		const fallback: Record<string, string> = {};
-		selection.node.ports.forEach((port) => {
-			fallback[port.id] = port.name;
-		});
-		if (!selection.node.typeId) {
-			return fallback;
+		return selection.node.state?.ui?.colorTag ?? null;
+	});
+
+	const updateSelectionColorTag = (value: string | null) => {
+		const selection = selectionState();
+		if (!editorHandle || selection.kind !== "node") {
+			return;
 		}
-		const definition = getNodeDefinition(selection.node.typeId);
-		if (!definition) {
-			return fallback;
-		}
-		const defaults = getDefaultNodeState(definition.id) ?? {
+		const currentState: NodeState = selection.node.state ?? {
 			version: 1,
 			params: {},
 		};
-		const normalized: NodeState = {
-			version: selection.node.state?.version ?? defaults.version,
-			params: { ...defaults.params, ...(selection.node.state?.params ?? {}) },
-			ui: { ...defaults.ui, ...(selection.node.state?.ui ?? {}) },
+		const nextUi: NonNullable<NodeState["ui"]> = {
+			...(currentState.ui ?? {}),
 		};
-		const ports = definition.buildPorts(normalized);
-		if (ports.length === 0) {
-			return fallback;
+		if (value) {
+			nextUi.colorTag = value;
+		} else {
+			delete nextUi.colorTag;
 		}
-		const next: Record<string, string> = {};
-		ports.forEach((port) => {
-			next[port.id] = port.name;
+		const ui = Object.keys(nextUi).length > 0 ? nextUi : undefined;
+		editorHandle.updateNodeState(selection.node.id, {
+			version: currentState.version,
+			params: { ...currentState.params },
+			ui,
 		});
-		return next;
+	};
+
+	const toggleSelectionBypass = () => {
+		const selection = selectionState();
+		if (!editorHandle || selection.kind !== "node") {
+			return;
+		}
+		const currentState: NodeState = selection.node.state ?? {
+			version: 1,
+			params: {},
+		};
+		const nextUi: NonNullable<NodeState["ui"]> = {
+			...(currentState.ui ?? {}),
+		};
+		if (nextUi.isBypassed) {
+			delete nextUi.isBypassed;
+		} else {
+			nextUi.isBypassed = true;
+		}
+		const ui = Object.keys(nextUi).length > 0 ? nextUi : undefined;
+		editorHandle.updateNodeState(selection.node.id, {
+			version: currentState.version,
+			params: { ...currentState.params },
+			ui,
+		});
+	};
+
+	const copySelection = () => {
+		editorHandle?.copySelected();
+	};
+
+	const createGroupFromSelection = () => {
+		editorHandle?.groupSelectedNodes();
+	};
+
+	const convertSelectionToGroup = () => {
+		editorHandle?.convertSelectionToGroup();
+	};
+
+	const createNodeGroupFromSelection = () => {
+		editorHandle?.createCollapsedGroupFromSelection();
+	};
+
+	const explodeGroupSelection = () => {
+		editorHandle?.explodeGroupSelection();
+	};
+
+	const openReplaceNodePalette = () => {
+		editorHandle?.openReplacePalette();
+	};
+
+	const savePresetFromSelection = () => {
+		openPresetModal();
+	};
+
+	const selectionBypassed = createMemo(() => {
+		const selection = selectionState();
+		if (selection.kind !== "node") {
+			return false;
+		}
+		return selection.node.state?.ui?.isBypassed ?? false;
 	});
 
-	const commitSelectionPortName = (portId: string, name: string) => {
+	const canCopySelection = createMemo(() => {
 		const selection = selectionState();
-		if (!editorHandle || selection.kind !== "node") {
-			return;
+		if (selection.kind === "node") {
+			return true;
 		}
-		const currentPort = selection.node.ports.find((port) => port.id === portId);
-		if (!currentPort) {
-			return;
+		if (selection.kind === "multi") {
+			return selection.nodes.length > 0;
 		}
-		const defaults = selectionPortDefaults();
-		const fallbackName = defaults[portId] ?? currentPort.name;
-		const nextName = name.trim() || fallbackName;
-		if (!nextName || nextName === currentPort.name) {
-			return;
-		}
-		editorHandle.updateNodePortName(selection.node.id, portId, nextName);
-	};
+		return false;
+	});
 
-	const resetSelectionPortName = (portId: string) => {
+	const canCreateGroup = createMemo(() => {
 		const selection = selectionState();
-		if (!editorHandle || selection.kind !== "node") {
-			return;
+		return selection.kind === "multi" && selection.nodes.length > 1;
+	});
+
+	const canSavePreset = createMemo(() => {
+		const selection = selectionState();
+		if (selection.kind === "node") {
+			return true;
 		}
-		const defaults = selectionPortDefaults();
-		const fallbackName = defaults[portId];
-		if (!fallbackName) {
-			return;
+		if (selection.kind === "multi") {
+			return selection.nodes.length > 0;
 		}
-		const currentPort = selection.node.ports.find((port) => port.id === portId);
-		if (!currentPort || currentPort.name === fallbackName) {
-			return;
-		}
-		editorHandle.updateNodePortName(selection.node.id, portId, fallbackName);
-	};
+		return false;
+	});
 
 	createEffect(() => {
 		const state = contextMenu();
@@ -1409,11 +2452,107 @@ export default function Editor() {
 	});
 
 	createEffect(() => {
+		const selection = selectionState();
+		const settings = visualSettings();
+		if (selection.kind !== "group") {
+			setGroupTitle("");
+			setGroupColor(formatPortColor(settings.groups.fillColor));
+			return;
+		}
+
+		setGroupTitle(selection.group.title);
+		const resolvedColor = selection.group.color ?? settings.groups.fillColor;
+		setGroupColor(formatPortColor(resolvedColor));
+	});
+
+	createEffect(() => {
 		const settings = visualSettings();
 		if (!editorHandle) {
 			return;
 		}
 		editorHandle.updateVisualSettings(settings);
+	});
+
+	createEffect(() => {
+		if (!editorHandle) {
+			return;
+		}
+		const isDebug = editorMode() === "debug";
+		editorHandle.setDebugMode(isDebug);
+		if (!isDebug) {
+			editorHandle.setDebugVisualizationState(null);
+			return;
+		}
+		const trace = debugTrace();
+		const steps = debugSteps();
+		const index = debugStepIndex();
+		const focusNodeId =
+			index >= 0 && index < steps.length
+				? (steps[index]?.nodeId ?? null)
+				: null;
+		const focusConnectionIds =
+			trace && focusNodeId !== null
+				? trace.usedConnections.filter((connectionId) => {
+						const parsed = parseConnectionId(connectionId);
+						return (
+							parsed !== null &&
+							(parsed.fromNodeId === focusNodeId ||
+								parsed.toNodeId === focusNodeId)
+						);
+					})
+				: undefined;
+		if (!trace) {
+			editorHandle.setDebugVisualizationState({
+				enabled: true,
+				dimInactive: false,
+				activeNodes: [],
+				activeConnections: [],
+				focusNodeId: null,
+			});
+			return;
+		}
+		editorHandle.setDebugVisualizationState({
+			enabled: true,
+			dimInactive: true,
+			activeNodes: trace.usedNodes,
+			activeConnections: trace.usedConnections,
+			focusNodeId,
+			focusConnectionIds,
+		});
+	});
+
+	createEffect(() => {
+		if (!editorHandle) {
+			return;
+		}
+		editorHandle.setConnectionFlowActive(
+			editorMode() === "preview" || compileStatus() === "compiling",
+		);
+	});
+
+	createEffect(() => {
+		if (!previewHandle) {
+			return;
+		}
+		previewHandle.setResolution(previewResolution());
+	});
+
+	createEffect(() => {
+		const focus = previewFocus();
+		const selection = selectionState();
+		const options = previewOptions();
+		const latest = latestShaderResult();
+		if (!previewHandle) {
+			return;
+		}
+
+		schedulePreviewUpdate({ focus, selection, options, latest });
+	});
+
+	onCleanup(() => {
+		if (previewUpdateTimer !== null) {
+			window.clearTimeout(previewUpdateTimer);
+		}
 	});
 
 	onMount(() => {
@@ -1450,6 +2589,63 @@ export default function Editor() {
 			setVisualSettings(storedVisualSettings);
 		}
 		setVisualSettingsLoaded(true);
+	});
+
+	onMount(() => {
+		setStoredPresets(loadStoredPresets());
+	});
+
+	onMount(() => {
+		const handleModeShortcuts = (event: KeyboardEvent) => {
+			if (event.repeat) {
+				return;
+			}
+			const target = event.target as HTMLElement | null;
+			if (
+				target &&
+				(target.tagName === "INPUT" ||
+					target.tagName === "TEXTAREA" ||
+					target.isContentEditable)
+			) {
+				return;
+			}
+			const key = event.key.toLowerCase();
+			const isMeta = event.ctrlKey || event.metaKey;
+
+			if (isMeta && key === "enter") {
+				event.preventDefault();
+				compileShader();
+				return;
+			}
+
+			if (event.altKey && key === "1") {
+				event.preventDefault();
+				updateEditorMode("edit");
+				return;
+			}
+
+			if (event.altKey && key === "p") {
+				event.preventDefault();
+				updateEditorMode(editorMode() === "preview" ? "edit" : "preview");
+				return;
+			}
+
+			if (event.altKey && key === "2") {
+				event.preventDefault();
+				updateEditorMode("preview");
+				return;
+			}
+
+			if (event.altKey && key === "3") {
+				event.preventDefault();
+				updateEditorMode("debug");
+			}
+		};
+
+		window.addEventListener("keydown", handleModeShortcuts);
+		onCleanup(() => {
+			window.removeEventListener("keydown", handleModeShortcuts);
+		});
 	});
 
 	onMount(() => {
@@ -1498,12 +2694,22 @@ export default function Editor() {
 			return;
 		}
 
-		const preview = createShaderPreview(previewRef, setPreviewStatus);
+		const preview = createShaderPreview(
+			previewRef,
+			setPreviewStatus,
+			setPreviewSample,
+			setPreviewFps,
+		);
 		previewHandle = preview;
+		previewHandle.setResolution(previewResolution());
 		const app = await initCanvas(canvasRef, {
 			onShaderChange: (result) => {
 				setLatestShaderResult(result);
-				preview.updateShader(result);
+				setLastCompileAt(new Date());
+				preview.updateShader(result, previewOptions());
+			},
+			onCompileStatus: (status) => {
+				setCompileStatus(status);
 			},
 			onExportRequest: (result) => {
 				setExportResult(result);
@@ -1516,8 +2722,15 @@ export default function Editor() {
 			onNodeRenameChange: (state) => {
 				setNodeRenameState(state);
 			},
+			onSocketEditorChange: (state: SocketEditorState | null) => {
+				setSocketEditorState(state);
+				setSocketEditorValue(state?.value ?? null);
+			},
 			onSelectionChange: (state) => {
 				setSelectionState(state);
+			},
+			onSelectionBoundsChange: (bounds) => {
+				setSelectionBounds(bounds);
 			},
 			onHoverChange: (state) => {
 				setHoverState(state);
@@ -1526,6 +2739,10 @@ export default function Editor() {
 			visualSettings: visualSettings(),
 		});
 		editorHandle = app;
+		app.setDebugMode(editorMode() === "debug");
+		if (editorMode() === "debug") {
+			app.compileShader();
+		}
 
 		onCleanup(() => {
 			preview.destroy();
@@ -1544,8 +2761,12 @@ export default function Editor() {
 	});
 
 	const status = previewStatus();
+	const compileTimestamp = createMemo(() => formatCompileTime(lastCompileAt()));
+	const optimizationSuggestions = createMemo(() =>
+		buildOptimizationSuggestions(latestShaderResult()),
+	);
 	const settingsSelectClass =
-		"w-full rounded-lg border border-[#2a3342] bg-[#0f131b] px-2 py-1.5 text-[12px] text-[#f4f5f7] focus:outline-none focus:border-[#4f8dd9] focus:ring-2 focus:ring-[rgba(79,141,217,0.2)]";
+		"w-full rounded border border-[#2a3342] bg-[#0f131b] px-2 py-1.5 text-[12px] text-[#f4f5f7] focus:outline-none focus:border-[#4f8dd9] focus:ring-2 focus:ring-[rgba(79,141,217,0.2)]";
 	const settingsRangeClass = "w-full accent-[#5fa8ff]";
 
 	const formatNodeStatus = (node: SelectedNode) => {
@@ -1562,8 +2783,24 @@ export default function Editor() {
 	const formatConnectionStatus = (connection: SelectedConnection) =>
 		`Connection ${connection.from.nodeId}:${connection.from.portId} -> ${connection.to.nodeId}:${connection.to.portId} | ${connection.type}`;
 
+	const parseConnectionId = (id: string) => {
+		const [fromPart, toPart] = id.split("->");
+		if (!fromPart || !toPart) {
+			return null;
+		}
+		const fromNodeId = Number.parseInt(fromPart.split(":")[0] ?? "", 10);
+		const toNodeId = Number.parseInt(toPart.split(":")[0] ?? "", 10);
+		if (!Number.isFinite(fromNodeId) || !Number.isFinite(toNodeId)) {
+			return null;
+		}
+		return { fromNodeId, toNodeId };
+	};
+
 	const statusBarText = createMemo(() => {
 		const hover = hoverState();
+		if (hover.kind === "socket") {
+			return `Socket ${hover.socket.portName} | ${hover.socket.portType}`;
+		}
 		if (hover.kind === "node") {
 			return formatNodeStatus(hover.node);
 		}
@@ -1578,6 +2815,38 @@ export default function Editor() {
 			return formatConnectionStatus(selection.connection);
 		}
 		return null;
+	});
+	const socketHoverState = createMemo(() => {
+		const hover = hoverState();
+		return hover.kind === "socket" ? hover.socket : null;
+	});
+	const connectionHoverState = createMemo(() => {
+		const hover = hoverState();
+		return hover.kind === "connection" ? hover : null;
+	});
+	const connectionHoverStage = createMemo(() => {
+		if (editorMode() !== "debug") {
+			return null;
+		}
+		return activeDebugStep()?.stage ?? "fragment";
+	});
+	const connectionHoverExpression = createMemo(() => {
+		if (editorMode() !== "debug") {
+			return null;
+		}
+		const hover = connectionHoverState();
+		const trace = debugTrace();
+		if (!hover || !trace) {
+			return null;
+		}
+		const stage = activeDebugStep()?.stage ?? "fragment";
+		const connectionKey = `${stage}:${hover.connection.id}`;
+		const fromKey = `${stage}:${hover.connection.from.nodeId}:${hover.connection.from.portId}`;
+		return (
+			trace.connectionExpressions[connectionKey] ??
+			trace.portExpressions[fromKey] ??
+			null
+		);
 	});
 
 	return (
@@ -1611,21 +2880,84 @@ export default function Editor() {
 						onKeyDown={handleNodeRenameKeyDown}
 						setInputRef={setRenameInputRef}
 					/>
+					<SocketEditorOverlay
+						state={socketEditorState()}
+						value={socketEditorValue()}
+						onChange={updateSocketEditorValue}
+						onClose={closeSocketEditor}
+					/>
+					<SocketTooltip state={socketHoverState()} />
+					<ConnectionTooltip
+						state={editorMode() === "debug" ? connectionHoverState() : null}
+						expression={connectionHoverExpression()}
+						stage={connectionHoverStage()}
+					/>
+					<FloatingSelectionToolbar
+						selection={selectionState()}
+						bounds={selectionBounds()}
+						stageRef={stageRef}
+						isBypassed={selectionBypassed()}
+						canCopy={canCopySelection()}
+						canCreateGroup={canCreateGroup()}
+						canChangeColor={selectionState().kind === "node"}
+						canSavePreset={canSavePreset()}
+						onCopy={copySelection}
+						onCreateGroup={createGroupFromSelection}
+						onConvertToGroup={convertSelectionToGroup}
+						onDelete={deleteSelection}
+						onSavePreset={savePresetFromSelection}
+						onReplaceNode={openReplaceNodePalette}
+						onToggleBypass={toggleSelectionBypass}
+						onChangeColorTag={updateSelectionColorTag}
+					/>
+					<LeftSidebar
+						onCreateNode={createNodeFromPalette}
+						onLoadShader={loadShaderFromLibrary}
+						presets={presets()}
+						onInsertPreset={insertPreset}
+						onDeletePreset={deletePreset}
+					/>
 					<SelectionPanel
 						selection={selectionState()}
 						nodeTitle={selectionTitle()}
 						onNodeTitleChange={updateSelectionTitle}
 						onNodeTitleCommit={commitSelectionTitle}
-						onNodeStateUpdate={updateSelectionNodeState}
 						onDeleteSelection={deleteSelection}
-						portDefaults={selectionPortDefaults()}
-						onPortNameCommit={commitSelectionPortName}
-						onPortNameReset={resetSelectionPortName}
-					/>
-					<PreviewPanel
-						status={status}
-						textureName={textureName()}
+						previewStatus={status}
+						previewSample={previewSample()}
+						previewFps={previewFps()}
+						showFps={editorMode() === "debug" && status.tone !== "error"}
+						previewResolution={previewResolution()}
+						onPreviewResolutionChange={updatePreviewResolution}
+						previewFocus={previewFocus()}
+						onPreviewFocusChange={updatePreviewFocus}
+						previewOptions={previewOptions()}
+						onPreviewOptionsChange={updatePreviewOptions}
 						setPreviewRef={setPreviewRef}
+						onPreviewExport={exportPreviewPng}
+						textureName={textureName()}
+						connectionCount={latestShaderResult()?.connectionCount ?? null}
+						shaderComplexity={latestShaderResult()?.complexity ?? null}
+						optimizationSuggestions={optimizationSuggestions()}
+						nodeColorTag={selectionColorTag()}
+						onNodeColorTagChange={updateSelectionColorTag}
+						groupTitle={groupTitle()}
+						onGroupTitleChange={updateGroupTitle}
+						onGroupTitleCommit={commitGroupTitle}
+						groupColor={groupColor()}
+						groupHasCustomColor={groupHasCustomColor()}
+						onGroupColorChange={updateGroupColor}
+						onGroupColorReset={resetGroupColor}
+						debugMode={editorMode() === "debug"}
+						debugTrace={debugTrace()}
+						debugStepIndex={debugStepIndex()}
+						debugStatus={debugStatus()}
+						debugBreakpoints={debugBreakpoints()}
+						onDebugStepInto={stepIntoDebug}
+						onDebugStepOver={stepOverDebug}
+						onDebugContinue={continueDebug}
+						onDebugReset={resetDebugSession}
+						onToggleBreakpoint={toggleDebugBreakpoint}
 					/>
 					<StatusBar text={statusBarText()} />
 				</div>
@@ -1633,11 +2965,22 @@ export default function Editor() {
 			<ActionBar
 				actionMenus={actionMenus()}
 				openActionMenu={openActionMenu()}
-				onOpenSearch={() => runEditorAction((app) => app.openSearchPalette())}
+				onOpenSearch={openNodeSearch}
 				onOpenSettings={() => setShowSettings(true)}
 				onToggleActionMenu={toggleActionMenu}
 				onRunMenuItem={runActionMenuItem}
 				setActionMenuRef={setActionMenuRef}
+				searchValue={nodeSearchQuery()}
+				onSearchChange={handleNodeSearchInput}
+				onSearchBlur={handleNodeSearchBlur}
+				onCompileShader={compileShader}
+				onExportShader={exportGlsl}
+				exportDisabled={previewStatus().tone === "error"}
+				activeMode={editorMode()}
+				onModeChange={updateEditorMode}
+				compileStatus={compileStatus()}
+				compileMs={latestShaderResult()?.compileMs ?? null}
+				lastCompileAt={compileTimestamp()}
 			/>
 			<SettingsModal
 				open={showSettings()}
@@ -1656,6 +2999,15 @@ export default function Editor() {
 				onUpdateVisualSettings={updateVisualSettings}
 				onTextureChange={handleTextureChange}
 				onClearTexture={clearTexture}
+			/>
+			<PresetModal
+				open={showPresetModal()}
+				name={presetName()}
+				description={presetDescription()}
+				onNameChange={setPresetName}
+				onDescriptionChange={setPresetDescription}
+				onSave={savePreset}
+				onClose={closePresetModal}
 			/>
 			<ShortcutsModal
 				open={showShortcuts()}

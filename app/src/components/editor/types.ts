@@ -9,6 +9,13 @@ type PreviewStatus = {
 	compileMs?: number;
 };
 
+type PreviewSample = {
+	r: number;
+	g: number;
+	b: number;
+	a: number;
+};
+
 type UiMessageItem = UiMessage & { id: number };
 
 type ShortcutEntry = {
@@ -25,7 +32,7 @@ type ShortcutGroup = {
 	entries: ShortcutEntry[];
 };
 
-type ActionMenuId = "edit" | "view" | "file";
+type ActionMenuId = "graph" | "actions";
 
 type ActionMenuItem = {
 	id: string;
@@ -43,6 +50,7 @@ type ActionMenuDefinition = {
 export type {
 	ActionMenuDefinition,
 	ActionMenuId,
+	PreviewSample,
 	PreviewStatus,
 	PreviewStatusTone,
 	ShortcutEntry,

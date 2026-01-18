@@ -1,5 +1,6 @@
 import type { EditorVisualSettings } from "@shadr/lib-editor";
 import { Show } from "solid-js";
+import { FilterableSelect } from "./filterable-select";
 
 type SettingsModalProps = {
 	open: boolean;
@@ -25,7 +26,7 @@ type SettingsModalProps = {
 export const SettingsModal = (props: SettingsModalProps) => (
 	<Show when={props.open}>
 		<div
-			class="fixed inset-0 z-[8] flex items-start justify-center bg-[rgba(8,10,14,0.72)] px-4 py-10"
+			class="fixed inset-0 z-[8] flex items-start justify-center bg-transparent px-4 py-10"
 			onPointerDown={(event) => {
 				if (event.target === event.currentTarget) {
 					props.onClose();
@@ -33,7 +34,7 @@ export const SettingsModal = (props: SettingsModalProps) => (
 			}}
 		>
 			<div
-				class="w-full max-w-3xl max-h-[calc(100vh-80px)] overflow-y-auto rounded-2xl border border-[#2a3241] bg-[#0f131c] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
+				class="w-full max-w-3xl max-h-[calc(100vh-80px)] overflow-y-auto rounded-lg border border-[#2a3241] bg-[#0f131c] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
 				onPointerDown={(event) => event.stopPropagation()}
 			>
 				<div class="flex items-center justify-between gap-2">
@@ -49,7 +50,7 @@ export const SettingsModal = (props: SettingsModalProps) => (
 					</button>
 				</div>
 				<div class="mt-4 flex flex-col gap-3">
-					<div class="grid gap-2 rounded-[10px] border border-[#1f2430] bg-[#0b0f16] p-2.5">
+					<div class="grid gap-2 rounded-lg border border-[#1f2430] bg-[#0b0f16] p-2.5">
 						<div class="text-[11px] uppercase tracking-[0.14em] text-[#8c96a3]">
 							Canvas
 						</div>
@@ -91,7 +92,7 @@ export const SettingsModal = (props: SettingsModalProps) => (
 							/>
 						</label>
 					</div>
-					<div class="grid gap-2 rounded-[10px] border border-[#1f2430] bg-[#0b0f16] p-2.5">
+					<div class="grid gap-2 rounded-lg border border-[#1f2430] bg-[#0b0f16] p-2.5">
 						<div class="text-[11px] uppercase tracking-[0.14em] text-[#8c96a3]">
 							Grid
 						</div>
@@ -242,7 +243,7 @@ export const SettingsModal = (props: SettingsModalProps) => (
 							/>
 						</label>
 					</div>
-					<div class="grid gap-2 rounded-[10px] border border-[#1f2430] bg-[#0b0f16] p-2.5">
+					<div class="grid gap-2 rounded-lg border border-[#1f2430] bg-[#0b0f16] p-2.5">
 						<div class="text-[11px] uppercase tracking-[0.14em] text-[#8c96a3]">
 							Groups
 						</div>
@@ -367,33 +368,39 @@ export const SettingsModal = (props: SettingsModalProps) => (
 							/>
 						</label>
 					</div>
-					<div class="grid gap-2 rounded-[10px] border border-[#1f2430] bg-[#0b0f16] p-2.5">
+					<div class="grid gap-2 rounded-lg border border-[#1f2430] bg-[#0b0f16] p-2.5">
 						<div class="text-[11px] uppercase tracking-[0.14em] text-[#8c96a3]">
 							Connections
 						</div>
-						<label class="flex flex-col gap-1 text-[11px] text-[#b9c2cf]">
+						<div class="flex flex-col gap-1 text-[11px] text-[#b9c2cf]">
 							<span>Style</span>
-							<select
+							<FilterableSelect
 								value={props.visualSettings.connections.style}
 								class={props.settingsSelectClass}
-								onChange={(event) => {
-									const value =
-										event.currentTarget.value === "straight"
-											? "straight"
+								options={[
+									{ value: "curved", label: "Curved Bezier" },
+									{ value: "straight", label: "Straight Lines" },
+									{ value: "step", label: "Step Lines" },
+									{ value: "orthogonal", label: "Orthogonal" },
+								]}
+								onChange={(value) => {
+									const next =
+										value === "straight" ||
+										value === "step" ||
+										value === "orthogonal"
+											? value
 											: "curved";
 									props.onUpdateVisualSettings((current) => ({
 										...current,
 										connections: {
 											...current.connections,
-											style: value,
+											style: next,
 										},
 									}));
 								}}
-							>
-								<option value="curved">Curved</option>
-								<option value="straight">Straight</option>
-							</select>
-						</label>
+								ariaLabel="Connection style"
+							/>
+						</div>
 						<label class="flex flex-col gap-1 text-[11px] text-[#b9c2cf]">
 							<span>Width</span>
 							<input
@@ -422,8 +429,108 @@ export const SettingsModal = (props: SettingsModalProps) => (
 								}}
 							/>
 						</label>
+						<label class="flex items-center justify-between gap-2 text-[11px] text-[#b9c2cf]">
+							<span>Emphasis selected</span>
+							<input
+								type="checkbox"
+								checked={props.visualSettings.connections.emphasisMode}
+								class="h-4 w-4 accent-[#5fa8ff]"
+								onInput={(event) => {
+									const target = event.currentTarget;
+									props.onUpdateVisualSettings((current) => ({
+										...current,
+										connections: {
+											...current.connections,
+											emphasisMode: target.checked,
+										},
+									}));
+								}}
+							/>
+						</label>
+						<label class="flex items-center justify-between gap-2 text-[11px] text-[#b9c2cf]">
+							<span>Bundle parallel wires</span>
+							<input
+								type="checkbox"
+								checked={props.visualSettings.connections.bundleConnections}
+								class="h-4 w-4 accent-[#5fa8ff]"
+								onInput={(event) => {
+									const target = event.currentTarget;
+									props.onUpdateVisualSettings((current) => ({
+										...current,
+										connections: {
+											...current.connections,
+											bundleConnections: target.checked,
+										},
+									}));
+								}}
+							/>
+						</label>
+						<label class="flex items-center justify-between gap-2 text-[11px] text-[#b9c2cf]">
+							<span>Show data type labels</span>
+							<input
+								type="checkbox"
+								checked={props.visualSettings.connections.showLabels}
+								class="h-4 w-4 accent-[#5fa8ff]"
+								onInput={(event) => {
+									const target = event.currentTarget;
+									props.onUpdateVisualSettings((current) => ({
+										...current,
+										connections: {
+											...current.connections,
+											showLabels: target.checked,
+										},
+									}));
+								}}
+							/>
+						</label>
+						<label class="flex items-center justify-between gap-2 text-[11px] text-[#b9c2cf]">
+							<span>Distance LOD</span>
+							<input
+								type="checkbox"
+								checked={props.visualSettings.connections.lodEnabled}
+								class="h-4 w-4 accent-[#5fa8ff]"
+								onInput={(event) => {
+									const target = event.currentTarget;
+									props.onUpdateVisualSettings((current) => ({
+										...current,
+										connections: {
+											...current.connections,
+											lodEnabled: target.checked,
+										},
+									}));
+								}}
+							/>
+						</label>
+						<label class="flex flex-col gap-1 text-[11px] text-[#b9c2cf]">
+							<span>LOD distance</span>
+							<input
+								type="range"
+								min="200"
+								max="2400"
+								step="50"
+								value={props.visualSettings.connections.lodDistance}
+								class={props.settingsRangeClass}
+								onInput={(event) => {
+									const value = props.clampNumber(
+										props.parseNumberInput(
+											event.currentTarget.value,
+											props.visualSettings.connections.lodDistance,
+										),
+										200,
+										2400,
+									);
+									props.onUpdateVisualSettings((current) => ({
+										...current,
+										connections: {
+											...current.connections,
+											lodDistance: value,
+										},
+									}));
+								}}
+							/>
+						</label>
 					</div>
-					<div class="grid gap-2 rounded-[10px] border border-[#1f2430] bg-[#0b0f16] p-2.5">
+					<div class="grid gap-2 rounded-lg border border-[#1f2430] bg-[#0b0f16] p-2.5">
 						<div class="text-[11px] uppercase tracking-[0.14em] text-[#8c96a3]">
 							Preview Texture
 						</div>
