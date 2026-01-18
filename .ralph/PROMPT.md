@@ -5,7 +5,8 @@
 0a. Study `AGENT.md` to understand build/run commands and learnings.
 0b. Study `fix_plan.md` to understand current tasks and priorities.
 0c. Study `specs/architecture.md` to understand project structure.
-0d. Review recent changes: `git log --oneline -5`
+0d. Study `FEATURES.md` to understand overall goals and features of the project.
+0e. Review recent changes: `git log --oneline -5`
 
 ## 1. Task Selection
 
@@ -43,8 +44,7 @@ When you make changes:
 When validation passes:
 ```bash
 git add -A
-git commit -m "descriptive message"
-git push
+git commit -m "short descriptive message"
 ```
 
 ---
