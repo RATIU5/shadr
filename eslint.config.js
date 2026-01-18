@@ -67,6 +67,14 @@ export default [
 	js.configs.recommended,
 	...baseTypeScriptConfig,
 	{
+		files: ["packages/app-web/app.js"],
+		languageOptions: {
+			globals: {
+				...globals.browser,
+			},
+		},
+	},
+	{
 		files: ["packages/app-web/src/**/*.{ts,tsx}"],
 		rules: {
 			"import/no-default-export": "off",

@@ -48,6 +48,7 @@ This is **not** a collaborative app, **not** async-first, and **not** WebGPU-bas
   - Event bus
   - Error modeling
   - Service boundaries (Layers)
+  - Search Effect codebase as needed at 'node_modules/.pnpm/effect@3.19.12/node_modules/effect'
 
 - **TypeScript**
   - Strict mode enabled
@@ -125,7 +126,7 @@ If a command is missing or fails, **update this section** to reflect the real wo
 
 ## Code Patterns & Conventions
 
-- **Indentation**: Tabs
+- **Indentation**: Spaces (2)
 - **Quotes**: Double quotes
 - **Modules**: ESM
 - **Types**:
@@ -211,6 +212,7 @@ If you see patterns suggesting otherwise, **they are wrong** and should be corre
 -->
 
 - Playwright smoke tests run from `tests/e2e` and load `packages/app-web/index.html` directly for a lightweight UI boot check.
+- TypeScript project references build declarations only (`emitDeclarationOnly`) to satisfy `allowImportingTsExtensions`; package scripts use `tsc -b`.
 
 ---
 

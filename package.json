@@ -37,20 +37,23 @@
       }
     }
   },
-	"scripts": {
-		"prepare": "effect-language-service patch",
-		"clean": "pnpm -r clean && rm -rf node_modules",
-		"build": "pnpm -r build",
-		"dev": "pnpm -r dev",
-		"typecheck": "pnpm -r typecheck",
-		"check": "pnpm typecheck",
-		"test": "pnpm -r test",
-		"test:e2e": "playwright test",
-		"lint": "pnpm -r lint",
-		"format": "prettier -w .",
-		"format:check": "prettier -c .",
-		"changeset": "changeset",
-		"changeset:version": "changeset version",
+  "scripts": {
+    "prepare": "effect-language-service patch",
+    "clean": "pnpm -r clean && rm -rf node_modules",
+    "build": "pnpm -r build",
+    "dev": "pnpm -r dev",
+    "dev:app": "pnpm --filter app-web dev",
+    "typecheck": "pnpm -r typecheck",
+    "check": "pnpm typecheck",
+    "test": "pnpm -r test",
+    "test:e2e": "playwright test",
+    "lint": "pnpm -r lint",
+    "bundle:report": "node scripts/bundle-report.mjs",
+    "perf:render": "node scripts/perf/render-1000-nodes.mjs",
+    "format": "prettier -w .",
+    "format:check": "prettier -c .",
+    "changeset": "changeset",
+    "changeset:version": "changeset version",
     "changeset:status": "changeset status --since=main"
   },
   "devDependencies": {
@@ -62,15 +65,15 @@
     "@typescript-eslint/parser": "^8.43.0",
     "@vitest/coverage-v8": "^4.0.16",
     "eslint": "^9.26.0",
-		"eslint-config-prettier": "^10.1.8",
-		"eslint-plugin-import": "^2.31.0",
-		"eslint-plugin-prettier": "^5.5.4",
-		"eslint-plugin-simple-import-sort": "^12.1.0",
-		"globals": "^15.15.0",
-		"@playwright/test": "^1.55.0",
-		"prettier": "^3.6.2",
-		"turbo": "^2.5.5",
-		"typescript": "^5.9.3",
-		"vitest": "catalog:testing"
-	}
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-prettier": "^5.5.4",
+    "eslint-plugin-simple-import-sort": "^12.1.0",
+    "globals": "^15.15.0",
+    "@playwright/test": "^1.55.0",
+    "prettier": "^3.6.2",
+    "turbo": "^2.5.5",
+    "typescript": "^5.9.3",
+    "vitest": "catalog:testing"
+  }
 }

@@ -9,5 +9,8 @@
 		"typecheck": "tsc -b",
 		"lint": "eslint .",
 		"test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/plugin-system/test/**/*.test.ts"
+	},
+	"dependencies": {
+		"effect": "catalog:effect"
 	}
 }

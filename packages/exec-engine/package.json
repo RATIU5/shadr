@@ -18,6 +18,7 @@
 	},
 	"types": "./src/index.ts",
 	"dependencies": {
+		"effect": "catalog:effect",
 		"@shadr/graph-core": "workspace:*"
 	}
 }

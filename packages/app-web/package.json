@@ -1,13 +1,23 @@
 {
-	"name": "@shadr/app-web",
-	"version": "0.0.0",
-	"private": true,
-	"type": "module",
-	"scripts": {
-		"build": "tsc -b",
-		"dev": "tsc -b -w --preserveWatchOutput",
-		"typecheck": "tsc -b",
-		"lint": "eslint .",
-		"test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/app-web/test/**/*.test.ts"
-	}
+  "name": "app-web",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vinxi dev",
+    "build": "vinxi build",
+    "start": "vinxi start"
+  },
+  "dependencies": {
+    "@solidjs/router": "^0.15.0",
+    "@solidjs/start": "^1.1.0",
+    "solid-js": "^1.9.5",
+    "vinxi": "^0.5.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.7",
+    "tailwindcss": "^4.0.7"
+  },
+  "engines": {
+    "node": ">=22"
+  }
 }

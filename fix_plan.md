@@ -8,11 +8,6 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 > Split code into multiple files when possible, to keep file sizes smaller and more managable/maintainable
 
 ## Critical
-
-- [ ] Ensure Effect-ts (see root package.json for catalog versions) is installed and used correctly in all packages that will need Effect, anything with layers or services or composability in the core packages
-- [ ] Add “bundle/perf guardrails”: build output size report and a simple perf benchmark for 1000-node render (dev script, not CI required yet)
-- [ ] Define shared identity types in `shared`: `NodeId`, `SocketId`, `WireId`, `GraphId`, branded types, plus `NonEmptyArray`, `Result`/`Either` helpers (prefer Effect types)
-- [ ] Define versioned graph JSON schema in `shared`: `GraphDocumentV1` with explicit `schemaVersion`, migrations interface, stable IDs, and deterministic ordering rules for serialization
 - [ ] Implement core Graph data model in `graph-core` (no UI): `Node`, `Socket`, `Wire`, `Graph` as immutable-ish state transitions (Effect-friendly reducers), plus adjacency indexes (incoming/outgoing) optimized for 1000 nodes
 - [ ] Implement graph operations API (pure) with validation results: `addNode`, `removeNode`, `moveNode(s)`, `addWire`, `removeWire`, `updateParam`, `addRerouteNode` (optional for MVP), each returning `Effect` success or typed domain errors
 - [ ] Implement traversal utilities for 1000-node scale: upstream/downstream dependency closure, connected components, and “execution subgraph” derivation by requested output sockets
@@ -84,6 +79,9 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 ## Completed
 
+- [x] Define shared identity types in `shared`: `NodeId`, `SocketId`, `WireId`, `GraphId`, branded types, plus `NonEmptyArray`, `Result`/`Either` helpers (prefer Effect types)
+- [x] Add “bundle/perf guardrails”: build output size report and a simple perf benchmark for 1000-node render (dev script, not CI required yet)
+- [x] Ensure Effect-ts (see root package.json for catalog versions) is installed and used correctly in all packages that will need Effect, anything with layers or services or composability in the core packages
 - [x] Add Playwright smoke test for app boot + basic node creation/connect (one test is enough for MVP confidence)
 - [x] Add `pnpm -r` scripts and Turbo pipelines: `build`, `dev`, `typecheck`, `lint`, `test` with correct dependency graph
 - [x] Add `vitest` + `@vitest/coverage-v8` for core packages; add unit tests for graph validation, topo sort, cycle detect, dirty propagation (added `vitest.config.ts`, graph-core/exec-engine test suites, and lightweight graph/dirty helpers to support coverage)
@@ -95,3 +93,4 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 - [x] Add “quality gates”: block merge if typecheck/lint fails; enforce formatting via CI
 - [x] Create monorepo skeleton (pnpm workspaces + Turborepo) with packages: `app-web`, `graph-core`, `exec-engine`, `ui-canvas`, `ui-overlay`, `plugin-system`, `storage-idb`, `shared`, `devtools` (optional)
 - [x] Add repo-wide tooling baseline: Node LTS via `.nvmrc` + `.node-version`, `corepack` enabled, pinned pnpm version in `packageManager`, consistent ESM strategy (pick ESM-only unless you have a hard reason not to)
+- [x] Define versioned graph JSON schema in `shared`: `GraphDocumentV1` with explicit `schemaVersion`, migrations interface, stable IDs, and deterministic ordering rules for serialization (enables deterministic storage and future migrations)

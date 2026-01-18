@@ -26,7 +26,7 @@ Before implementing, search the codebase using parallel subagents:
 Implement the selected task following existing code patterns.
 
 After implementing:
-- Run validation: `pnpm typecheck && pnpm check`
+- Run validation: `pnpm lint && pnpm check`
 - If tests/checks fail, fix them before proceeding
 - Use only 1 subagent for build/test operations (backpressure control)
 
