@@ -335,6 +335,106 @@ describe("subgraph evaluation", () => {
     expect(value).toBe(5);
   });
 
+  it("applies promoted params from subgraph inputs", () => {
+    const internalConstNodeId = makeNodeId("sub-const");
+    const internalConstSocketId = makeSocketId(`${internalConstNodeId}.out`);
+    const internalNode: GraphNode = {
+      id: internalConstNodeId,
+      type: "const",
+      position: { x: 0, y: 0 },
+      params: { value: 2 } as JsonObject,
+      inputs: [],
+      outputs: [internalConstSocketId],
+    };
+    const internalSocket: GraphSocket = {
+      id: internalConstSocketId,
+      nodeId: internalConstNodeId,
+      name: "out",
+      direction: "output",
+      dataType: "float",
+      required: false,
+    };
+    const subgraphDocument: GraphDocumentV1 = {
+      schemaVersion: GRAPH_DOCUMENT_V1_SCHEMA_VERSION,
+      graphId: makeGraphId("promoted"),
+      nodes: [internalNode],
+      sockets: [internalSocket],
+      wires: [],
+    };
+
+    const subgraphNodeId = makeNodeId("subgraph-promoted");
+    const subgraphInputSocketId = makeSocketId(`${subgraphNodeId}.value`);
+    const subgraphOutputSocketId = makeSocketId(`${subgraphNodeId}.out`);
+    const subgraphNode: GraphNode = {
+      id: subgraphNodeId,
+      type: SUBGRAPH_NODE_TYPE,
+      position: { x: 0, y: 0 },
+      params: {
+        graph: subgraphDocument,
+        inputs: [],
+        outputs: [{ key: "out", socketId: internalConstSocketId }],
+        promotedParams: [
+          { key: "value", nodeId: internalConstNodeId, fieldId: "value" },
+        ],
+      } as JsonObject,
+      inputs: [subgraphInputSocketId],
+      outputs: [subgraphOutputSocketId],
+    };
+    const subgraphSockets: GraphSocket[] = [
+      {
+        id: subgraphInputSocketId,
+        nodeId: subgraphNodeId,
+        name: "value",
+        direction: "input",
+        dataType: "float",
+        required: false,
+      },
+      {
+        id: subgraphOutputSocketId,
+        nodeId: subgraphNodeId,
+        name: "out",
+        direction: "output",
+        dataType: "float",
+        required: false,
+      },
+    ];
+
+    const outerConstNodeId = makeNodeId("outer-const");
+    const outerConstSocketId = makeSocketId(`${outerConstNodeId}.out`);
+    const outerNode: GraphNode = {
+      id: outerConstNodeId,
+      type: "const",
+      position: { x: 0, y: 0 },
+      params: { value: 5 } as JsonObject,
+      inputs: [],
+      outputs: [outerConstSocketId],
+    };
+    const outerSocket: GraphSocket = {
+      id: outerConstSocketId,
+      nodeId: outerConstNodeId,
+      name: "out",
+      direction: "output",
+      dataType: "float",
+      required: false,
+    };
+
+    let graph = createGraph();
+    graph = expectOk(addNode(graph, subgraphNode, subgraphSockets));
+    graph = expectOk(addNode(graph, outerNode, [outerSocket]));
+    graph = expectOk(
+      addWire(graph, {
+        id: makeWireId("wire-promoted"),
+        fromSocketId: outerConstSocketId,
+        toSocketId: subgraphInputSocketId,
+      }),
+    );
+
+    const result = expectOk(
+      evaluateSocket(graph, subgraphOutputSocketId, resolveNodeDefinition),
+    );
+    expect(result).toBe(5);
+  });
+
   it("applies per-instance param overrides", () => {
     const inner = createConstGraphDocument("override", 2);
     const innerNodeId = inner.document.nodes[0]?.id ?? makeNodeId("inner");

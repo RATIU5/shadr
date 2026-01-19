@@ -1,6 +1,6 @@
 # Fix Plan (Core)
 
-Last updated: 2026-01-18
+Last updated: 2026-01-19
 Features reference: `FEATURES.md` (for what to work on after all tasks are complete)
 
 > Move completed tasks to the 'Completed' section at the bottom of this file when completed
@@ -12,41 +12,40 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 > Break up large tasks or add context to tasks by adding new tasks to this list. Don't modify existing tasks.
 
 ## Critical
-- [ ] Implement **async/background execution lane** (even if nodes remain sync): offload heavy graphs to a worker, keep UI responsive, and support cancelation + progress
-- [ ] Implement **execution flow visualization suite**: animated wires, execution order badges, per-node timing bars, and timeline view (must be toggleable for perf)
 
 ## High Priority
 
-- [ ] Dragging a connected wire from a socket, letting go of it over open canvas area will delete the wire, unless it's connected to a new socket (Like Blender)
-- [ ] Implement **network boxes/frames** fully: create, resize, drag, custom title/color/description, collapse/expand showing only exposed I/O
-- [ ] Implement **nested network boxes** with correct hit-testing, z-order interactions, and parent/child move semantics
-- [ ] Implement **promoted parameters**: expose internal node params externally from groups/subgraphs, including mapping UI + socket exposure controls
-- [ ] Implement **group/ungroup** with robust semantics: move/duplicate/copy-paste groups, preserve connections, and support “frame by group/category”
-- [ ] Implement **delete with wire reconnection options**: bridge compatible sockets, remove all, etc...
-- [ ] Implement **wire tap insertion**: click wire to open compatible node list and auto-insert with correct type mapping and reconnection
-- [ ] Implement **conversion node authoring tooling**: manage conversion registry, compatibility table, and test suite ensuring no accidental implicit casting
-- [ ] Implement **type compatibility matrix management** (code-only): define allowed connections rules beyond exact match (if desired), keep UI strict and simple
-
 ## Medium Priority
-
-- [ ] Implement **detached wire dragging** UX refinements: drag from either end, snap previews, auto-scroll at viewport edges while dragging
-- [ ] Implement **socket label positioning controls** (show/hide, custom positions) and improved socket metadata (units, ranges, formatting)
-- [ ] Implement **socket shapes by type** (circle/triangle/square) as an additional visual channel with accessibility-safe defaults
-- [ ] Implement **one-to-many vs one-to-one enforcement** per socket definition with clear inline UI feedback
-- [ ] Implement **validation warnings suite**: type mismatch attempts, circular dependency attempt history, unreachable outputs, redundant conversions
-- [ ] Implement improved **error handling UX**: severity-coded badges, expandable tooltips, stack/context display (debug-only mode), and error filtering
-- [ ] Implement toggleable **debug panel** that can print node outputs, watch sockets, and stream evaluation logs, streams useful events
-- [ ] Implement robust **DOM overlay layer management**: focus traps, pointer-event pass-through, accessibility for overlays, and consistent layering
 
 ## Low Priority
 
-- [ ] Implement global settings dialog modal, add all settings in tabs inside the modal
 - [ ] Implement **behavior settings** expansion: autosave frequency controls, undo stack depth controls, and advanced pan/zoom curves
 - [ ] Implement **full keyboard navigation** across canvas: node-to-node traversal, socket navigation, wire navigation, and action palette parity
 - [ ] Implement **keyboard shortcut customization** UI: keybinding editor, conflict detection, profiles, and export/import
+- [ ] Change command palette tag names: Command -> CMD, Control -> CTRL
 
 ## Completed
 
+- [x] Implement global settings dialog modal, add all settings in tabs inside the modal
+- [x] Implement robust **DOM overlay layer management**: focus traps, pointer-event pass-through, accessibility for overlays, and consistent layering
+- [x] Implement toggleable **debug panel** that can print node outputs, watch sockets, and stream evaluation logs, streams useful events
+- [x] Implement improved **error handling UX**: severity-coded badges, expandable tooltips, stack/context display (debug-only mode), and error filtering
+- [x] Implement **validation warnings suite**: type mismatch attempts, circular dependency attempt history, unreachable outputs, redundant conversions
+- [x] Implement **one-to-many vs one-to-one enforcement** per socket definition with clear inline UI feedback
+- [x] Implement **socket shapes by type** (circle/triangle/square) as an additional visual channel with accessibility-safe defaults
+- [x] Implement **socket label positioning controls** (show/hide, custom positions) and improved socket metadata (units, ranges, formatting)
+- [x] Implement **detached wire dragging** UX refinements: drag from either end, snap previews, auto-scroll at viewport edges while dragging
+- [x] Implement **type compatibility matrix management** (code-only): define allowed connections rules beyond exact match (if desired), keep UI strict and simple
+- [x] Implement **conversion node authoring tooling**: manage conversion registry, compatibility table, and test suite ensuring no accidental implicit casting
+- [x] Implement **wire tap insertion**: click wire to open compatible node list and auto-insert with correct type mapping and reconnection
+- [x] Implement **delete with wire reconnection options**: bridge compatible sockets, remove all, etc...
+- [x] Implement **group/ungroup** with robust semantics: move/duplicate/copy-paste groups, preserve connections, and support “frame by group/category”
+- [x] Implement **promoted parameters**: expose internal node params externally from groups/subgraphs, including mapping UI + socket exposure controls
+- [x] Implement **nested network boxes** with correct hit-testing, z-order interactions, and parent/child move semantics
+- [x] Implement **network boxes/frames** fully: create, resize, drag, custom title/color/description, collapse/expand showing only exposed I/O
+- [x] Dragging a connected wire from a socket, letting go of it over open canvas area will delete the wire, unless it's connected to a new socket (Like Blender)
+- [x] Implement **execution flow visualization suite**: animated wires, execution order badges, per-node timing bars, and timeline view (must be toggleable for perf)
+- [x] Implement **async/background execution lane** (even if nodes remain sync): offload heavy graphs to a worker, keep UI responsive, and support cancelation + progress
 - [x] Implement **per-instance overrides** for params with clear diff UI and reset-to-default actions
 - [x] Implement **node instances** (reference semantics): multiple instances share the same source definition, updating source updates all instances deterministically (especially useful for collapsed subgraphs used in multiple places, edit the subgraph in one to edit all or edit per instance)
 - [x] Implement option to create subgraph, either from command menu or in context menu when nodes are selected

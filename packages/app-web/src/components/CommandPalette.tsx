@@ -207,16 +207,25 @@ export default function CommandPalette(props: CommandPaletteProps) {
   });
 
   return (
-    <Dialog.Root open={props.open} onOpenChange={props.onOpenChange}>
+    <Dialog.Root
+      open={props.open}
+      onOpenChange={props.onOpenChange}
+      modal={true}
+    >
       <Dialog.Portal>
-        <Dialog.Overlay class="fixed inset-0 z-40 bg-[color:var(--overlay-bg)] backdrop-blur-sm" />
-        <Dialog.Content class="fixed left-1/2 top-[18vh] z-50 w-[min(92vw,720px)] -translate-x-1/2 rounded-[1.2rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] p-4 text-[color:var(--app-text)] shadow-[var(--shadow-popup)]">
+        <Dialog.Overlay class="fixed inset-0 z-[var(--layer-modal-overlay)] bg-[color:var(--overlay-bg)] backdrop-blur-sm" />
+        <Dialog.Content class="fixed left-1/2 top-[18vh] z-[var(--layer-modal)] w-[min(92vw,720px)] -translate-x-1/2 rounded-[1.2rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] p-4 text-[color:var(--app-text)] shadow-[var(--shadow-popup)]">
+          <Dialog.Title class="sr-only">Command palette</Dialog.Title>
+          <Dialog.Description class="sr-only">
+            Search commands, nodes, and controls.
+          </Dialog.Description>
           <div class="flex items-center gap-3 rounded-[0.9rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] px-3 py-2">
             <Search class="h-4 w-4 text-[color:var(--text-muted)]" />
             <input
               ref={inputRef}
               class="w-full bg-transparent text-[0.9rem] text-[color:var(--text-strong)] placeholder:text-[color:var(--text-muted)] focus:outline-none"
               placeholder="Search commands, nodes, controls"
+              aria-label="Search commands, nodes, and controls"
               value={query()}
               onInput={(event) => setQuery(event.currentTarget.value)}
               onKeyDown={(event) => {

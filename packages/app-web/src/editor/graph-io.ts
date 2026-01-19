@@ -3,6 +3,8 @@ import type {
   GraphDocumentV1,
   GraphFrameV1,
   GraphNodeV1,
+  GraphSocketLabelPosition,
+  GraphSocketNumberFormat,
   GraphSocketV1,
   GraphWireV1,
   JsonObject,
@@ -32,6 +34,70 @@ const isNumber = (value: unknown): value is number =>
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every(isString);
+
+const isGraphSocketLabelPosition = (
+  value: unknown,
+): value is GraphSocketLabelPosition =>
+  value === "auto" ||
+  value === "left" ||
+  value === "right" ||
+  value === "top" ||
+  value === "bottom";
+
+const isGraphSocketNumberFormat = (
+  value: unknown,
+): value is GraphSocketNumberFormat =>
+  value === "auto" ||
+  value === "integer" ||
+  value === "fixed-2" ||
+  value === "fixed-3" ||
+  value === "percent";
+
+const isGraphSocketLabelSettings = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.visible !== undefined && typeof value.visible !== "boolean") {
+    return false;
+  }
+  if (
+    value.position !== undefined &&
+    !isGraphSocketLabelPosition(value.position)
+  ) {
+    return false;
+  }
+  if (value.offset !== undefined) {
+    if (!isRecord(value.offset)) {
+      return false;
+    }
+    if (!isNumber(value.offset.x) || !isNumber(value.offset.y)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isGraphSocketMetadata = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.units !== undefined && !isString(value.units)) {
+    return false;
+  }
+  if (value.min !== undefined && !isNumber(value.min)) {
+    return false;
+  }
+  if (value.max !== undefined && !isNumber(value.max)) {
+    return false;
+  }
+  if (value.step !== undefined && !isNumber(value.step)) {
+    return false;
+  }
+  if (value.format !== undefined && !isGraphSocketNumberFormat(value.format)) {
+    return false;
+  }
+  return true;
+};
 
 const isJsonValue = (value: unknown): value is JsonValue => {
   if (value === null) {
@@ -89,6 +155,9 @@ const isGraphSocketV1 = (value: unknown): value is GraphSocketV1 => {
   if (value.direction !== "input" && value.direction !== "output") {
     return false;
   }
+  if (value.label !== undefined && !isString(value.label)) {
+    return false;
+  }
   if (typeof value.required !== "boolean") {
     return false;
   }
@@ -99,6 +168,15 @@ const isGraphSocketV1 = (value: unknown): value is GraphSocketV1 => {
     return false;
   }
   if (value.maxConnections !== undefined && !isNumber(value.maxConnections)) {
+    return false;
+  }
+  if (
+    value.labelSettings !== undefined &&
+    !isGraphSocketLabelSettings(value.labelSettings)
+  ) {
+    return false;
+  }
+  if (value.metadata !== undefined && !isGraphSocketMetadata(value.metadata)) {
     return false;
   }
   return true;
@@ -120,6 +198,29 @@ const isGraphFrameV1 = (value: unknown): value is GraphFrameV1 => {
     return false;
   }
   if (!isString(value.id) || !isString(value.title)) {
+    return false;
+  }
+  if (value.description !== undefined && !isString(value.description)) {
+    return false;
+  }
+  if (value.color !== undefined && !isNumber(value.color)) {
+    return false;
+  }
+  if (value.collapsed !== undefined && typeof value.collapsed !== "boolean") {
+    return false;
+  }
+  if (
+    value.exposedInputs !== undefined &&
+    (!Array.isArray(value.exposedInputs) ||
+      !value.exposedInputs.every(isString))
+  ) {
+    return false;
+  }
+  if (
+    value.exposedOutputs !== undefined &&
+    (!Array.isArray(value.exposedOutputs) ||
+      !value.exposedOutputs.every(isString))
+  ) {
     return false;
   }
   const position = value.position;

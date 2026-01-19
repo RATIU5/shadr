@@ -3,6 +3,7 @@ import type {
   Graph,
   GraphFrame,
   GraphNode,
+  GraphSocket,
   GraphWire,
   NodeId,
   SocketId,
@@ -17,7 +18,12 @@ import {
   type ViewportSizeOptions,
   type WorldBounds,
 } from "./camera.js";
-import { FrameView } from "./frame-view.js";
+import { getFrameSocketLayout } from "./frame-layout.js";
+import {
+  type FrameIoLabel,
+  type FrameIoState,
+  FrameView,
+} from "./frame-view.js";
 import { createSceneLayers, type SceneLayers } from "./layers.js";
 import {
   defaultNodeLayout,
@@ -60,6 +66,18 @@ export type CanvasWireState = Readonly<{
 
 export type CanvasFrameState = Readonly<{
   hoveredFrameId?: FrameId | null;
+}>;
+
+export type CanvasExecutionNodeState = Readonly<{
+  order: number;
+  durationMs: number;
+  maxDurationMs: number;
+  cacheHit: boolean;
+}>;
+
+export type CanvasExecutionState = Readonly<{
+  enabled?: boolean;
+  nodes?: ReadonlyMap<NodeId, CanvasExecutionNodeState>;
 }>;
 
 export type WireFlowOptions = Readonly<{
@@ -108,6 +126,8 @@ const DEFAULT_HIT_TEST_CONFIG: Required<HitTestConfig> = {
 const EMPTY_NODE_SET: ReadonlySet<NodeId> = new Set();
 const EMPTY_FRAME_SET: ReadonlySet<FrameId> = new Set();
 const EMPTY_WIRE_SET: ReadonlySet<WireId> = new Set();
+const EMPTY_EXECUTION_MAP: ReadonlyMap<NodeId, CanvasExecutionNodeState> =
+  new Map();
 const DEFAULT_WIRE_FLOW: Required<WireFlowOptions> = {
   enabled: true,
   minZoom: 1.15,
@@ -127,6 +147,26 @@ const setsMatch = <T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean => {
   return true;
 };
 
+const collectNodeSockets = (
+  graph: Graph,
+  node: GraphNode,
+): ReadonlyArray<GraphSocket> => {
+  const sockets: GraphSocket[] = [];
+  for (const socketId of node.inputs) {
+    const socket = graph.sockets.get(socketId);
+    if (socket) {
+      sockets.push(socket);
+    }
+  }
+  for (const socketId of node.outputs) {
+    const socket = graph.sockets.get(socketId);
+    if (socket) {
+      sockets.push(socket);
+    }
+  }
+  return sockets;
+};
+
 export class CanvasScene {
   readonly root: PIXI.Container;
   readonly layers: SceneLayers;
@@ -134,6 +174,7 @@ export class CanvasScene {
   private readonly nodeViews = new Map<NodeId, NodeView>();
   private readonly wireView: WireBatchView;
   private readonly visibleWires = new Set<WireId>();
+  private readonly socketOverrides = new Map<SocketId, Point>();
   private layout: NodeLayout;
   private readonly camera: Camera2D;
   private graph: Graph | null = null;
@@ -141,6 +182,7 @@ export class CanvasScene {
   private theme: CanvasTheme;
   private lastSelectedNodes = new Set<NodeId>();
   private lastOrderedNodes = new Set<NodeId>();
+  private frameOrder: FrameId[] = [];
 
   constructor(options: CanvasSceneOptions = {}) {
     this.layers = createSceneLayers();
@@ -215,6 +257,18 @@ export class CanvasScene {
     return this.camera.getWorldBounds();
   }
 
+  getSocketPosition(socketId: SocketId): Point | null {
+    const graph = this.graph;
+    if (!graph) {
+      return null;
+    }
+    const override = this.socketOverrides.get(socketId);
+    if (override) {
+      return override;
+    }
+    return getSocketPosition(graph, socketId, this.layout);
+  }
+
   frameNodes(nodeIds?: Iterable<NodeId>, options: FrameOptions = {}): boolean {
     const graph = this.graph;
     if (!graph) {
@@ -234,6 +288,7 @@ export class CanvasScene {
     nodeState: CanvasNodeState = {},
     wireState: CanvasWireState = {},
     frameState: CanvasFrameState = {},
+    executionState: CanvasExecutionState = {},
   ): void {
     this.graph = graph;
     const worldBounds = this.camera.getWorldBounds();
@@ -246,9 +301,71 @@ export class CanvasScene {
     const bypassedNodes = nodeState.bypassedNodes ?? EMPTY_NODE_SET;
     const errorNodes = nodeState.errorNodes ?? EMPTY_NODE_SET;
     const collapsedNodes = nodeState.collapsedNodes ?? EMPTY_NODE_SET;
+    const executionNodes = executionState.nodes ?? EMPTY_EXECUTION_MAP;
+    const executionEnabled = executionState.enabled ?? false;
     const seenFrames = new Set<FrameId>();
     const seenNodes = new Set<NodeId>();
-    for (const frame of graph.frames.values()) {
+    const hiddenNodes = new Set<NodeId>();
+    const nodeCollapsedFrame = new Map<NodeId, FrameId>();
+    const exposedSockets = new Set<SocketId>();
+    const frameIo = new Map<FrameId, FrameIoState>();
+    this.socketOverrides.clear();
+    const frameHierarchy = buildFrameHierarchy(graph.frames.values());
+    const collapsedFrames = frameHierarchy.framesByAreaAsc.filter(
+      (entry) => entry.frame.collapsed,
+    );
+    const collapsedNodesByFrame = new Map<FrameId, Set<NodeId>>();
+    for (const entry of collapsedFrames) {
+      collapsedNodesByFrame.set(entry.id, new Set());
+    }
+
+    if (collapsedFrames.length > 0) {
+      for (const node of graph.nodes.values()) {
+        const nodeBounds = getNodeBounds(node, this.layout);
+        for (const entry of collapsedFrames) {
+          if (!containsBounds(entry.bounds, nodeBounds)) {
+            continue;
+          }
+          nodeCollapsedFrame.set(node.id, entry.id);
+          hiddenNodes.add(node.id);
+          const bucket = collapsedNodesByFrame.get(entry.id);
+          if (bucket) {
+            bucket.add(node.id);
+          }
+          break;
+        }
+      }
+    }
+
+    for (const frame of frameHierarchy.orderedFrames) {
+      if (!frame.collapsed) {
+        continue;
+      }
+      const contained = collapsedNodesByFrame.get(frame.id) ?? new Set();
+      const ioState = buildFrameIoState(graph, frame, contained);
+      frameIo.set(frame.id, ioState);
+      const layout = getFrameSocketLayout(
+        frame,
+        ioState.inputs.map((socket) => socket.socketId),
+        ioState.outputs.map((socket) => socket.socketId),
+      );
+      for (const entry of layout.inputs) {
+        exposedSockets.add(entry.socketId);
+        this.socketOverrides.set(entry.socketId, {
+          x: frame.position.x + entry.x,
+          y: frame.position.y + entry.y,
+        });
+      }
+      for (const entry of layout.outputs) {
+        exposedSockets.add(entry.socketId);
+        this.socketOverrides.set(entry.socketId, {
+          x: frame.position.x + entry.x,
+          y: frame.position.y + entry.y,
+        });
+      }
+    }
+
+    for (const frame of frameHierarchy.orderedFrames) {
       seenFrames.add(frame.id);
       let view = this.frameViews.get(frame.id);
       if (!view) {
@@ -261,6 +378,8 @@ export class CanvasScene {
         {
           selected: selectedFrames.has(frame.id),
           hovered: hoveredFrameId === frame.id,
+          collapsed: frame.collapsed ?? false,
+          io: frameIo.get(frame.id) ?? null,
         },
         this.theme,
       );
@@ -271,15 +390,21 @@ export class CanvasScene {
     }
     for (const node of graph.nodes.values()) {
       seenNodes.add(node.id);
+      const nodeSockets = collectNodeSockets(graph, node);
       let view = this.nodeViews.get(node.id);
       if (!view) {
-        view = new NodeView(node, this.layout, this.theme);
+        view = new NodeView(node, nodeSockets, this.layout, this.theme);
         this.nodeViews.set(node.id, view);
         this.layers.nodes.addChild(view.container);
+      }
+      if (hiddenNodes.has(node.id)) {
+        view.container.visible = false;
+        continue;
       }
       const isSelected = selectedNodes.has(node.id);
       view.update(
         node,
+        nodeSockets,
         this.layout,
         {
           selected: isSelected,
@@ -289,6 +414,7 @@ export class CanvasScene {
           collapsed: collapsedNodes.has(node.id),
         },
         this.theme,
+        executionEnabled ? executionNodes.get(node.id) : undefined,
       );
       view.container.visible = intersectsBounds(
         worldBounds,
@@ -308,6 +434,7 @@ export class CanvasScene {
     for (const frameId of framesToRemove) {
       this.frameViews.delete(frameId);
     }
+    this.updateFrameOrder(frameHierarchy.orderedFrames);
 
     const nodesToRemove: NodeId[] = [];
     for (const [nodeId, view] of this.nodeViews.entries()) {
@@ -324,8 +451,19 @@ export class CanvasScene {
     this.wireView.begin();
     this.visibleWires.clear();
     for (const wire of graph.wires.values()) {
-      const from = getSocketPosition(graph, wire.fromSocketId, this.layout);
-      const to = getSocketPosition(graph, wire.toSocketId, this.layout);
+      if (
+        !isWireVisible(
+          graph,
+          wire,
+          hiddenNodes,
+          exposedSockets,
+          nodeCollapsedFrame,
+        )
+      ) {
+        continue;
+      }
+      const from = this.getSocketPosition(wire.fromSocketId);
+      const to = this.getSocketPosition(wire.toSocketId);
       if (!from || !to) {
         continue;
       }
@@ -367,8 +505,8 @@ export class CanvasScene {
       if (!this.visibleWires.has(wire.id)) {
         continue;
       }
-      const from = getSocketPosition(graph, wire.fromSocketId, this.layout);
-      const to = getSocketPosition(graph, wire.toSocketId, this.layout);
+      const from = this.getSocketPosition(wire.fromSocketId);
+      const to = this.getSocketPosition(wire.toSocketId);
       if (!from || !to) {
         continue;
       }
@@ -411,6 +549,22 @@ export class CanvasScene {
     }
     this.lastSelectedNodes = new Set(selectedNodes);
     this.lastOrderedNodes = nodeIds;
+  }
+
+  private updateFrameOrder(orderedFrames: ReadonlyArray<GraphFrame>): void {
+    const orderedContainers: PIXI.Container[] = [];
+    for (const frame of orderedFrames) {
+      const view = this.frameViews.get(frame.id);
+      if (view) {
+        orderedContainers.push(view.container);
+      }
+    }
+    const framesLayer = this.layers.frames;
+    framesLayer.removeChildren();
+    if (orderedContainers.length > 0) {
+      framesLayer.addChild(...orderedContainers);
+    }
+    this.frameOrder = orderedFrames.map((frame) => frame.id);
   }
 
   hitTest(screenPoint: Point, options?: ScreenPointOptions): HitTestResult {
@@ -479,11 +633,13 @@ export class CanvasScene {
       distanceSq: number;
     } | null = null;
     for (const socket of graph.sockets.values()) {
+      const override = this.socketOverrides.get(socket.id);
       const nodeView = this.nodeViews.get(socket.nodeId);
-      if (nodeView && !nodeView.container.visible) {
+      if (!override && nodeView && !nodeView.container.visible) {
         continue;
       }
-      const position = getSocketPosition(graph, socket.id, this.layout);
+      const position =
+        override ?? getSocketPosition(graph, socket.id, this.layout);
       if (!position) {
         continue;
       }
@@ -524,8 +680,8 @@ export class CanvasScene {
       if (!this.visibleWires.has(wire.id)) {
         continue;
       }
-      const from = getSocketPosition(graph, wire.fromSocketId, this.layout);
-      const to = getSocketPosition(graph, wire.toSocketId, this.layout);
+      const from = this.getSocketPosition(wire.fromSocketId);
+      const to = this.getSocketPosition(wire.toSocketId);
       if (!from || !to) {
         continue;
       }
@@ -579,8 +735,16 @@ export class CanvasScene {
   }
 
   private hitTestFrames(graph: Graph, worldPoint: Point): HitTestResult | null {
+    const orderedFrameIds =
+      this.frameOrder.length > 0
+        ? this.frameOrder
+        : Array.from(graph.frames.keys());
     let hitFrameId: FrameId | null = null;
-    for (const frame of graph.frames.values()) {
+    for (const frameId of orderedFrameIds) {
+      const frame = graph.frames.get(frameId);
+      if (!frame) {
+        continue;
+      }
       const frameView = this.frameViews.get(frame.id);
       if (frameView && !frameView.container.visible) {
         continue;
@@ -615,6 +779,163 @@ const getFrameBounds = (frame: GraphFrame): WorldBounds => ({
   maxX: frame.position.x + frame.size.width,
   maxY: frame.position.y + frame.size.height,
 });
+
+const containsBounds = (outer: WorldBounds, inner: WorldBounds): boolean =>
+  outer.minX <= inner.minX &&
+  outer.minY <= inner.minY &&
+  outer.maxX >= inner.maxX &&
+  outer.maxY >= inner.maxY;
+
+type FrameMeta = Readonly<{
+  id: FrameId;
+  frame: GraphFrame;
+  bounds: WorldBounds;
+  area: number;
+}>;
+
+const buildFrameHierarchy = (
+  frames: Iterable<GraphFrame>,
+): Readonly<{
+  orderedFrames: ReadonlyArray<GraphFrame>;
+  framesByAreaAsc: ReadonlyArray<FrameMeta>;
+}> => {
+  const entries: FrameMeta[] = [];
+  for (const frame of frames) {
+    entries.push({
+      id: frame.id,
+      frame,
+      bounds: getFrameBounds(frame),
+      area: Math.max(0, frame.size.width) * Math.max(0, frame.size.height),
+    });
+  }
+
+  const parentByFrame = new Map<FrameId, FrameId | null>();
+  for (const entry of entries) {
+    let parent: FrameMeta | null = null;
+    for (const candidate of entries) {
+      if (candidate.id === entry.id) {
+        continue;
+      }
+      if (!containsBounds(candidate.bounds, entry.bounds)) {
+        continue;
+      }
+      if (candidate.area <= entry.area) {
+        continue;
+      }
+      if (!parent || candidate.area < parent.area) {
+        parent = candidate;
+      }
+    }
+    parentByFrame.set(entry.id, parent ? parent.id : null);
+  }
+
+  const depthByFrame = new Map<FrameId, number>();
+  const resolveDepth = (frameId: FrameId): number => {
+    const cached = depthByFrame.get(frameId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const parentId = parentByFrame.get(frameId) ?? null;
+    const depth = parentId ? resolveDepth(parentId) + 1 : 0;
+    depthByFrame.set(frameId, depth);
+    return depth;
+  };
+  for (const entry of entries) {
+    resolveDepth(entry.id);
+  }
+
+  const orderedFrames = [...entries]
+    .sort((left, right) => {
+      const leftDepth = depthByFrame.get(left.id) ?? 0;
+      const rightDepth = depthByFrame.get(right.id) ?? 0;
+      if (leftDepth !== rightDepth) {
+        return leftDepth - rightDepth;
+      }
+      if (left.area !== right.area) {
+        return right.area - left.area;
+      }
+      return left.id.localeCompare(right.id);
+    })
+    .map((entry) => entry.frame);
+
+  const framesByAreaAsc = [...entries].sort((left, right) => {
+    if (left.area !== right.area) {
+      return left.area - right.area;
+    }
+    return left.id.localeCompare(right.id);
+  });
+
+  return { orderedFrames, framesByAreaAsc };
+};
+
+const buildFrameIoState = (
+  graph: Graph,
+  frame: GraphFrame,
+  containedNodes: ReadonlySet<NodeId>,
+): FrameIoState => {
+  const inputs: FrameIoLabel[] = [];
+  const outputs: FrameIoLabel[] = [];
+  const exposedInputs = frame.exposedInputs ?? [];
+  const exposedOutputs = frame.exposedOutputs ?? [];
+  for (const socketId of exposedInputs) {
+    const socket = graph.sockets.get(socketId);
+    if (
+      socket &&
+      socket.direction === "input" &&
+      containedNodes.has(socket.nodeId)
+    ) {
+      const label = socket.label?.trim().length ? socket.label : socket.name;
+      const visible = socket.labelSettings?.visible !== false;
+      inputs.push({ socketId, label: visible ? label : "" });
+    }
+  }
+  for (const socketId of exposedOutputs) {
+    const socket = graph.sockets.get(socketId);
+    if (
+      socket &&
+      socket.direction === "output" &&
+      containedNodes.has(socket.nodeId)
+    ) {
+      const label = socket.label?.trim().length ? socket.label : socket.name;
+      const visible = socket.labelSettings?.visible !== false;
+      outputs.push({ socketId, label: visible ? label : "" });
+    }
+  }
+  return { inputs, outputs };
+};
+
+const isWireVisible = (
+  graph: Graph,
+  wire: GraphWire,
+  hiddenNodes: ReadonlySet<NodeId>,
+  exposedSockets: ReadonlySet<SocketId>,
+  nodeCollapsedFrame: ReadonlyMap<NodeId, FrameId>,
+): boolean => {
+  const fromSocket = graph.sockets.get(wire.fromSocketId);
+  const toSocket = graph.sockets.get(wire.toSocketId);
+  const fromHidden = fromSocket ? hiddenNodes.has(fromSocket.nodeId) : false;
+  const toHidden = toSocket ? hiddenNodes.has(toSocket.nodeId) : false;
+  if (!fromHidden && !toHidden) {
+    return true;
+  }
+  const fromExposed = exposedSockets.has(wire.fromSocketId);
+  const toExposed = exposedSockets.has(wire.toSocketId);
+  if ((fromHidden && !fromExposed) || (toHidden && !toExposed)) {
+    return false;
+  }
+  if (fromHidden && toHidden) {
+    const fromFrame = fromSocket
+      ? (nodeCollapsedFrame.get(fromSocket.nodeId) ?? null)
+      : null;
+    const toFrame = toSocket
+      ? (nodeCollapsedFrame.get(toSocket.nodeId) ?? null)
+      : null;
+    if (fromFrame && toFrame && fromFrame === toFrame) {
+      return false;
+    }
+  }
+  return true;
+};
 
 const getBoundsForNodes = (
   graph: Graph,

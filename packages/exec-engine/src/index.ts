@@ -80,6 +80,9 @@ export type ExecEngineError =
       nodeId: NodeId;
       nodeType: string;
       cause: unknown;
+    }
+  | {
+      _tag: "ExecutionCanceled";
     };
 
 export type ExecError = GraphError | ExecEngineError;
@@ -119,6 +122,12 @@ export type ExecEvaluationStats = Readonly<{
 export type ExecEvaluationResult = Readonly<{
   value: JsonValue | null;
   stats: ExecEvaluationStats;
+}>;
+
+export type ExecEvaluationHooks = Readonly<{
+  // eslint-disable-next-line no-unused-vars
+  onNodeEvaluated?: (timing: ExecNodeTiming) => void;
+  shouldCancel?: () => boolean;
 }>;
 
 type SubgraphEvalContext = Readonly<{
@@ -167,11 +176,14 @@ const finalizeInstrumentation = (
 const recordNodeTiming = (
   instrumentation: ExecInstrumentation | undefined,
   timing: ExecNodeTiming,
+  hooks?: ExecEvaluationHooks,
 ): void => {
   if (!instrumentation) {
+    hooks?.onNodeEvaluated?.(timing);
     return;
   }
   instrumentation.nodeTimings.push(timing);
+  hooks?.onNodeEvaluated?.(timing);
 };
 
 const fail = (error: ExecError): Effect.Effect<never, ExecError> =>
@@ -247,6 +259,39 @@ const readSubgraphOverrides = (
   return Object.fromEntries(entries);
 };
 
+const readSubgraphPromotedParams = (
+  value: JsonValue | undefined,
+): SubgraphNodeParams["promotedParams"] | undefined | null => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const entries = value.flatMap((entry) => {
+    if (!isJsonObject(entry)) {
+      return [];
+    }
+    const key = entry["key"];
+    const nodeId = entry["nodeId"];
+    const fieldId = entry["fieldId"];
+    if (!isString(key) || !isString(nodeId) || !isString(fieldId)) {
+      return [];
+    }
+    return [
+      {
+        key,
+        nodeId: nodeId as NodeId,
+        fieldId,
+      },
+    ];
+  });
+  if (entries.length !== value.length) {
+    return null;
+  }
+  return entries;
+};
+
 const readSubgraphParams = (params: JsonObject): SubgraphNodeParams | null => {
   const graphValue = params["graph"];
   if (!isJsonObject(graphValue)) {
@@ -300,6 +345,10 @@ const readSubgraphParams = (params: JsonObject): SubgraphNodeParams | null => {
   if (outputs.length !== outputsValue.length) {
     return null;
   }
+  const promotedParams = readSubgraphPromotedParams(params["promotedParams"]);
+  if (promotedParams === null) {
+    return null;
+  }
   const overrides = readSubgraphOverrides(params["overrides"]);
   if (overrides === null) {
     return null;
@@ -308,6 +357,7 @@ const readSubgraphParams = (params: JsonObject): SubgraphNodeParams | null => {
     graph: graphValue as SubgraphNodeParams["graph"],
     inputs,
     outputs,
+    ...(promotedParams ? { promotedParams } : {}),
     ...(overrides ? { overrides } : {}),
   };
 };
@@ -341,6 +391,40 @@ const applySubgraphOverrides = (
   };
 };
 
+const applySubgraphParamPromotions = (
+  graph: Graph,
+  params: SubgraphNodeParams,
+  inputs: Record<string, JsonValue | null>,
+): Graph => {
+  if (!params.promotedParams || params.promotedParams.length === 0) {
+    return graph;
+  }
+  let updated = false;
+  const nodes = new Map(graph.nodes);
+  for (const promotion of params.promotedParams) {
+    const value = inputs[promotion.key];
+    if (value === null || value === undefined) {
+      continue;
+    }
+    const node = nodes.get(promotion.nodeId);
+    if (!node) {
+      continue;
+    }
+    nodes.set(promotion.nodeId, {
+      ...node,
+      params: { ...node.params, [promotion.fieldId]: value },
+    });
+    updated = true;
+  }
+  if (!updated) {
+    return graph;
+  }
+  return {
+    ...graph,
+    nodes,
+  };
+};
+
 export const getNodeErrors = (
   state: ExecState,
   nodeId: NodeId,
@@ -353,6 +437,7 @@ const evaluateSocketInternal = (
   state?: ExecState,
   instrumentation?: ExecInstrumentation,
   subgraphContext?: SubgraphEvalContext,
+  hooks?: ExecEvaluationHooks,
 ): Effect.Effect<JsonValue | null, ExecError> =>
   Effect.flatMap(
     executionSubgraphByOutputSockets(graph, [socketId]),
@@ -497,47 +582,487 @@ const evaluateSocketInternal = (
             return names;
           });
 
+        const ensureNotCanceled = (): Effect.Effect<void, ExecError> => {
+          if (hooks?.shouldCancel?.()) {
+            return fail({ _tag: "ExecutionCanceled" });
+          }
+          return Effect.succeed(undefined);
+        };
+
         const evaluateNode = (
           nodeId: NodeId,
         ): Effect.Effect<NodeOutputValues, ExecError> =>
-          Effect.suspend(() => {
-            const cached = outputCache.get(nodeId);
-            if (cached && !execState.dirty.has(nodeId)) {
+          Effect.suspend(() =>
+            Effect.flatMap(ensureNotCanceled(), () => {
+              const cached = outputCache.get(nodeId);
+              if (cached && !execState.dirty.has(nodeId)) {
+                if (instrumentation) {
+                  instrumentation.cacheHits += 1;
+                }
+                recordNodeTiming(
+                  instrumentation,
+                  {
+                    nodeId,
+                    nodeType: graph.nodes.get(nodeId)?.type ?? "unknown",
+                    durationMs: 0,
+                    cacheHit: true,
+                  },
+                  hooks,
+                );
+                return Effect.succeed(cached);
+              }
               if (instrumentation) {
-                instrumentation.cacheHits += 1;
-                recordNodeTiming(instrumentation, {
-                  nodeId,
-                  nodeType: graph.nodes.get(nodeId)?.type ?? "unknown",
-                  durationMs: 0,
-                  cacheHit: true,
-                });
-              }
-              return Effect.succeed(cached);
-            }
-            if (instrumentation) {
-              instrumentation.cacheMisses += 1;
-            }
-
-            return Effect.gen(function* () {
-              const node = graph.nodes.get(nodeId);
-              if (!node) {
-                return yield* fail({ _tag: "MissingNode", nodeId });
-              }
-              if (!subgraph.nodes.has(nodeId)) {
-                return yield* fail({ _tag: "MissingNode", nodeId });
+                instrumentation.cacheMisses += 1;
               }
 
-              if (node.type === SUBGRAPH_NODE_TYPE) {
-                const inputNames = yield* collectSocketNames(
+              return Effect.gen(function* () {
+                const node = graph.nodes.get(nodeId);
+                if (!node) {
+                  return yield* fail({ _tag: "MissingNode", nodeId });
+                }
+                if (!subgraph.nodes.has(nodeId)) {
+                  return yield* fail({ _tag: "MissingNode", nodeId });
+                }
+
+                if (node.type === SUBGRAPH_NODE_TYPE) {
+                  const inputNames = yield* collectSocketNames(
+                    nodeId,
+                    node.inputs,
+                    "input",
+                  );
+                  const outputNames = yield* collectSocketNames(
+                    nodeId,
+                    node.outputs,
+                    "output",
+                  );
+                  const inputs: Record<string, JsonValue | null> = {};
+                  const missingRequired: NodeRuntimeError[] = [];
+                  for (const [index, socketId] of node.inputs.entries()) {
+                    const socket = graph.sockets.get(socketId);
+                    if (!socket) {
+                      return yield* fail({ _tag: "MissingSocket", socketId });
+                    }
+                    const name = inputNames[index];
+                    if (!name) {
+                      return yield* fail({
+                        _tag: "UnknownSocketKey",
+                        nodeId,
+                        socketName: socket.name,
+                        direction: "input",
+                        nodeType: SUBGRAPH_NODE_TYPE,
+                      });
+                    }
+                    const wireIds = inputWireIndex.get(socketId) ?? [];
+                    if (wireIds.length > 1) {
+                      return yield* fail({
+                        _tag: "MultipleInputWires",
+                        nodeId,
+                        socketId,
+                        wireIds: [...wireIds].sort((left, right) =>
+                          left.localeCompare(right),
+                        ),
+                      });
+                    }
+                    if (wireIds.length === 0) {
+                      if (socket.defaultValue !== undefined) {
+                        inputs[name] = socket.defaultValue;
+                        continue;
+                      }
+                      if (socket.required) {
+                        missingRequired.push({
+                          _tag: "MissingRequiredInput",
+                          nodeId,
+                          socketId,
+                          socketName: name,
+                        });
+                      }
+                      inputs[name] = null;
+                      continue;
+                    }
+                    const wireId = wireIds[0]!;
+                    const wire = graph.wires.get(wireId);
+                    if (!wire) {
+                      return yield* fail({ _tag: "MissingWire", wireId });
+                    }
+                    const fromSocket = graph.sockets.get(wire.fromSocketId);
+                    if (!fromSocket) {
+                      return yield* fail({
+                        _tag: "MissingSocket",
+                        socketId: wire.fromSocketId,
+                      });
+                    }
+                    if (fromSocket.direction !== "output") {
+                      return yield* fail({
+                        _tag: "InvalidSocketDirection",
+                        socketId: fromSocket.id,
+                        expected: "output",
+                      });
+                    }
+                    if (!subgraph.nodes.has(fromSocket.nodeId)) {
+                      return yield* fail({
+                        _tag: "MissingNode",
+                        nodeId: fromSocket.nodeId,
+                      });
+                    }
+                    const value = yield* evaluateOutputSocket(fromSocket.id);
+                    inputs[name] = value;
+                  }
+
+                  if (missingRequired.length > 0) {
+                    const nullOutputs = createNullOutputs(outputNames);
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: 0,
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.nodeErrors.set(nodeId, missingRequired);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
+                  const nullOutputs = createNullOutputs(outputNames);
+                  const computeStart = nowMs();
+                  const params = readSubgraphParams(node.params);
+                  if (!params) {
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: Math.max(0, nowMs() - computeStart),
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: new Error("Invalid subgraph params"),
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
+                  if (evalContext.depth >= MAX_SUBGRAPH_DEPTH) {
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: Math.max(0, nowMs() - computeStart),
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: new Error(
+                          `Subgraph depth exceeds ${MAX_SUBGRAPH_DEPTH} levels.`,
+                        ),
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
+                  if (evalContext.graphIdStack.includes(params.graph.graphId)) {
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: Math.max(0, nowMs() - computeStart),
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: new Error(
+                          `Recursive subgraph reference detected for ${params.graph.graphId}.`,
+                        ),
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
+                  if (params.graph.nodes.length > MAX_SUBGRAPH_NODE_COUNT) {
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: Math.max(0, nowMs() - computeStart),
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: new Error(
+                          `Subgraph exceeds ${MAX_SUBGRAPH_NODE_COUNT} nodes.`,
+                        ),
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
+                  if (
+                    params.graph.nodes.length > evalContext.remainingNodeBudget
+                  ) {
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: Math.max(0, nowMs() - computeStart),
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: new Error(
+                          `Subgraph budget exceeded (${MAX_SUBGRAPH_TOTAL_NODES} nodes total).`,
+                        ),
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
+                  const graphResult = yield* Effect.either(
+                    graphFromDocumentV1(params.graph),
+                  );
+                  if (Either.isLeft(graphResult)) {
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: Math.max(0, nowMs() - computeStart),
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: graphResult.left,
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
+                  const subgraphGraph = applySubgraphOverrides(
+                    graphResult.right,
+                    params.overrides,
+                  );
+
+                  const inputValuesByNodeId = new Map<
+                    NodeId,
+                    JsonValue | null
+                  >();
+                  for (const entry of params.inputs) {
+                    inputValuesByNodeId.set(
+                      entry.nodeId,
+                      inputs[entry.key] ?? null,
+                    );
+                  }
+
+                  const promotedGraph = applySubgraphParamPromotions(
+                    subgraphGraph,
+                    params,
+                    inputs,
+                  );
+
+                  const resolveSubgraphNodeDefinition: NodeDefinitionResolver =
+                    (nodeType: string): NodeDefinition | undefined => {
+                      if (nodeType.startsWith(SUBGRAPH_INPUT_NODE_PREFIX)) {
+                        const dataType = nodeType.slice(
+                          SUBGRAPH_INPUT_NODE_PREFIX.length,
+                        );
+                        const outputType =
+                          dataType.length > 0 ? dataType : "float";
+                        return {
+                          typeId: nodeType,
+                          label: "Subgraph Input",
+                          description: "Feeds values from the parent graph.",
+                          inputs: [],
+                          outputs: [
+                            {
+                              key: SUBGRAPH_INPUT_SOCKET_KEY,
+                              label: "Value",
+                              direction: "output",
+                              dataType: outputType,
+                            },
+                          ],
+                          compute: (_inputs, _params, context) => ({
+                            [SUBGRAPH_INPUT_SOCKET_KEY]:
+                              inputValuesByNodeId.get(context.nodeId) ?? null,
+                          }),
+                        };
+                      }
+                      return resolveNodeDefinition(nodeType);
+                    };
+
+                  const innerState = createExecState();
+                  const nextContext: SubgraphEvalContext = {
+                    depth: evalContext.depth + 1,
+                    graphIdStack: [
+                      ...evalContext.graphIdStack,
+                      params.graph.graphId,
+                    ],
+                    remainingNodeBudget:
+                      evalContext.remainingNodeBudget -
+                      params.graph.nodes.length,
+                  };
+                  const outputValues: Record<string, JsonValue | null> = {
+                    ...nullOutputs,
+                  };
+                  const outputKeySet = new Set(outputNames);
+                  for (const entry of params.outputs) {
+                    if (!outputKeySet.has(entry.key)) {
+                      recordNodeTiming(
+                        instrumentation,
+                        {
+                          nodeId,
+                          nodeType: node.type,
+                          durationMs: Math.max(0, nowMs() - computeStart),
+                          cacheHit: false,
+                        },
+                        hooks,
+                      );
+                      execState.nodeErrors.set(nodeId, [
+                        {
+                          _tag: "NodeComputeFailed",
+                          nodeId,
+                          nodeType: node.type,
+                          cause: new Error(
+                            `Unknown subgraph output key: ${entry.key}`,
+                          ),
+                        },
+                      ]);
+                      outputCache.set(nodeId, nullOutputs);
+                      execState.dirty.delete(nodeId);
+                      return nullOutputs;
+                    }
+                    const result = yield* Effect.either(
+                      evaluateSocketInternal(
+                        promotedGraph,
+                        entry.socketId,
+                        resolveSubgraphNodeDefinition,
+                        innerState,
+                        undefined,
+                        nextContext,
+                        hooks,
+                      ),
+                    );
+                    if (Either.isLeft(result)) {
+                      recordNodeTiming(
+                        instrumentation,
+                        {
+                          nodeId,
+                          nodeType: node.type,
+                          durationMs: Math.max(0, nowMs() - computeStart),
+                          cacheHit: false,
+                        },
+                        hooks,
+                      );
+                      execState.nodeErrors.set(nodeId, [
+                        {
+                          _tag: "NodeComputeFailed",
+                          nodeId,
+                          nodeType: node.type,
+                          cause: result.left,
+                        },
+                      ]);
+                      outputCache.set(nodeId, nullOutputs);
+                      execState.dirty.delete(nodeId);
+                      return nullOutputs;
+                    }
+                    outputValues[entry.key] = result.right;
+                  }
+
+                  recordNodeTiming(
+                    instrumentation,
+                    {
+                      nodeId,
+                      nodeType: node.type,
+                      durationMs: Math.max(0, nowMs() - computeStart),
+                      cacheHit: false,
+                    },
+                    hooks,
+                  );
+                  execState.nodeErrors.delete(nodeId);
+                  outputCache.set(nodeId, outputValues);
+                  execState.dirty.delete(nodeId);
+                  return outputValues;
+                }
+
+                const definition = resolveNodeDefinition(node.type);
+                if (!definition) {
+                  return yield* fail({
+                    _tag: "MissingNodeDefinition",
+                    nodeId,
+                    nodeType: node.type,
+                  });
+                }
+
+                const inputKeys = new Set(
+                  definition.inputs.map((input) => input.key),
+                );
+                const outputKeys = new Set(
+                  definition.outputs.map((output) => output.key),
+                );
+
+                const inputNames = yield* validateNodeSockets(
                   nodeId,
+                  definition.typeId,
                   node.inputs,
                   "input",
+                  inputKeys,
                 );
-                const outputNames = yield* collectSocketNames(
+                const outputNames = yield* validateNodeSockets(
                   nodeId,
+                  definition.typeId,
                   node.outputs,
                   "output",
+                  outputKeys,
                 );
+
                 const inputs: Record<string, JsonValue | null> = {};
                 const missingRequired: NodeRuntimeError[] = [];
                 for (const [index, socketId] of node.inputs.entries()) {
@@ -552,9 +1077,10 @@ const evaluateSocketInternal = (
                       nodeId,
                       socketName: socket.name,
                       direction: "input",
-                      nodeType: SUBGRAPH_NODE_TYPE,
+                      nodeType: definition.typeId,
                     });
                   }
+
                   const wireIds = inputWireIndex.get(socketId) ?? [];
                   if (wireIds.length > 1) {
                     return yield* fail({
@@ -566,6 +1092,7 @@ const evaluateSocketInternal = (
                       ),
                     });
                   }
+
                   if (wireIds.length === 0) {
                     if (socket.defaultValue !== undefined) {
                       inputs[name] = socket.defaultValue;
@@ -582,6 +1109,7 @@ const evaluateSocketInternal = (
                     inputs[name] = null;
                     continue;
                   }
+
                   const wireId = wireIds[0]!;
                   const wire = graph.wires.get(wireId);
                   if (!wire) {
@@ -613,468 +1141,101 @@ const evaluateSocketInternal = (
 
                 if (missingRequired.length > 0) {
                   const nullOutputs = createNullOutputs(outputNames);
-                  recordNodeTiming(instrumentation, {
-                    nodeId,
-                    nodeType: node.type,
-                    durationMs: 0,
-                    cacheHit: false,
-                  });
+                  recordNodeTiming(
+                    instrumentation,
+                    {
+                      nodeId,
+                      nodeType: definition.typeId,
+                      durationMs: 0,
+                      cacheHit: false,
+                    },
+                    hooks,
+                  );
                   outputCache.set(nodeId, nullOutputs);
                   execState.nodeErrors.set(nodeId, missingRequired);
                   execState.dirty.delete(nodeId);
                   return nullOutputs;
                 }
 
-                const nullOutputs = createNullOutputs(outputNames);
+                const params = coerceParamValues(node.params);
+                const nodeInputs: NodeInputValues = inputs;
                 const computeStart = nowMs();
-                const params = readSubgraphParams(node.params);
-                if (!params) {
-                  recordNodeTiming(instrumentation, {
-                    nodeId,
-                    nodeType: node.type,
-                    durationMs: Math.max(0, nowMs() - computeStart),
-                    cacheHit: false,
-                  });
-                  execState.nodeErrors.set(nodeId, [
-                    {
-                      _tag: "NodeComputeFailed",
-                      nodeId,
-                      nodeType: node.type,
-                      cause: new Error("Invalid subgraph params"),
-                    },
-                  ]);
-                  outputCache.set(nodeId, nullOutputs);
-                  execState.dirty.delete(nodeId);
-                  return nullOutputs;
-                }
-
-                if (evalContext.depth >= MAX_SUBGRAPH_DEPTH) {
-                  recordNodeTiming(instrumentation, {
-                    nodeId,
-                    nodeType: node.type,
-                    durationMs: Math.max(0, nowMs() - computeStart),
-                    cacheHit: false,
-                  });
-                  execState.nodeErrors.set(nodeId, [
-                    {
-                      _tag: "NodeComputeFailed",
-                      nodeId,
-                      nodeType: node.type,
-                      cause: new Error(
-                        `Subgraph depth exceeds ${MAX_SUBGRAPH_DEPTH} levels.`,
-                      ),
-                    },
-                  ]);
-                  outputCache.set(nodeId, nullOutputs);
-                  execState.dirty.delete(nodeId);
-                  return nullOutputs;
-                }
-
-                if (evalContext.graphIdStack.includes(params.graph.graphId)) {
-                  recordNodeTiming(instrumentation, {
-                    nodeId,
-                    nodeType: node.type,
-                    durationMs: Math.max(0, nowMs() - computeStart),
-                    cacheHit: false,
-                  });
-                  execState.nodeErrors.set(nodeId, [
-                    {
-                      _tag: "NodeComputeFailed",
-                      nodeId,
-                      nodeType: node.type,
-                      cause: new Error(
-                        `Recursive subgraph reference detected for ${params.graph.graphId}.`,
-                      ),
-                    },
-                  ]);
-                  outputCache.set(nodeId, nullOutputs);
-                  execState.dirty.delete(nodeId);
-                  return nullOutputs;
-                }
-
-                if (params.graph.nodes.length > MAX_SUBGRAPH_NODE_COUNT) {
-                  recordNodeTiming(instrumentation, {
-                    nodeId,
-                    nodeType: node.type,
-                    durationMs: Math.max(0, nowMs() - computeStart),
-                    cacheHit: false,
-                  });
-                  execState.nodeErrors.set(nodeId, [
-                    {
-                      _tag: "NodeComputeFailed",
-                      nodeId,
-                      nodeType: node.type,
-                      cause: new Error(
-                        `Subgraph exceeds ${MAX_SUBGRAPH_NODE_COUNT} nodes.`,
-                      ),
-                    },
-                  ]);
-                  outputCache.set(nodeId, nullOutputs);
-                  execState.dirty.delete(nodeId);
-                  return nullOutputs;
-                }
-
-                if (
-                  params.graph.nodes.length > evalContext.remainingNodeBudget
-                ) {
-                  recordNodeTiming(instrumentation, {
-                    nodeId,
-                    nodeType: node.type,
-                    durationMs: Math.max(0, nowMs() - computeStart),
-                    cacheHit: false,
-                  });
-                  execState.nodeErrors.set(nodeId, [
-                    {
-                      _tag: "NodeComputeFailed",
-                      nodeId,
-                      nodeType: node.type,
-                      cause: new Error(
-                        `Subgraph budget exceeded (${MAX_SUBGRAPH_TOTAL_NODES} nodes total).`,
-                      ),
-                    },
-                  ]);
-                  outputCache.set(nodeId, nullOutputs);
-                  execState.dirty.delete(nodeId);
-                  return nullOutputs;
-                }
-
-                const graphResult = yield* Effect.either(
-                  graphFromDocumentV1(params.graph),
-                );
-                if (Either.isLeft(graphResult)) {
-                  recordNodeTiming(instrumentation, {
-                    nodeId,
-                    nodeType: node.type,
-                    durationMs: Math.max(0, nowMs() - computeStart),
-                    cacheHit: false,
-                  });
-                  execState.nodeErrors.set(nodeId, [
-                    {
-                      _tag: "NodeComputeFailed",
-                      nodeId,
-                      nodeType: node.type,
-                      cause: graphResult.left,
-                    },
-                  ]);
-                  outputCache.set(nodeId, nullOutputs);
-                  execState.dirty.delete(nodeId);
-                  return nullOutputs;
-                }
-
-                const subgraphGraph = applySubgraphOverrides(
-                  graphResult.right,
-                  params.overrides,
-                );
-
-                const inputValuesByNodeId = new Map<NodeId, JsonValue | null>();
-                for (const entry of params.inputs) {
-                  inputValuesByNodeId.set(
-                    entry.nodeId,
-                    inputs[entry.key] ?? null,
-                  );
-                }
-
-                const resolveSubgraphNodeDefinition: NodeDefinitionResolver = (
-                  nodeType: string,
-                ): NodeDefinition | undefined => {
-                  if (nodeType.startsWith(SUBGRAPH_INPUT_NODE_PREFIX)) {
-                    const dataType = nodeType.slice(
-                      SUBGRAPH_INPUT_NODE_PREFIX.length,
-                    );
-                    const outputType = dataType.length > 0 ? dataType : "float";
-                    return {
-                      typeId: nodeType,
-                      label: "Subgraph Input",
-                      description: "Feeds values from the parent graph.",
-                      inputs: [],
-                      outputs: [
+                const outputsResult = yield* Effect.either(
+                  Effect.try({
+                    try: () => {
+                      const outputs = definition.compute(nodeInputs, params, {
+                        nodeId,
+                      });
+                      recordNodeTiming(
+                        instrumentation,
                         {
-                          key: SUBGRAPH_INPUT_SOCKET_KEY,
-                          label: "Value",
-                          direction: "output",
-                          dataType: outputType,
+                          nodeId,
+                          nodeType: definition.typeId,
+                          durationMs: Math.max(0, nowMs() - computeStart),
+                          cacheHit: false,
                         },
-                      ],
-                      compute: (_inputs, _params, context) => ({
-                        [SUBGRAPH_INPUT_SOCKET_KEY]:
-                          inputValuesByNodeId.get(context.nodeId) ?? null,
-                      }),
-                    };
-                  }
-                  return resolveNodeDefinition(nodeType);
-                };
+                        hooks,
+                      );
+                      return outputs;
+                    },
+                    catch: (cause): ExecEngineError => {
+                      recordNodeTiming(
+                        instrumentation,
+                        {
+                          nodeId,
+                          nodeType: definition.typeId,
+                          durationMs: Math.max(0, nowMs() - computeStart),
+                          cacheHit: false,
+                        },
+                        hooks,
+                      );
+                      return {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: definition.typeId,
+                        cause,
+                      };
+                    },
+                  }),
+                );
+                if (Either.isLeft(outputsResult)) {
+                  const nullOutputs = createNullOutputs(outputNames);
+                  execState.nodeErrors.set(nodeId, [
+                    outputsResult.left as NodeRuntimeError,
+                  ]);
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+                const outputs = outputsResult.right;
 
-                const innerState = createExecState();
-                const nextContext: SubgraphEvalContext = {
-                  depth: evalContext.depth + 1,
-                  graphIdStack: [
-                    ...evalContext.graphIdStack,
-                    params.graph.graphId,
-                  ],
-                  remainingNodeBudget:
-                    evalContext.remainingNodeBudget - params.graph.nodes.length,
-                };
-                const outputValues: Record<string, JsonValue | null> = {
-                  ...nullOutputs,
-                };
-                const outputKeySet = new Set(outputNames);
-                for (const entry of params.outputs) {
-                  if (!outputKeySet.has(entry.key)) {
-                    recordNodeTiming(instrumentation, {
-                      nodeId,
-                      nodeType: node.type,
-                      durationMs: Math.max(0, nowMs() - computeStart),
-                      cacheHit: false,
-                    });
-                    execState.nodeErrors.set(nodeId, [
-                      {
-                        _tag: "NodeComputeFailed",
-                        nodeId,
-                        nodeType: node.type,
-                        cause: new Error(
-                          `Unknown subgraph output key: ${entry.key}`,
-                        ),
-                      },
-                    ]);
-                    outputCache.set(nodeId, nullOutputs);
-                    execState.dirty.delete(nodeId);
-                    return nullOutputs;
+                const normalized: Record<string, JsonValue | null> = {};
+                for (const [index, socketId] of node.outputs.entries()) {
+                  const socket = graph.sockets.get(socketId);
+                  if (!socket) {
+                    return yield* fail({ _tag: "MissingSocket", socketId });
                   }
-                  const result = yield* Effect.either(
-                    evaluateSocketInternal(
-                      subgraphGraph,
-                      entry.socketId,
-                      resolveSubgraphNodeDefinition,
-                      innerState,
-                      undefined,
-                      nextContext,
-                    ),
-                  );
-                  if (Either.isLeft(result)) {
-                    recordNodeTiming(instrumentation, {
+                  const name = outputNames[index];
+                  if (!name) {
+                    return yield* fail({
+                      _tag: "UnknownSocketKey",
                       nodeId,
-                      nodeType: node.type,
-                      durationMs: Math.max(0, nowMs() - computeStart),
-                      cacheHit: false,
+                      socketName: socket.name,
+                      direction: "output",
+                      nodeType: definition.typeId,
                     });
-                    execState.nodeErrors.set(nodeId, [
-                      {
-                        _tag: "NodeComputeFailed",
-                        nodeId,
-                        nodeType: node.type,
-                        cause: result.left,
-                      },
-                    ]);
-                    outputCache.set(nodeId, nullOutputs);
-                    execState.dirty.delete(nodeId);
-                    return nullOutputs;
                   }
-                  outputValues[entry.key] = result.right;
+                  const value = outputs[name];
+                  normalized[name] = value === undefined ? null : value;
                 }
 
-                recordNodeTiming(instrumentation, {
-                  nodeId,
-                  nodeType: node.type,
-                  durationMs: Math.max(0, nowMs() - computeStart),
-                  cacheHit: false,
-                });
                 execState.nodeErrors.delete(nodeId);
-                outputCache.set(nodeId, outputValues);
+                outputCache.set(nodeId, normalized);
                 execState.dirty.delete(nodeId);
-                return outputValues;
-              }
-
-              const definition = resolveNodeDefinition(node.type);
-              if (!definition) {
-                return yield* fail({
-                  _tag: "MissingNodeDefinition",
-                  nodeId,
-                  nodeType: node.type,
-                });
-              }
-
-              const inputKeys = new Set(
-                definition.inputs.map((input) => input.key),
-              );
-              const outputKeys = new Set(
-                definition.outputs.map((output) => output.key),
-              );
-
-              const inputNames = yield* validateNodeSockets(
-                nodeId,
-                definition.typeId,
-                node.inputs,
-                "input",
-                inputKeys,
-              );
-              const outputNames = yield* validateNodeSockets(
-                nodeId,
-                definition.typeId,
-                node.outputs,
-                "output",
-                outputKeys,
-              );
-
-              const inputs: Record<string, JsonValue | null> = {};
-              const missingRequired: NodeRuntimeError[] = [];
-              for (const [index, socketId] of node.inputs.entries()) {
-                const socket = graph.sockets.get(socketId);
-                if (!socket) {
-                  return yield* fail({ _tag: "MissingSocket", socketId });
-                }
-                const name = inputNames[index];
-                if (!name) {
-                  return yield* fail({
-                    _tag: "UnknownSocketKey",
-                    nodeId,
-                    socketName: socket.name,
-                    direction: "input",
-                    nodeType: definition.typeId,
-                  });
-                }
-
-                const wireIds = inputWireIndex.get(socketId) ?? [];
-                if (wireIds.length > 1) {
-                  return yield* fail({
-                    _tag: "MultipleInputWires",
-                    nodeId,
-                    socketId,
-                    wireIds: [...wireIds].sort((left, right) =>
-                      left.localeCompare(right),
-                    ),
-                  });
-                }
-
-                if (wireIds.length === 0) {
-                  if (socket.defaultValue !== undefined) {
-                    inputs[name] = socket.defaultValue;
-                    continue;
-                  }
-                  if (socket.required) {
-                    missingRequired.push({
-                      _tag: "MissingRequiredInput",
-                      nodeId,
-                      socketId,
-                      socketName: name,
-                    });
-                  }
-                  inputs[name] = null;
-                  continue;
-                }
-
-                const wireId = wireIds[0]!;
-                const wire = graph.wires.get(wireId);
-                if (!wire) {
-                  return yield* fail({ _tag: "MissingWire", wireId });
-                }
-                const fromSocket = graph.sockets.get(wire.fromSocketId);
-                if (!fromSocket) {
-                  return yield* fail({
-                    _tag: "MissingSocket",
-                    socketId: wire.fromSocketId,
-                  });
-                }
-                if (fromSocket.direction !== "output") {
-                  return yield* fail({
-                    _tag: "InvalidSocketDirection",
-                    socketId: fromSocket.id,
-                    expected: "output",
-                  });
-                }
-                if (!subgraph.nodes.has(fromSocket.nodeId)) {
-                  return yield* fail({
-                    _tag: "MissingNode",
-                    nodeId: fromSocket.nodeId,
-                  });
-                }
-                const value = yield* evaluateOutputSocket(fromSocket.id);
-                inputs[name] = value;
-              }
-
-              if (missingRequired.length > 0) {
-                const nullOutputs = createNullOutputs(outputNames);
-                recordNodeTiming(instrumentation, {
-                  nodeId,
-                  nodeType: definition.typeId,
-                  durationMs: 0,
-                  cacheHit: false,
-                });
-                outputCache.set(nodeId, nullOutputs);
-                execState.nodeErrors.set(nodeId, missingRequired);
-                execState.dirty.delete(nodeId);
-                return nullOutputs;
-              }
-
-              const params = coerceParamValues(node.params);
-              const nodeInputs: NodeInputValues = inputs;
-              const computeStart = nowMs();
-              const outputsResult = yield* Effect.either(
-                Effect.try({
-                  try: () => {
-                    const outputs = definition.compute(nodeInputs, params, {
-                      nodeId,
-                    });
-                    recordNodeTiming(instrumentation, {
-                      nodeId,
-                      nodeType: definition.typeId,
-                      durationMs: Math.max(0, nowMs() - computeStart),
-                      cacheHit: false,
-                    });
-                    return outputs;
-                  },
-                  catch: (cause): ExecEngineError => {
-                    recordNodeTiming(instrumentation, {
-                      nodeId,
-                      nodeType: definition.typeId,
-                      durationMs: Math.max(0, nowMs() - computeStart),
-                      cacheHit: false,
-                    });
-                    return {
-                      _tag: "NodeComputeFailed",
-                      nodeId,
-                      nodeType: definition.typeId,
-                      cause,
-                    };
-                  },
-                }),
-              );
-              if (Either.isLeft(outputsResult)) {
-                const nullOutputs = createNullOutputs(outputNames);
-                execState.nodeErrors.set(nodeId, [
-                  outputsResult.left as NodeRuntimeError,
-                ]);
-                outputCache.set(nodeId, nullOutputs);
-                execState.dirty.delete(nodeId);
-                return nullOutputs;
-              }
-              const outputs = outputsResult.right;
-
-              const normalized: Record<string, JsonValue | null> = {};
-              for (const [index, socketId] of node.outputs.entries()) {
-                const socket = graph.sockets.get(socketId);
-                if (!socket) {
-                  return yield* fail({ _tag: "MissingSocket", socketId });
-                }
-                const name = outputNames[index];
-                if (!name) {
-                  return yield* fail({
-                    _tag: "UnknownSocketKey",
-                    nodeId,
-                    socketName: socket.name,
-                    direction: "output",
-                    nodeType: definition.typeId,
-                  });
-                }
-                const value = outputs[name];
-                normalized[name] = value === undefined ? null : value;
-              }
-
-              execState.nodeErrors.delete(nodeId);
-              outputCache.set(nodeId, normalized);
-              execState.dirty.delete(nodeId);
-              return normalized;
-            });
-          });
+                return normalized;
+              });
+            }),
+          );
 
         /* eslint-disable no-unused-vars */
         const evaluateOutputSocket: (
@@ -1110,14 +1271,24 @@ export const evaluateSocket = (
   socketId: SocketId,
   resolveNodeDefinition: NodeDefinitionResolver,
   state?: ExecState,
+  hooks?: ExecEvaluationHooks,
 ): Effect.Effect<JsonValue | null, ExecError> =>
-  evaluateSocketInternal(graph, socketId, resolveNodeDefinition, state);
+  evaluateSocketInternal(
+    graph,
+    socketId,
+    resolveNodeDefinition,
+    state,
+    undefined,
+    undefined,
+    hooks,
+  );
 
 export const evaluateSocketWithStats = (
   graph: Graph,
   socketId: SocketId,
   resolveNodeDefinition: NodeDefinitionResolver,
   state?: ExecState,
+  hooks?: ExecEvaluationHooks,
 ): Effect.Effect<ExecEvaluationResult, ExecError> =>
   Effect.flatMap(
     Effect.sync(() => createInstrumentation()),
@@ -1129,6 +1300,8 @@ export const evaluateSocketWithStats = (
           resolveNodeDefinition,
           state,
           instrumentation,
+          undefined,
+          hooks,
         ),
         (value) => ({
           value,

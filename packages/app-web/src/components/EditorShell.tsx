@@ -1,6 +1,10 @@
+import * as Dialog from "@kobalte/core/dialog";
 import * as Toast from "@kobalte/core/toast";
+import type { NodeRuntimeError } from "@shadr/exec-engine";
 import {
   type FrameId,
+  type Graph,
+  type GraphFrame,
   type GraphNode,
   type GraphSocket,
   graphToDocumentV1,
@@ -8,24 +12,34 @@ import {
   type SocketId,
   type WireId,
 } from "@shadr/graph-core";
-import type { ParamSchemaDefinition } from "@shadr/plugin-system";
+import type {
+  ParamFieldDefinition,
+  ParamSchemaDefinition,
+} from "@shadr/plugin-system";
 import type {
   GraphDocumentV1,
   GraphId,
+  GraphSocketLabelPosition,
+  GraphSocketNumberFormat,
   JsonObject,
   JsonValue,
   SocketTypeId,
   SubgraphNodeParams,
+  SubgraphPromotedParam,
 } from "@shadr/shared";
 import {
   getSocketTypeMetadata,
+  makeSocketId,
+  makeWireId,
   MAX_SUBGRAPH_DEPTH,
   SOCKET_TYPE_PRIMITIVES,
   SUBGRAPH_NODE_TYPE,
 } from "@shadr/shared";
+import { defaultNodeLayout } from "@shadr/ui-canvas";
 import { clientOnly } from "@solidjs/start";
 import { Either } from "effect";
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   ChevronRight,
@@ -50,17 +64,23 @@ import {
 import CommandPalette, {
   type CommandPaletteEntry,
 } from "~/components/CommandPalette";
+import DebugPanel from "~/components/DebugPanel";
+import ExecTimelinePanel from "~/components/ExecTimelinePanel";
 import SubgraphParamOverrides from "~/components/SubgraphParamOverrides";
+import {
+  buildDeleteSelectionCommands,
+  type DeleteSelectionMode,
+} from "~/editor/delete-selection";
 import { downloadTextFile } from "~/editor/download";
+import { buildFrameHierarchy, getNodeFrameOwners } from "~/editor/frame-utils";
 import {
   formatGraphImportError,
   graphDocumentToJson,
   parseGraphDocumentJson,
 } from "~/editor/graph-io";
 import {
-  createRemoveFrameCommand,
-  createRemoveNodeCommand,
-  createRemoveWireCommand,
+  createReplaceNodeIoCommand,
+  createUpdateFrameCommand,
   createUpdateNodeIoCommand,
   type GraphCommand,
 } from "~/editor/history";
@@ -72,7 +92,14 @@ import {
   type OutputArtifact,
   type OutputNodeType,
 } from "~/editor/output-artifacts";
-import { coerceSettings, settingsToJson } from "~/editor/settings";
+import {
+  coerceSettings,
+  MAX_PAN_SENSITIVITY,
+  MAX_ZOOM_SENSITIVITY,
+  MIN_PAN_SENSITIVITY,
+  MIN_ZOOM_SENSITIVITY,
+  settingsToJson,
+} from "~/editor/settings";
 import { createEditorStore } from "~/editor/store";
 import {
   parseSubgraphParams,
@@ -109,6 +136,7 @@ const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max);
 
 type Point = Readonly<{ x: number; y: number }>;
+const formatSensitivity = (value: number): string => value.toFixed(2);
 
 type GraphFocusSnapshot = Readonly<{
   canvasCenter: Point;
@@ -129,12 +157,96 @@ type GraphNavHistory = Readonly<{
   index: number;
 }>;
 
+const isDebugMode = import.meta.env.DEV;
+
 const formatExecError = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "_tag" in error) {
     const tagValue = (error as { _tag: string })._tag;
     return typeof tagValue === "string" ? tagValue : "ExecutionError";
   }
   return "ExecutionError";
+};
+
+const isExecutionCanceled = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "_tag" in error &&
+  (error as { _tag: string })._tag === "ExecutionCanceled";
+
+type NodeErrorSeverity = "error" | "warning";
+
+type NodeErrorDisplay = Readonly<{
+  id: string;
+  severity: NodeErrorSeverity;
+  title: string;
+  summary: string;
+  detail?: string;
+  context: ReadonlyArray<string>;
+  stack?: string;
+}>;
+
+const formatUnknown = (value: unknown): string => {
+  if (value instanceof Error) {
+    return value.message || "Unknown error";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (value === undefined) {
+    return "undefined";
+  }
+  try {
+    const json = JSON.stringify(value);
+    return json ?? String(value);
+  } catch {
+    return String(value);
+  }
+};
+
+const formatNodeErrorDisplay = (
+  error: NodeRuntimeError,
+  index: number,
+): NodeErrorDisplay => {
+  switch (error._tag) {
+    case "MissingRequiredInput": {
+      return {
+        id: `${error.nodeId}-${error.socketId}-${index}`,
+        severity: "warning",
+        title: "Missing input",
+        summary: `Socket "${error.socketName}" is required.`,
+        detail: "Connect a value or set a default.",
+        context: [
+          `Node ID: ${error.nodeId}`,
+          `Socket ID: ${error.socketId}`,
+          `Error: ${error._tag}`,
+        ],
+      };
+    }
+    case "NodeComputeFailed": {
+      const message = formatUnknown(error.cause);
+      const stack =
+        error.cause instanceof Error ? error.cause.stack : undefined;
+      return {
+        id: `${error.nodeId}-${index}`,
+        severity: "error",
+        title: "Compute failed",
+        summary: `Node "${error.nodeType}" threw during compute.`,
+        detail: message.length > 0 ? message : "Unexpected compute failure.",
+        context: [
+          `Node ID: ${error.nodeId}`,
+          `Node type: ${error.nodeType}`,
+          `Error: ${error._tag}`,
+        ],
+        stack,
+      };
+    }
+  }
 };
 
 export default function EditorShell() {
@@ -164,8 +276,16 @@ export default function EditorShell() {
   const [outputArtifact, setOutputArtifact] =
     createSignal<OutputArtifact | null>(null);
   const [outputMessage, setOutputMessage] = createSignal<string | null>(null);
+  type NodeErrorFilter = "all" | "error" | "warning";
+  const [nodeErrorFilter, setNodeErrorFilter] =
+    createSignal<NodeErrorFilter>("all");
+  const [debugPanelOpen, setDebugPanelOpen] = createSignal(false);
+  type SettingsTab = "canvas" | "interaction" | "display";
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [settingsTab, setSettingsTab] = createSignal<SettingsTab>("canvas");
 
   const isDirtyGraph = createMemo(() => store.dirtyState().dirty.size > 0);
+  const outputProgress = createMemo(() => store.outputProgress());
   const selectionCount = createMemo(
     () =>
       store.selectedNodes().size +
@@ -176,6 +296,10 @@ export default function EditorShell() {
   const gridVisible = createMemo(() => store.settings().gridVisible);
   const snapToGrid = createMemo(() => store.settings().snapToGrid);
   const wireHoverLabels = createMemo(() => store.settings().wireHoverLabels);
+  const executionVizEnabled = createMemo(
+    () => store.settings().executionVizEnabled,
+  );
+  const execVisualization = createMemo(() => store.execVisualization());
   const graphPath = createMemo<ReadonlyArray<GraphBreadcrumb>>(() => {
     const path = store.graphPath();
     if (path.length > 0) {
@@ -217,9 +341,13 @@ export default function EditorShell() {
     "border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] text-[color:var(--app-text)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-strong)]";
   const historyButtonDisabled =
     "cursor-not-allowed border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-soft)] text-[color:var(--text-muted)]";
-  const overlayRoot = "pointer-events-none absolute inset-0";
+  const debugButtonActive =
+    "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]";
+  const overlayRoot =
+    "pointer-events-none absolute inset-0 z-[var(--layer-hud)]";
+  const execTimelineAnchor = "absolute right-3 top-16";
   const controlMenuRoot =
-    "pointer-events-auto flex w-[min(92vw,720px)] flex-col gap-2 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] px-3 py-2 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[35vh] overflow-y-auto";
+    "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,720px)] flex-col gap-2 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] px-3 py-2 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[35vh] overflow-y-auto";
   const controlMenuTitle =
     "text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
   const controlMenuValue = "text-[0.8rem] text-[color:var(--text-strong)]";
@@ -233,14 +361,39 @@ export default function EditorShell() {
     "border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] text-[color:var(--status-warn-text)] hover:border-[color:var(--status-warn-border)]";
   const controlMenuDanger =
     "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-text)] hover:border-[color:var(--status-danger-border)]";
+  const settingsModalRoot =
+    "fixed left-1/2 top-[12vh] z-[var(--layer-modal)] w-[min(94vw,720px)] -translate-x-1/2 rounded-[1.2rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] p-5 text-[color:var(--app-text)] shadow-[var(--shadow-popup)]";
+  const settingsTitle =
+    "text-[0.75rem] uppercase tracking-[0.22em] text-[color:var(--text-muted)]";
+  const settingsSection =
+    "flex flex-col gap-3 rounded-[0.9rem] border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel)] p-4";
+  const settingsTabBase =
+    "rounded-full border px-3 py-1 text-[0.6rem] uppercase tracking-[0.2em] transition";
+  const settingsTabActive =
+    "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]";
+  const settingsTabInactive =
+    "border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] text-[color:var(--text-soft)] hover:border-[color:var(--border-strong)]";
+  const settingsRow =
+    "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] px-3 py-2";
+  const settingsLabel =
+    "text-[0.65rem] uppercase tracking-[0.18em] text-[color:var(--text-muted)]";
+  const settingsValue = "text-[0.8rem] text-[color:var(--text-strong)]";
+  const settingsNote = "text-[0.7rem] text-[color:var(--text-muted)]";
+  const settingsToggle =
+    "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[0.6rem] uppercase tracking-[0.18em] transition";
+  const settingsRange = "w-full accent-[color:var(--status-info-text)]";
+  const settingsClose =
+    "rounded-full border border-[color:var(--border-muted)] px-2.5 py-1 text-[0.55rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)] hover:border-[color:var(--border-strong)]";
 
   const sidePanelRoot =
-    "pointer-events-auto flex w-[min(92vw,320px)] flex-col gap-3 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-3 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[70vh] overflow-y-auto";
+    "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,320px)] flex-col gap-3 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-3 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[70vh] overflow-y-auto";
   const sidePanelTitle =
     "text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
   const sidePanelValue = "text-[0.85rem] text-[color:var(--text-strong)]";
   const sidePanelChip =
     "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em]";
+  const sidePanelChipButton =
+    "cursor-pointer transition hover:border-[color:var(--border-strong)]";
   const sidePanelRow =
     "flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1 text-[0.7rem]";
   const sidePanelMuted =
@@ -253,6 +406,8 @@ export default function EditorShell() {
     "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-text)]";
   const sidePanelSuccess =
     "border-[color:var(--status-success-border)] bg-[color:var(--status-success-bg)] text-[color:var(--status-success-text)]";
+  const sidePanelRowDense =
+    "flex flex-col gap-2 rounded-lg border px-2.5 py-2 text-[0.7rem]";
   const ioPanel =
     "flex flex-col gap-2 rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] px-2.5 py-2 text-[0.7rem]";
   const ioLabel =
@@ -262,10 +417,58 @@ export default function EditorShell() {
   const ioSelect =
     "w-full rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.7rem] text-[color:var(--text-strong)] focus:border-[color:var(--border-strong)] focus:outline-none";
 
-  const toastRegion = "fixed right-4 top-4 z-30 w-[min(280px,90vw)]";
+  const socketLabelPositions: ReadonlyArray<GraphSocketLabelPosition> = [
+    "auto",
+    "left",
+    "right",
+    "top",
+    "bottom",
+  ];
+  const socketNumberFormats: ReadonlyArray<GraphSocketNumberFormat> = [
+    "auto",
+    "integer",
+    "fixed-2",
+    "fixed-3",
+    "percent",
+  ];
+  const formatSocketLabelPosition = (
+    position: GraphSocketLabelPosition,
+  ): string => {
+    switch (position) {
+      case "left":
+        return "Left";
+      case "right":
+        return "Right";
+      case "top":
+        return "Top";
+      case "bottom":
+        return "Bottom";
+      default:
+        return "Auto";
+    }
+  };
+  const formatSocketNumberFormat = (
+    format: GraphSocketNumberFormat,
+  ): string => {
+    switch (format) {
+      case "integer":
+        return "Integer";
+      case "fixed-2":
+        return "Fixed (2)";
+      case "fixed-3":
+        return "Fixed (3)";
+      case "percent":
+        return "Percent";
+      default:
+        return "Auto";
+    }
+  };
+
+  const toastRegion =
+    "pointer-events-none fixed right-4 top-4 z-[var(--layer-toast)] w-[min(280px,90vw)]";
   const toastList = "flex flex-col gap-2";
   const toastRoot =
-    "flex items-start justify-between gap-3 rounded-[0.9rem] border border-[color:var(--status-info-border)] bg-[color:var(--surface-panel-strong)] px-3 py-2 text-[0.85rem] text-[color:var(--app-text)] shadow-[var(--shadow-toast)]";
+    "pointer-events-auto flex items-start justify-between gap-3 rounded-[0.9rem] border border-[color:var(--status-info-border)] bg-[color:var(--surface-panel-strong)] px-3 py-2 text-[0.85rem] text-[color:var(--app-text)] shadow-[var(--shadow-toast)]";
   const toastTitle = "text-[0.8rem] font-semibold uppercase tracking-[0.14em]";
   const toastDescription = "mt-1 text-[0.8rem] text-[color:var(--text-muted)]";
   const toastClose =
@@ -974,6 +1177,13 @@ export default function EditorShell() {
     }
     return store.graph().nodes.get(ids[0]) ?? null;
   });
+  const selectedFrame = createMemo(() => {
+    const ids = selectedFrameIds();
+    if (ids.length !== 1) {
+      return null;
+    }
+    return store.graph().frames.get(ids[0]) ?? null;
+  });
   const selectedNodeEntry = createMemo(() => {
     const node = selectedNode();
     return node ? (getNodeCatalogEntry(node.type) ?? null) : null;
@@ -989,7 +1199,22 @@ export default function EditorShell() {
     }
     return parseSubgraphParams(node.params);
   });
-  type SubgraphSocketRow = Readonly<{ socket: GraphSocket; index: number }>;
+  const promotedParamsByKey = createMemo(() => {
+    const params = selectedSubgraphParams();
+    const map = new Map<string, SubgraphPromotedParam>();
+    if (!params?.promotedParams) {
+      return map;
+    }
+    for (const entry of params.promotedParams) {
+      map.set(entry.key, entry);
+    }
+    return map;
+  });
+  type SubgraphSocketRow = Readonly<{
+    socket: GraphSocket;
+    index: number;
+    promotion?: SubgraphPromotedParam;
+  }>;
   const subgraphInputRows = createMemo<SubgraphSocketRow[]>(() => {
     const node = selectedSubgraphNode();
     const params = selectedSubgraphParams();
@@ -998,10 +1223,11 @@ export default function EditorShell() {
     }
     const graphSnapshot = store.graph();
     const rows: SubgraphSocketRow[] = [];
+    const promotions = promotedParamsByKey();
     node.inputs.forEach((socketId, index) => {
       const socket = graphSnapshot.sockets.get(socketId);
       if (socket) {
-        rows.push({ socket, index });
+        rows.push({ socket, index, promotion: promotions.get(socket.name) });
       }
     });
     return rows;
@@ -1059,6 +1285,39 @@ export default function EditorShell() {
     }
     return count;
   });
+  const subgraphPromotedCount = createMemo(() => {
+    const params = selectedSubgraphParams();
+    return params?.promotedParams?.length ?? 0;
+  });
+  type SubgraphPromotableField = Readonly<{
+    node: GraphNode;
+    label: string;
+    field: ParamFieldDefinition;
+    promotion?: SubgraphPromotedParam;
+  }>;
+  const subgraphPromotableFields = createMemo<SubgraphPromotableField[]>(() => {
+    const params = selectedSubgraphParams();
+    if (!params) {
+      return [];
+    }
+    const promotions = new Map<string, SubgraphPromotedParam>();
+    for (const entry of params.promotedParams ?? []) {
+      promotions.set(`${entry.nodeId}:${entry.fieldId}`, entry);
+    }
+    return params.graph.nodes.flatMap((node) => {
+      const entry = getNodeCatalogEntry(node.type);
+      if (!entry?.paramSchema) {
+        return [];
+      }
+      const label = entry.label ?? node.type;
+      return entry.paramSchema.fields.map((field) => ({
+        node,
+        label,
+        field,
+        promotion: promotions.get(`${node.id}:${field.id}`),
+      }));
+    });
+  });
   const selectedNodeLabel = createMemo(() => {
     const ids = selectedNodeIds();
     if (ids.length === 0) {
@@ -1108,6 +1367,12 @@ export default function EditorShell() {
     return node?.outputs[0] ?? null;
   });
   const isSingleSelection = createMemo(() => selectedNodeIds().length === 1);
+  const isSingleFrameSelection = createMemo(
+    () =>
+      selectedFrameIds().length === 1 &&
+      selectedNodeIds().length === 0 &&
+      selectedWireIds().length === 0,
+  );
   const isBypassedSelection = createMemo(() => {
     if (!isSingleSelection()) {
       return false;
@@ -1128,6 +1393,13 @@ export default function EditorShell() {
     }
     return store.collapsedNodes().has(node.id);
   });
+  const isCollapsedFrameSelection = createMemo(() => {
+    if (!isSingleFrameSelection()) {
+      return false;
+    }
+    const frame = selectedFrame();
+    return frame?.collapsed ?? false;
+  });
   const isSelectedDirty = createMemo(() => {
     const node = selectedNode();
     if (!node) {
@@ -1142,6 +1414,50 @@ export default function EditorShell() {
     }
     return store.dirtyState().nodeErrors.get(node.id) ?? [];
   });
+  const nodeErrorEntries = createMemo(() =>
+    selectedNodeErrors().map((error, index) =>
+      formatNodeErrorDisplay(error, index),
+    ),
+  );
+  const nodeErrorCounts = createMemo(() => {
+    const counts = { total: 0, error: 0, warning: 0 };
+    for (const entry of nodeErrorEntries()) {
+      counts.total += 1;
+      if (entry.severity === "error") {
+        counts.error += 1;
+      } else {
+        counts.warning += 1;
+      }
+    }
+    return counts;
+  });
+  const filteredNodeErrors = createMemo(() => {
+    const filter = nodeErrorFilter();
+    if (filter === "all") {
+      return nodeErrorEntries();
+    }
+    return nodeErrorEntries().filter((entry) => entry.severity === filter);
+  });
+  const formatNodeErrorFilterLabel = (filter: NodeErrorFilter): string => {
+    switch (filter) {
+      case "error":
+        return "Errors";
+      case "warning":
+        return "Warnings";
+      default:
+        return "All";
+    }
+  };
+  const nodeErrorFilterTone = (filter: NodeErrorFilter): string => {
+    switch (filter) {
+      case "error":
+        return sidePanelDanger;
+      case "warning":
+        return sidePanelWarn;
+      default:
+        return sidePanelInfo;
+    }
+  };
   const outputStatusTone = createMemo(() => {
     switch (outputStatus()) {
       case "running":
@@ -1176,8 +1492,163 @@ export default function EditorShell() {
     return sockets;
   };
 
+  const DEFAULT_FRAME_COLOR = "#4b5563";
+  const sanitizeFrameTitle = (value: string): string => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : "Frame";
+  };
+  const formatFrameColor = (value?: number): string => {
+    if (value === undefined || !Number.isFinite(value)) {
+      return DEFAULT_FRAME_COLOR;
+    }
+    return `#${value.toString(16).padStart(6, "0")}`;
+  };
+  const parseFrameColor = (value: string): number | null => {
+    const normalized = value.trim().replace("#", "");
+    if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
+      return null;
+    }
+    return Number.parseInt(normalized, 16);
+  };
+  const updateFrame = (
+    frameId: FrameId,
+    patch: Partial<{
+      title: string;
+      description: string;
+      color?: number;
+      collapsed?: boolean;
+      exposedInputs?: ReadonlyArray<SocketId>;
+      exposedOutputs?: ReadonlyArray<SocketId>;
+    }>,
+  ): void => {
+    const frame = store.graph().frames.get(frameId);
+    if (!frame) {
+      return;
+    }
+    const updated = { ...frame, ...patch };
+    store.applyGraphCommand(createUpdateFrameCommand(frame, updated));
+  };
+  const frameHierarchy = createMemo(() =>
+    buildFrameHierarchy(store.graph().frames.values()),
+  );
+  const nodeFrameOwners = createMemo(() =>
+    getNodeFrameOwners(
+      store.graph().nodes.values(),
+      defaultNodeLayout,
+      frameHierarchy(),
+    ),
+  );
+  const getFrameContainedNodes = (frame: GraphFrame): GraphNode[] => {
+    const graphSnapshot = store.graph();
+    const owners = nodeFrameOwners();
+    const nodes: GraphNode[] = [];
+    for (const node of graphSnapshot.nodes.values()) {
+      if (owners.get(node.id) === frame.id) {
+        nodes.push(node);
+      }
+    }
+    return nodes;
+  };
+  type FrameSocketRow = Readonly<{
+    socket: GraphSocket;
+    node: GraphNode;
+    exposed: boolean;
+  }>;
+  type FrameSocketGroups = Readonly<{
+    inputs: FrameSocketRow[];
+    outputs: FrameSocketRow[];
+  }>;
+  const frameSocketGroups = createMemo<FrameSocketGroups>(() => {
+    const frame = selectedFrame();
+    if (!frame) {
+      return { inputs: [], outputs: [] };
+    }
+    const graphSnapshot = store.graph();
+    const nodes = getFrameContainedNodes(frame).sort((left, right) => {
+      if (left.position.y !== right.position.y) {
+        return left.position.y - right.position.y;
+      }
+      return left.position.x - right.position.x;
+    });
+    const exposedInputs = new Set(frame.exposedInputs ?? []);
+    const exposedOutputs = new Set(frame.exposedOutputs ?? []);
+    const inputs: FrameSocketRow[] = [];
+    const outputs: FrameSocketRow[] = [];
+    for (const node of nodes) {
+      for (const socketId of node.inputs) {
+        const socket = graphSnapshot.sockets.get(socketId);
+        if (socket) {
+          inputs.push({
+            socket,
+            node,
+            exposed: exposedInputs.has(socket.id),
+          });
+        }
+      }
+      for (const socketId of node.outputs) {
+        const socket = graphSnapshot.sockets.get(socketId);
+        if (socket) {
+          outputs.push({
+            socket,
+            node,
+            exposed: exposedOutputs.has(socket.id),
+          });
+        }
+      }
+    }
+    return { inputs, outputs };
+  });
+  const formatFrameSocketLabel = (row: FrameSocketRow): string => {
+    const nodeLabel =
+      getNodeCatalogEntry(row.node.type)?.label ?? row.node.type;
+    const socketLabel = row.socket.label?.trim().length
+      ? row.socket.label
+      : row.socket.name;
+    return `${nodeLabel} / ${socketLabel}`;
+  };
+  const updateFrameExposure = (
+    frame: GraphFrame,
+    socketId: SocketId,
+    direction: "input" | "output",
+    enabled: boolean,
+  ): void => {
+    const current =
+      direction === "input"
+        ? (frame.exposedInputs ?? [])
+        : (frame.exposedOutputs ?? []);
+    const next = enabled
+      ? Array.from(new Set([...current, socketId]))
+      : current.filter((id) => id !== socketId);
+    updateFrame(
+      frame.id,
+      direction === "input"
+        ? { exposedInputs: next }
+        : { exposedOutputs: next },
+    );
+  };
+
   const getSocketTypeLabel = (typeId: SocketTypeId): string =>
     getSocketTypeMetadata(typeId)?.label ?? typeId;
+
+  const getParamSocketType = (field: ParamFieldDefinition): SocketTypeId => {
+    switch (field.kind) {
+      case "float":
+        return "float";
+      case "int":
+        return "int";
+      case "bool":
+        return "bool";
+      case "vec2":
+        return "vec2";
+      case "vec3":
+        return "vec3";
+      case "vec4":
+        return "vec4";
+    }
+  };
+
+  const makePromotionKey = (nodeId: NodeId, fieldId: string): string =>
+    `${nodeId}:${fieldId}`;
 
   const buildSubgraphParamsForNode = (
     node: GraphNode,
@@ -1191,16 +1662,27 @@ export default function EditorShell() {
     const inputsByKey = new Map(
       params.inputs.map((entry) => [entry.key, entry]),
     );
+    const promotedByKey = new Map(
+      (params.promotedParams ?? []).map((entry) => [entry.key, entry]),
+    );
     const outputsByKey = new Map(
       params.outputs.map((entry) => [entry.key, entry]),
     );
-    const nextInputs = inputs.flatMap((socket) => {
+    const nextInputs: SubgraphNodeParams["inputs"] = [];
+    const nextPromoted: SubgraphPromotedParam[] = [];
+    for (const socket of inputs) {
       const entry = inputsByKey.get(socket.name);
-      if (!entry) {
-        return [];
+      if (entry) {
+        nextInputs.push({ ...entry, key: socket.name });
+        continue;
       }
-      return [{ ...entry, key: socket.name }];
-    });
+      const promotion = promotedByKey.get(socket.name);
+      if (promotion) {
+        nextPromoted.push({ ...promotion, key: socket.name });
+        continue;
+      }
+      return null;
+    }
     const nextOutputs = outputs.flatMap((socket) => {
       const entry = outputsByKey.get(socket.name);
       if (!entry) {
@@ -1208,7 +1690,7 @@ export default function EditorShell() {
       }
       return [{ ...entry, key: socket.name }];
     });
-    if (nextInputs.length !== inputs.length) {
+    if (nextInputs.length + nextPromoted.length !== inputs.length) {
       return null;
     }
     if (nextOutputs.length !== outputs.length) {
@@ -1218,6 +1700,7 @@ export default function EditorShell() {
       ...params,
       inputs: nextInputs,
       outputs: nextOutputs,
+      promotedParams: nextPromoted.length > 0 ? nextPromoted : undefined,
     };
   };
 
@@ -1226,9 +1709,11 @@ export default function EditorShell() {
     sockets: ReadonlyArray<GraphSocket>,
   ): {
     inputMap: Map<NodeId, GraphSocket>;
+    promotedMap: Map<string, GraphSocket>;
     outputMap: Map<SocketId, GraphSocket>;
   } | null => {
     const inputMap = new Map<NodeId, GraphSocket>();
+    const promotedMap = new Map<string, GraphSocket>();
     const outputMap = new Map<SocketId, GraphSocket>();
     for (const entry of params.inputs) {
       const socket = sockets.find(
@@ -1239,6 +1724,15 @@ export default function EditorShell() {
       }
       inputMap.set(entry.nodeId, socket);
     }
+    for (const entry of params.promotedParams ?? []) {
+      const socket = sockets.find(
+        (item) => item.direction === "input" && item.name === entry.key,
+      );
+      if (!socket) {
+        return null;
+      }
+      promotedMap.set(makePromotionKey(entry.nodeId, entry.fieldId), socket);
+    }
     for (const entry of params.outputs) {
       const socket = sockets.find(
         (item) => item.direction === "output" && item.name === entry.key,
@@ -1248,16 +1742,22 @@ export default function EditorShell() {
       }
       outputMap.set(entry.socketId, socket);
     }
-    return { inputMap, outputMap };
+    return { inputMap, promotedMap, outputMap };
   };
 
-  const buildSubgraphInstanceCommand = (
+  type SubgraphInstanceUpdate = Readonly<{
+    before: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>;
+    after: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>;
+  }>;
+
+  const buildSubgraphInstanceUpdate = (
     instanceNode: GraphNode,
     instanceSockets: ReadonlyArray<GraphSocket>,
     instanceParams: SubgraphNodeParams,
     definitionParams: SubgraphNodeParams,
+    definitionNode: GraphNode,
     definitionSockets: ReadonlyArray<GraphSocket>,
-  ): GraphCommand | null => {
+  ): SubgraphInstanceUpdate | null => {
     const socketMaps = buildSubgraphInstanceSocketMap(
       instanceParams,
       instanceSockets,
@@ -1274,49 +1774,189 @@ export default function EditorShell() {
         definitionOutputs.set(socket.name, socket);
       }
     }
-    const nextSocketsById = new Map<SocketId, GraphSocket>();
     const nextInputIds: SocketId[] = [];
     const nextOutputIds: SocketId[] = [];
-
-    for (const entry of definitionParams.inputs) {
-      const instanceSocket = socketMaps.inputMap.get(entry.nodeId);
-      const definitionSocket = definitionInputs.get(entry.key);
-      if (!instanceSocket || !definitionSocket) {
-        return null;
+    const nextSockets: GraphSocket[] = [];
+    const nextSocketsById = new Map<SocketId, GraphSocket>();
+    const usedSocketIds = new Set<SocketId>(
+      instanceSockets.map((socket) => socket.id),
+    );
+    const instanceInputsByName = new Map<string, GraphSocket>();
+    const instanceOutputsByName = new Map<string, GraphSocket>();
+    for (const socket of instanceSockets) {
+      if (socket.direction === "input") {
+        instanceInputsByName.set(socket.name, socket);
+      } else {
+        instanceOutputsByName.set(socket.name, socket);
       }
-      nextInputIds.push(instanceSocket.id);
-      nextSocketsById.set(instanceSocket.id, {
-        ...instanceSocket,
-        name: entry.key,
+    }
+
+    const addSocket = (socket: GraphSocket): void => {
+      const existingIndex = nextSockets.findIndex(
+        (entry) => entry.id === socket.id,
+      );
+      if (existingIndex >= 0) {
+        nextSockets[existingIndex] = socket;
+      } else {
+        nextSockets.push(socket);
+      }
+      nextSocketsById.set(socket.id, socket);
+    };
+
+    const createUniqueSocketId = (
+      socketKey: string,
+      suffixStart = 1,
+    ): SocketId => {
+      let index = suffixStart;
+      let candidate = makeSocketId(`${instanceNode.id}.${socketKey}`);
+      while (usedSocketIds.has(candidate)) {
+        candidate = makeSocketId(`${instanceNode.id}.${socketKey}-${index}`);
+        index += 1;
+      }
+      usedSocketIds.add(candidate);
+      return candidate;
+    };
+
+    const getOrCreateInputSocket = (
+      key: string,
+      preferred: GraphSocket | undefined,
+      definitionSocket: GraphSocket,
+    ): GraphSocket => {
+      const existing = preferred ?? instanceInputsByName.get(key);
+      if (existing) {
+        return {
+          ...existing,
+          name: key,
+          label:
+            definitionSocket.label ??
+            existing.label ??
+            definitionSocket.name ??
+            key,
+          dataType: definitionSocket.dataType,
+          required: definitionSocket.required,
+          defaultValue: definitionSocket.defaultValue,
+          minConnections: definitionSocket.minConnections,
+          maxConnections: definitionSocket.maxConnections,
+          labelSettings: definitionSocket.labelSettings,
+          metadata: definitionSocket.metadata,
+        };
+      }
+      return {
+        id: createUniqueSocketId(key),
+        nodeId: instanceNode.id,
+        name: key,
+        label: definitionSocket.label ?? definitionSocket.name ?? key,
+        direction: "input",
         dataType: definitionSocket.dataType,
         required: definitionSocket.required,
         defaultValue: definitionSocket.defaultValue,
         minConnections: definitionSocket.minConnections,
         maxConnections: definitionSocket.maxConnections,
-      });
+        labelSettings: definitionSocket.labelSettings,
+        metadata: definitionSocket.metadata,
+      };
+    };
+
+    const getOrCreateOutputSocket = (
+      key: string,
+      preferred: GraphSocket | undefined,
+      definitionSocket: GraphSocket,
+    ): GraphSocket => {
+      const existing = preferred ?? instanceOutputsByName.get(key);
+      if (existing) {
+        return {
+          ...existing,
+          name: key,
+          label:
+            definitionSocket.label ??
+            existing.label ??
+            definitionSocket.name ??
+            key,
+          dataType: definitionSocket.dataType,
+          required: definitionSocket.required,
+          defaultValue: definitionSocket.defaultValue,
+          minConnections: definitionSocket.minConnections,
+          maxConnections: definitionSocket.maxConnections,
+          labelSettings: definitionSocket.labelSettings,
+          metadata: definitionSocket.metadata,
+        };
+      }
+      return {
+        id: createUniqueSocketId(key),
+        nodeId: instanceNode.id,
+        name: key,
+        label: definitionSocket.label ?? definitionSocket.name ?? key,
+        direction: "output",
+        dataType: definitionSocket.dataType,
+        required: definitionSocket.required,
+        defaultValue: definitionSocket.defaultValue,
+        minConnections: definitionSocket.minConnections,
+        maxConnections: definitionSocket.maxConnections,
+        labelSettings: definitionSocket.labelSettings,
+        metadata: definitionSocket.metadata,
+      };
+    };
+
+    const definitionInputsByKey = new Map(
+      definitionParams.inputs.map((entry) => [entry.key, entry]),
+    );
+    const definitionPromotedByKey = new Map(
+      (definitionParams.promotedParams ?? []).map((entry) => [
+        entry.key,
+        entry,
+      ]),
+    );
+
+    for (const socketId of definitionNode.inputs) {
+      const definitionSocket = definitionSockets.find(
+        (socket) => socket.id === socketId,
+      );
+      if (!definitionSocket) {
+        return null;
+      }
+      const inputEntry = definitionInputsByKey.get(definitionSocket.name);
+      if (inputEntry) {
+        const preferred = socketMaps.inputMap.get(inputEntry.nodeId);
+        const nextSocket = getOrCreateInputSocket(
+          definitionSocket.name,
+          preferred,
+          definitionSocket,
+        );
+        nextInputIds.push(nextSocket.id);
+        addSocket(nextSocket);
+        continue;
+      }
+      const promotedEntry = definitionPromotedByKey.get(definitionSocket.name);
+      if (!promotedEntry) {
+        return null;
+      }
+      const preferred = socketMaps.promotedMap.get(
+        makePromotionKey(promotedEntry.nodeId, promotedEntry.fieldId),
+      );
+      const nextSocket = getOrCreateInputSocket(
+        definitionSocket.name,
+        preferred,
+        definitionSocket,
+      );
+      nextInputIds.push(nextSocket.id);
+      addSocket(nextSocket);
     }
 
     for (const entry of definitionParams.outputs) {
-      const instanceSocket = socketMaps.outputMap.get(entry.socketId);
       const definitionSocket = definitionOutputs.get(entry.key);
-      if (!instanceSocket || !definitionSocket) {
+      if (!definitionSocket) {
         return null;
       }
-      nextOutputIds.push(instanceSocket.id);
-      nextSocketsById.set(instanceSocket.id, {
-        ...instanceSocket,
-        name: entry.key,
-        dataType: definitionSocket.dataType,
-        required: definitionSocket.required,
-        defaultValue: definitionSocket.defaultValue,
-        minConnections: definitionSocket.minConnections,
-        maxConnections: definitionSocket.maxConnections,
-      });
+      const preferred = socketMaps.outputMap.get(entry.socketId);
+      const nextSocket = getOrCreateOutputSocket(
+        entry.key,
+        preferred,
+        definitionSocket,
+      );
+      nextOutputIds.push(nextSocket.id);
+      addSocket(nextSocket);
     }
 
-    const nextSockets = instanceSockets.map(
-      (socket) => nextSocketsById.get(socket.id) ?? socket,
-    );
     const nextParams: SubgraphNodeParams = {
       ...definitionParams,
       ...(instanceParams.overrides
@@ -1330,10 +1970,21 @@ export default function EditorShell() {
       params: serializeSubgraphParams(nextParams),
     };
 
-    return createUpdateNodeIoCommand(
-      { node: instanceNode, sockets: instanceSockets },
-      { node: nextNode, sockets: nextSockets },
-    );
+    return {
+      before: { node: instanceNode, sockets: instanceSockets },
+      after: { node: nextNode, sockets: nextSockets },
+    };
+  };
+
+  const sameSocketIdSet = (
+    left: ReadonlyArray<SocketId>,
+    right: ReadonlyArray<SocketId>,
+  ): boolean => {
+    if (left.length !== right.length) {
+      return false;
+    }
+    const rightSet = new Set(right);
+    return left.every((id) => rightSet.has(id));
   };
 
   const commitSubgraphIoUpdate = (
@@ -1373,14 +2024,27 @@ export default function EditorShell() {
       if (!sockets) {
         continue;
       }
-      const command = buildSubgraphInstanceCommand(
+      const update = buildSubgraphInstanceUpdate(
         node,
         sockets,
         params,
         nextParams,
+        afterNode,
         afterSockets,
       );
-      if (command) {
+      if (update) {
+        const beforeNode = update.before.node;
+        const afterNodeUpdate = update.after.node;
+        const useReplace =
+          !sameSocketIdSet(beforeNode.inputs, afterNodeUpdate.inputs) ||
+          !sameSocketIdSet(beforeNode.outputs, afterNodeUpdate.outputs);
+        const command = useReplace
+          ? createReplaceNodeIoCommand(
+              graphSnapshot,
+              update.before,
+              update.after,
+            )
+          : createUpdateNodeIoCommand(update.before, update.after);
         commands.push(command);
       }
     }
@@ -1454,6 +2118,160 @@ export default function EditorShell() {
     store.updateNodeParam(node.id, "overrides", nextOverrides ?? null);
   };
 
+  const parseOptionalNumber = (raw: string): number | undefined => {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    const parsed = Number.parseFloat(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  const normalizeLabelSettings = (
+    settings: GraphSocket["labelSettings"] | undefined,
+  ): GraphSocket["labelSettings"] | undefined => {
+    if (!settings) {
+      return undefined;
+    }
+    const offset = settings.offset;
+    const normalizedOffset =
+      offset && (offset.x !== 0 || offset.y !== 0) ? offset : undefined;
+    const normalizedPosition =
+      settings.position === "auto" ? undefined : settings.position;
+    const normalized: GraphSocket["labelSettings"] = {
+      ...(settings.visible !== undefined ? { visible: settings.visible } : {}),
+      ...(normalizedPosition ? { position: normalizedPosition } : {}),
+      ...(normalizedOffset ? { offset: normalizedOffset } : {}),
+    };
+    if (
+      normalized.visible === undefined &&
+      normalized.position === undefined &&
+      normalized.offset === undefined
+    ) {
+      return undefined;
+    }
+    return normalized;
+  };
+
+  const normalizeSocketMetadata = (
+    metadata: GraphSocket["metadata"] | undefined,
+  ): GraphSocket["metadata"] | undefined => {
+    if (!metadata) {
+      return undefined;
+    }
+    const units = metadata.units?.trim();
+    const format =
+      metadata.format && metadata.format !== "auto"
+        ? metadata.format
+        : undefined;
+    const normalized: GraphSocket["metadata"] = {
+      ...(units ? { units } : {}),
+      ...(metadata.min !== undefined ? { min: metadata.min } : {}),
+      ...(metadata.max !== undefined ? { max: metadata.max } : {}),
+      ...(metadata.step !== undefined ? { step: metadata.step } : {}),
+      ...(format ? { format } : {}),
+    };
+    if (
+      normalized.units === undefined &&
+      normalized.min === undefined &&
+      normalized.max === undefined &&
+      normalized.step === undefined &&
+      normalized.format === undefined
+    ) {
+      return undefined;
+    }
+    return normalized;
+  };
+
+  const updateSubgraphSocket = (
+    node: GraphNode,
+    socketId: string,
+    // eslint-disable-next-line no-unused-vars -- type-only param name for clarity
+    updater: (socket: GraphSocket) => GraphSocket,
+  ): void => {
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      return;
+    }
+    const socket = sockets.find((entry) => entry.id === socketId);
+    if (!socket) {
+      return;
+    }
+    const nextSocket = updater(socket);
+    if (nextSocket === socket) {
+      return;
+    }
+    const nextSockets = sockets.map((entry) =>
+      entry.id === socket.id ? nextSocket : entry,
+    );
+    commitSubgraphIoUpdate({ ...node }, nextSockets);
+  };
+
+  const updateSubgraphSocketLabelVisibility = (
+    node: GraphNode,
+    socketId: string,
+    visible: boolean,
+  ): void => {
+    updateSubgraphSocket(node, socketId, (socket) => ({
+      ...socket,
+      labelSettings: normalizeLabelSettings({
+        ...socket.labelSettings,
+        visible,
+      }),
+    }));
+  };
+
+  const updateSubgraphSocketLabelPosition = (
+    node: GraphNode,
+    socketId: string,
+    position: GraphSocketLabelPosition,
+  ): void => {
+    updateSubgraphSocket(node, socketId, (socket) => ({
+      ...socket,
+      labelSettings: normalizeLabelSettings({
+        ...socket.labelSettings,
+        position,
+      }),
+    }));
+  };
+
+  const updateSubgraphSocketLabelOffset = (
+    node: GraphNode,
+    socketId: string,
+    axis: "x" | "y",
+    raw: string,
+  ): void => {
+    const value = parseOptionalNumber(raw);
+    updateSubgraphSocket(node, socketId, (socket) => {
+      const current = socket.labelSettings?.offset ?? { x: 0, y: 0 };
+      const nextOffset = {
+        ...current,
+        [axis]: value ?? 0,
+      };
+      return {
+        ...socket,
+        labelSettings: normalizeLabelSettings({
+          ...socket.labelSettings,
+          offset: nextOffset,
+        }),
+      };
+    });
+  };
+
+  const updateSubgraphSocketMetadata = (
+    node: GraphNode,
+    socketId: string,
+    next: Partial<NonNullable<GraphSocket["metadata"]>>,
+  ): void => {
+    updateSubgraphSocket(node, socketId, (socket) => ({
+      ...socket,
+      metadata: normalizeSocketMetadata({
+        ...socket.metadata,
+        ...next,
+      }),
+    }));
+  };
+
   const sanitizeSocketName = (value: string): string => {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : "socket";
@@ -1487,9 +2305,19 @@ export default function EditorShell() {
       notifyToast("Rename blocked", "Socket names must be unique.");
       return;
     }
+    const nextLabel =
+      socket.label === undefined || socket.label === socket.name
+        ? name
+        : socket.label;
     const nextSockets = sockets.map((entry) =>
-      entry.id === socket.id ? { ...entry, name } : entry,
+      entry.id === socket.id ? { ...entry, name, label: nextLabel } : entry,
     );
+    const nextPromotedParams =
+      socket.direction === "input"
+        ? (params.promotedParams ?? []).map((entry) =>
+            entry.key === socket.name ? { ...entry, key: name } : entry,
+          )
+        : params.promotedParams;
     const nextParams =
       socket.direction === "input"
         ? {
@@ -1497,12 +2325,17 @@ export default function EditorShell() {
             inputs: params.inputs.map((entry) =>
               entry.key === socket.name ? { ...entry, key: name } : entry,
             ),
+            promotedParams:
+              nextPromotedParams && nextPromotedParams.length > 0
+                ? nextPromotedParams
+                : undefined,
           }
         : {
             ...params,
             outputs: params.outputs.map((entry) =>
               entry.key === socket.name ? { ...entry, key: name } : entry,
             ),
+            promotedParams: params.promotedParams,
           };
     commitSubgraphIoUpdate({ ...node }, nextSockets, nextParams);
   };
@@ -1518,6 +2351,13 @@ export default function EditorShell() {
     }
     const socket = sockets.find((entry) => entry.id === socketId);
     if (!socket || socket.dataType === nextType) {
+      return;
+    }
+    const params = selectedSubgraphParams();
+    if (
+      socket.direction === "input" &&
+      params?.promotedParams?.some((entry) => entry.key === socket.name)
+    ) {
       return;
     }
     const nextSockets = sockets.map((entry) =>
@@ -1539,6 +2379,13 @@ export default function EditorShell() {
     if (!socket || socket.required === required) {
       return;
     }
+    const params = selectedSubgraphParams();
+    if (
+      socket.direction === "input" &&
+      params?.promotedParams?.some((entry) => entry.key === socket.name)
+    ) {
+      return;
+    }
     const nextSockets = sockets.map((entry) =>
       entry.id === socket.id ? { ...entry, required } : entry,
     );
@@ -1558,10 +2405,109 @@ export default function EditorShell() {
     if (!socket) {
       return;
     }
+    const params = selectedSubgraphParams();
+    if (
+      socket.direction === "input" &&
+      params?.promotedParams?.some((entry) => entry.key === socket.name)
+    ) {
+      return;
+    }
     const nextSockets = sockets.map((entry) =>
       entry.id === socket.id ? { ...entry, defaultValue: value } : entry,
     );
     commitSubgraphIoUpdate({ ...node }, nextSockets);
+  };
+
+  const updateSubgraphParamPromotion = (
+    targetNode: GraphNode,
+    field: ParamFieldDefinition,
+    enabled: boolean,
+  ): void => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params) {
+      return;
+    }
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      return;
+    }
+    const promotions = params.promotedParams ?? [];
+    const promotionKey = makePromotionKey(targetNode.id, field.id);
+    const existing = promotions.find(
+      (entry) => makePromotionKey(entry.nodeId, entry.fieldId) === promotionKey,
+    );
+    if (enabled) {
+      if (existing) {
+        return;
+      }
+      const inputNames = new Set(
+        sockets
+          .filter((socket) => socket.direction === "input")
+          .map((socket) => socket.name),
+      );
+      const nodeLabel =
+        getNodeCatalogEntry(targetNode.type)?.label ?? targetNode.type;
+      const baseName = sanitizeSocketName(`${nodeLabel}.${field.label}`);
+      let candidate = baseName;
+      let index = 1;
+      while (inputNames.has(candidate)) {
+        candidate = `${baseName}-${index}`;
+        index += 1;
+      }
+      const socketId = makeSocketId(`${node.id}.${candidate}`);
+      const nextSocket: GraphSocket = {
+        id: socketId,
+        nodeId: node.id,
+        name: candidate,
+        label: candidate,
+        direction: "input",
+        dataType: getParamSocketType(field),
+        required: false,
+      };
+      const nextParams: SubgraphNodeParams = {
+        ...params,
+        promotedParams: [
+          ...promotions,
+          { key: candidate, nodeId: targetNode.id, fieldId: field.id },
+        ],
+      };
+      const nextNode: GraphNode = {
+        ...node,
+        inputs: [...node.inputs, socketId],
+        params: serializeSubgraphParams(nextParams),
+      };
+      const nextSockets = [...sockets, nextSocket];
+      commitSubgraphIoUpdate(nextNode, nextSockets, nextParams);
+      return;
+    }
+
+    if (!existing) {
+      return;
+    }
+    const socket = sockets.find(
+      (entry) => entry.direction === "input" && entry.name === existing.key,
+    );
+    if (!socket) {
+      return;
+    }
+    const nextParams: SubgraphNodeParams = {
+      ...params,
+      promotedParams: promotions.filter(
+        (entry) =>
+          makePromotionKey(entry.nodeId, entry.fieldId) !== promotionKey,
+      ),
+    };
+    if (nextParams.promotedParams?.length === 0) {
+      nextParams.promotedParams = undefined;
+    }
+    const nextNode: GraphNode = {
+      ...node,
+      inputs: node.inputs.filter((id) => id !== socket.id),
+      params: serializeSubgraphParams(nextParams),
+    };
+    const nextSockets = sockets.filter((entry) => entry.id !== socket.id);
+    commitSubgraphIoUpdate(nextNode, nextSockets, nextParams);
   };
 
   const updateSubgraphSocketOrder = (
@@ -1738,6 +2684,13 @@ export default function EditorShell() {
     }
     const execError = store.outputError();
     if (execError) {
+      if (isExecutionCanceled(execError)) {
+        setOutputStatus("idle");
+        setOutputMessage("Canceled");
+        setOutputArtifact(null);
+        lastOutputError = null;
+        return;
+      }
       const message = formatExecError(execError);
       setOutputStatus("error");
       setOutputMessage(message);
@@ -1765,6 +2718,24 @@ export default function EditorShell() {
     lastOutputError = null;
   });
 
+  createEffect(() => {
+    if (outputStatus() !== "running") {
+      return;
+    }
+    const progress = outputProgress();
+    if (!progress || progress.total === 0) {
+      setOutputMessage(null);
+      return;
+    }
+    const percent = Math.min(
+      100,
+      Math.round((progress.completed / progress.total) * 100),
+    );
+    setOutputMessage(
+      `Evaluating ${progress.completed}/${progress.total} (${percent}%)`,
+    );
+  });
+
   const applyCommands = (label: string, commands: GraphCommand[]): boolean => {
     if (commands.length === 0) {
       return false;
@@ -1784,28 +2755,33 @@ export default function EditorShell() {
     return changed;
   };
 
-  const deleteSelection = (): void => {
+  const createWireIdFactory = (graphSnapshot: Graph): (() => WireId) => {
+    const usedWireIds = new Set<WireId>(graphSnapshot.wires.keys());
+    let index = 1;
+    return () => {
+      let candidate = makeWireId(`wire-${index}`);
+      while (usedWireIds.has(candidate)) {
+        index += 1;
+        candidate = makeWireId(`wire-${index}`);
+      }
+      usedWireIds.add(candidate);
+      index += 1;
+      return candidate;
+    };
+  };
+
+  const deleteSelection = (
+    reconnectMode: DeleteSelectionMode = "remove",
+  ): void => {
     const graphSnapshot = store.graph();
-    const nodeCommands = selectedNodeIds()
-      .map((nodeId) => createRemoveNodeCommand(graphSnapshot, nodeId))
-      .filter((command): command is NonNullable<typeof command> => !!command);
-    const frameCommands = selectedFrameIds()
-      .map((frameId) => createRemoveFrameCommand(graphSnapshot, frameId))
-      .filter((command): command is NonNullable<typeof command> => !!command);
-    const removedWireIds = new Set<WireId>();
-    for (const command of nodeCommands) {
-      if (command.kind !== "remove-node") {
-        continue;
-      }
-      for (const wire of command.wires) {
-        removedWireIds.add(wire.id);
-      }
-    }
-    const wireCommands = selectedWireIds()
-      .filter((wireId) => !removedWireIds.has(wireId))
-      .map((wireId) => createRemoveWireCommand(graphSnapshot, wireId))
-      .filter((command): command is NonNullable<typeof command> => !!command);
-    const commands = [...nodeCommands, ...frameCommands, ...wireCommands];
+    const commands = buildDeleteSelectionCommands({
+      graph: graphSnapshot,
+      nodeIds: selectedNodeIds(),
+      frameIds: selectedFrameIds(),
+      wireIds: selectedWireIds(),
+      reconnectMode,
+      createWireId: createWireIdFactory(graphSnapshot),
+    });
     if (applyCommands("delete-selection", commands)) {
       store.clearSelection();
     }
@@ -1823,6 +2799,16 @@ export default function EditorShell() {
       return;
     }
     store.toggleCollapsedNodes(new Set<NodeId>(ids));
+  };
+  const toggleFrameCollapsedSelection = (): void => {
+    if (!isSingleFrameSelection()) {
+      return;
+    }
+    const frame = selectedFrame();
+    if (!frame) {
+      return;
+    }
+    updateFrame(frame.id, { collapsed: !frame.collapsed });
   };
   const clearSelection = (): void => {
     store.clearSelection();
@@ -1851,6 +2837,14 @@ export default function EditorShell() {
         onSelect: () => store.redo(),
       },
       {
+        id: "command:open-settings",
+        label: "Open settings",
+        description: "Configure editor preferences",
+        kind: "command",
+        keywords: ["settings", "preferences"],
+        onSelect: () => setSettingsOpen(true),
+      },
+      {
         id: "command:delete-selection",
         label: "Delete selection",
         description: "Remove selected nodes, frames, or wires",
@@ -1858,6 +2852,15 @@ export default function EditorShell() {
         enabled: hasSelection,
         keywords: ["remove", "delete"],
         onSelect: () => deleteSelection(),
+      },
+      {
+        id: "command:delete-selection-bridge",
+        label: "Delete selection + bridge wires",
+        description: "Remove selected nodes and reconnect compatible wires",
+        kind: "command",
+        enabled: hasNodeSelection,
+        keywords: ["remove", "delete", "bridge", "reconnect"],
+        onSelect: () => deleteSelection("bridge"),
       },
       {
         id: "command:clear-selection",
@@ -1934,7 +2937,30 @@ export default function EditorShell() {
             wireHoverLabels: !store.settings().wireHoverLabels,
           }),
       },
+      {
+        id: "control:execution-viz",
+        label: "Execution visualization",
+        description: "Toggle execution flow badges and timing UI",
+        kind: "control",
+        stateLabel: settingsSnapshot.executionVizEnabled ? "On" : "Off",
+        keywords: ["execution", "timing", "flow", "debug"],
+        onSelect: () =>
+          store.updateSettings({
+            executionVizEnabled: !store.settings().executionVizEnabled,
+          }),
+      },
     ];
+    if (isDebugMode) {
+      controlEntries.push({
+        id: "control:debug-panel",
+        label: "Debug panel",
+        description: "Toggle dev-only debug panel",
+        kind: "control",
+        stateLabel: debugPanelOpen() ? "On" : "Off",
+        keywords: ["debug", "panel", "devtools"],
+        onSelect: () => setDebugPanelOpen((current) => !current),
+      });
+    }
 
     const nodeEntries: CommandPaletteEntry[] = NODE_CATALOG.map((entry) => {
       const keywords = [entry.type, entry.label, entry.description].filter(
@@ -1969,7 +2995,11 @@ export default function EditorShell() {
       </div>
 
       <div class={overlayRoot}>
-        <div class="absolute left-3 top-3 flex items-center gap-2">
+        <div
+          class="absolute left-3 top-3 flex items-center gap-2"
+          role="navigation"
+          aria-label="Workspace navigation"
+        >
           <div class={appBadge}>
             <Sparkles class="h-4 w-4 text-[color:var(--status-info-text)]" />
             <span class="sr-only">Shadr</span>
@@ -2049,6 +3079,16 @@ export default function EditorShell() {
             <Redo2 class="h-3 w-3" />
             <span class="sr-only">Redo</span>
           </button>
+          {isDebugMode ? (
+            <button
+              class={`${historyButtonBase} ${
+                debugPanelOpen() ? debugButtonActive : historyButtonActive
+              }`}
+              onClick={() => setDebugPanelOpen((current) => !current)}
+            >
+              Debug
+            </button>
+          ) : null}
         </div>
 
         <div class="absolute bottom-4 left-3 flex flex-wrap items-center gap-2">
@@ -2093,7 +3133,7 @@ export default function EditorShell() {
         ) : null}
 
         <div class="absolute bottom-4 left-1/2 -translate-x-1/2">
-          <div class={controlMenuRoot}>
+          <div class={controlMenuRoot} role="region" aria-label="Control menu">
             {selectionCount() > 0 ? (
               <>
                 <div class="flex flex-wrap items-center justify-between gap-2">
@@ -2127,6 +3167,28 @@ export default function EditorShell() {
                           Collapse
                         </button>
                       </>
+                    ) : null}
+                    {isSingleFrameSelection() ? (
+                      <button
+                        class={`${controlMenuButton} ${
+                          isCollapsedFrameSelection()
+                            ? controlMenuInfo
+                            : controlMenuMuted
+                        }`}
+                        onClick={toggleFrameCollapsedSelection}
+                      >
+                        <Minimize2 class="h-3.5 w-3.5" />
+                        {isCollapsedFrameSelection() ? "Expand" : "Collapse"}
+                      </button>
+                    ) : null}
+                    {selectedNodeIds().length > 0 ? (
+                      <button
+                        class={`${controlMenuButton} ${controlMenuInfo}`}
+                        onClick={() => deleteSelection("bridge")}
+                      >
+                        <Trash2 class="h-3.5 w-3.5" />
+                        Delete + Bridge
+                      </button>
                     ) : null}
                     <button
                       class={`${controlMenuButton} ${controlMenuDanger}`}
@@ -2176,40 +3238,10 @@ export default function EditorShell() {
                 <div class="flex flex-wrap items-center gap-2">
                   <span class={controlMenuTitle}>Settings</span>
                   <button
-                    class={`${controlMenuButton} ${
-                      gridVisible() ? controlMenuInfo : controlMenuMuted
-                    }`}
-                    onClick={() =>
-                      store.updateSettings({
-                        gridVisible: !store.settings().gridVisible,
-                      })
-                    }
+                    class={`${controlMenuButton} ${controlMenuMuted}`}
+                    onClick={() => setSettingsOpen(true)}
                   >
-                    Grid {gridVisible() ? "On" : "Off"}
-                  </button>
-                  <button
-                    class={`${controlMenuButton} ${
-                      snapToGrid() ? controlMenuInfo : controlMenuMuted
-                    }`}
-                    onClick={() =>
-                      store.updateSettings({
-                        snapToGrid: !store.settings().snapToGrid,
-                      })
-                    }
-                  >
-                    Snap {snapToGrid() ? "On" : "Off"}
-                  </button>
-                  <button
-                    class={`${controlMenuButton} ${
-                      wireHoverLabels() ? controlMenuInfo : controlMenuMuted
-                    }`}
-                    onClick={() =>
-                      store.updateSettings({
-                        wireHoverLabels: !store.settings().wireHoverLabels,
-                      })
-                    }
-                  >
-                    Wire Labels {wireHoverLabels() ? "On" : "Off"}
+                    Open settings
                   </button>
                 </div>
               </>
@@ -2227,8 +3259,46 @@ export default function EditorShell() {
           onChange={handleImportFile}
         />
 
+        {(() => {
+          const execViz = execVisualization();
+          if (!executionVizEnabled() || !execViz) {
+            return null;
+          }
+          return (
+            <div class={execTimelineAnchor}>
+              <ExecTimelinePanel
+                entries={execViz.timeline}
+                totalMs={execViz.totalMs}
+                active={execViz.active}
+              />
+            </div>
+          );
+        })()}
+
+        {isDebugMode && debugPanelOpen() ? (
+          <div class="absolute bottom-24 right-3">
+            <DebugPanel
+              graph={store.graph()}
+              dirtyState={store.dirtyState()}
+              execHistory={store.execHistory()}
+              debugEvents={store.debugEvents()}
+              watchedSockets={store.watchedSockets()}
+              selectedNodeId={selectedNode()?.id ?? null}
+              onAddWatchedSocket={store.addWatchedSocket}
+              onRemoveWatchedSocket={store.removeWatchedSocket}
+              onClearWatchedSockets={store.clearWatchedSockets}
+              onClearExecHistory={store.clearExecHistory}
+              onClearDebugEvents={store.clearDebugEvents}
+              onClose={() => setDebugPanelOpen(false)}
+            />
+          </div>
+        ) : null}
+
         {selectionCount() > 0 ? (
-          <aside class="absolute right-3 top-1/2 -translate-y-1/2">
+          <aside
+            class="absolute right-3 top-1/2 -translate-y-1/2"
+            aria-label="Selection details"
+          >
             <div class={sidePanelRoot}>
               <div class="flex items-center justify-between gap-3">
                 <div class="flex items-center gap-2">
@@ -2296,6 +3366,108 @@ export default function EditorShell() {
                     ) : null}
                   </div>
 
+                  {selectedNodeErrors().length > 0 ? (
+                    <div class="flex flex-col gap-2">
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                          <AlertTriangle class="h-3.5 w-3.5 text-[color:var(--status-danger-text)]" />
+                          <span class={sidePanelTitle}>Errors</span>
+                        </div>
+                        <span class={`${sidePanelChip} ${sidePanelDanger}`}>
+                          {nodeErrorCounts().total}
+                        </span>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <For each={["all", "error", "warning"] as const}>
+                          {(filter) => (
+                            <button
+                              class={`${sidePanelChip} ${sidePanelChipButton} ${
+                                nodeErrorFilter() === filter
+                                  ? nodeErrorFilterTone(filter)
+                                  : sidePanelMuted
+                              }`}
+                              type="button"
+                              onClick={() => setNodeErrorFilter(filter)}
+                            >
+                              {formatNodeErrorFilterLabel(filter)}
+                              {filter === "all"
+                                ? ` (${nodeErrorCounts().total})`
+                                : filter === "error"
+                                  ? ` (${nodeErrorCounts().error})`
+                                  : ` (${nodeErrorCounts().warning})`}
+                            </button>
+                          )}
+                        </For>
+                      </div>
+                      <div class="flex flex-col gap-2">
+                        <For each={filteredNodeErrors()}>
+                          {(entry) => (
+                            <details
+                              class={`${sidePanelRowDense} ${
+                                entry.severity === "error"
+                                  ? sidePanelDanger
+                                  : sidePanelWarn
+                              }`}
+                            >
+                              <summary
+                                class="flex cursor-pointer list-none items-center justify-between gap-2"
+                                title={`${entry.title}: ${entry.summary}`}
+                              >
+                                <div class="flex min-w-0 flex-1 items-center gap-2">
+                                  <span
+                                    class={`${sidePanelChip} ${
+                                      entry.severity === "error"
+                                        ? sidePanelDanger
+                                        : sidePanelWarn
+                                    }`}
+                                  >
+                                    {entry.severity === "error"
+                                      ? "Error"
+                                      : "Warn"}
+                                  </span>
+                                  <span class="truncate text-[0.7rem] text-[color:var(--text-strong)]">
+                                    {entry.summary}
+                                  </span>
+                                </div>
+                                <span
+                                  class={`${sidePanelChip} ${sidePanelMuted}`}
+                                >
+                                  Details
+                                </span>
+                              </summary>
+                              <div class="flex flex-col gap-1 text-[0.65rem] text-[color:var(--text-soft)]">
+                                <span class="font-semibold text-[color:var(--text-strong)]">
+                                  {entry.title}
+                                </span>
+                                {entry.detail ? (
+                                  <span>{entry.detail}</span>
+                                ) : null}
+                                {isDebugMode && entry.context.length > 0 ? (
+                                  <div class="mt-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.6rem] text-[color:var(--text-muted)]">
+                                    <For each={entry.context}>
+                                      {(line) => <div>{line}</div>}
+                                    </For>
+                                  </div>
+                                ) : null}
+                                {isDebugMode && entry.stack ? (
+                                  <pre class="mt-1 max-h-28 overflow-auto rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.55rem] text-[color:var(--text-muted)]">
+                                    {entry.stack}
+                                  </pre>
+                                ) : null}
+                              </div>
+                            </details>
+                          )}
+                        </For>
+                        {filteredNodeErrors().length === 0 ? (
+                          <div class={`${sidePanelRow} ${sidePanelMuted}`}>
+                            No {formatNodeErrorFilterLabel(nodeErrorFilter())}{" "}
+                            for this node.
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+
                   {selectedOutputType() ? (
                     <div class="flex flex-col gap-2">
                       <div class="flex items-center gap-2">
@@ -2315,6 +3487,15 @@ export default function EditorShell() {
                         <span class={`${sidePanelChip} ${sidePanelMuted}`}>
                           {outputLabel()}
                         </span>
+                        {outputStatus() === "running" ? (
+                          <button
+                            class={`${sidePanelChip} ${sidePanelWarn} ${sidePanelChipButton}`}
+                            type="button"
+                            onClick={() => store.cancelOutputEvaluation()}
+                          >
+                            Cancel
+                          </button>
+                        ) : null}
                       </div>
                       {outputMessage() ? (
                         <div class={`${sidePanelRow} ${sidePanelDanger}`}>
@@ -2376,21 +3557,30 @@ export default function EditorShell() {
                             {(row) => (
                               <div class={ioPanel}>
                                 <div class="flex items-center justify-between gap-2">
-                                  <input
-                                    class={ioInput}
-                                    value={row.socket.name}
-                                    onChange={(event) => {
-                                      const node = selectedSubgraphNode();
-                                      if (!node) {
-                                        return;
-                                      }
-                                      updateSubgraphSocketName(
-                                        node,
-                                        row.socket.id,
-                                        event.currentTarget.value,
-                                      );
-                                    }}
-                                  />
+                                  <div class="flex min-w-0 flex-1 items-center gap-2">
+                                    <input
+                                      class={ioInput}
+                                      value={row.socket.name}
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketName(
+                                          node,
+                                          row.socket.id,
+                                          event.currentTarget.value,
+                                        );
+                                      }}
+                                    />
+                                    {row.promotion ? (
+                                      <span
+                                        class={`${sidePanelChip} ${sidePanelMuted}`}
+                                      >
+                                        Promoted
+                                      </span>
+                                    ) : null}
+                                  </div>
                                   <div class="flex items-center gap-1">
                                     <button
                                       class={`${controlMenuButton} ${controlMenuMuted}`}
@@ -2439,6 +3629,7 @@ export default function EditorShell() {
                                     <select
                                       class={ioSelect}
                                       value={row.socket.dataType}
+                                      disabled={!!row.promotion}
                                       onChange={(event) => {
                                         const node = selectedSubgraphNode();
                                         if (!node) {
@@ -2467,6 +3658,7 @@ export default function EditorShell() {
                                       <input
                                         type="checkbox"
                                         checked={row.socket.required}
+                                        disabled={!!row.promotion}
                                         onChange={(event) => {
                                           const node = selectedSubgraphNode();
                                           if (!node) {
@@ -2491,6 +3683,7 @@ export default function EditorShell() {
                                           checked={
                                             row.socket.defaultValue === true
                                           }
+                                          disabled={!!row.promotion}
                                           onChange={(event) => {
                                             const node = selectedSubgraphNode();
                                             if (!node) {
@@ -2512,6 +3705,7 @@ export default function EditorShell() {
                                           row.socket.defaultValue,
                                         )}
                                         placeholder="(none)"
+                                        disabled={!!row.promotion}
                                         onChange={(event) => {
                                           const node = selectedSubgraphNode();
                                           if (!node) {
@@ -2528,7 +3722,8 @@ export default function EditorShell() {
                                     <button
                                       class={`${controlMenuButton} ${controlMenuMuted}`}
                                       disabled={
-                                        row.socket.defaultValue === undefined
+                                        row.socket.defaultValue === undefined ||
+                                        !!row.promotion
                                       }
                                       onClick={() => {
                                         const node = selectedSubgraphNode();
@@ -2544,6 +3739,224 @@ export default function EditorShell() {
                                     >
                                       Clear default
                                     </button>
+                                  </div>
+                                  <div class="col-span-2 flex flex-col gap-1">
+                                    <span class={ioLabel}>Label</span>
+                                    <div class="grid grid-cols-2 gap-2">
+                                      <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                        <input
+                                          type="checkbox"
+                                          checked={
+                                            row.socket.labelSettings
+                                              ?.visible !== false
+                                          }
+                                          onChange={(event) => {
+                                            const node = selectedSubgraphNode();
+                                            if (!node) {
+                                              return;
+                                            }
+                                            updateSubgraphSocketLabelVisibility(
+                                              node,
+                                              row.socket.id,
+                                              event.currentTarget.checked,
+                                            );
+                                          }}
+                                        />
+                                        Show
+                                      </label>
+                                      <select
+                                        class={ioSelect}
+                                        value={
+                                          row.socket.labelSettings?.position ??
+                                          "auto"
+                                        }
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketLabelPosition(
+                                            node,
+                                            row.socket.id,
+                                            event.currentTarget
+                                              .value as GraphSocketLabelPosition,
+                                          );
+                                        }}
+                                      >
+                                        <For each={socketLabelPositions}>
+                                          {(position) => (
+                                            <option value={position}>
+                                              {formatSocketLabelPosition(
+                                                position,
+                                              )}
+                                            </option>
+                                          )}
+                                        </For>
+                                      </select>
+                                      <input
+                                        class={ioInput}
+                                        value={
+                                          row.socket.labelSettings?.offset?.x ??
+                                          ""
+                                        }
+                                        placeholder="Offset X"
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketLabelOffset(
+                                            node,
+                                            row.socket.id,
+                                            "x",
+                                            event.currentTarget.value,
+                                          );
+                                        }}
+                                      />
+                                      <input
+                                        class={ioInput}
+                                        value={
+                                          row.socket.labelSettings?.offset?.y ??
+                                          ""
+                                        }
+                                        placeholder="Offset Y"
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketLabelOffset(
+                                            node,
+                                            row.socket.id,
+                                            "y",
+                                            event.currentTarget.value,
+                                          );
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                  <div class="col-span-2 grid grid-cols-2 gap-2">
+                                    <div class="flex flex-col gap-1">
+                                      <span class={ioLabel}>Units</span>
+                                      <input
+                                        class={ioInput}
+                                        value={row.socket.metadata?.units ?? ""}
+                                        placeholder="(none)"
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketMetadata(
+                                            node,
+                                            row.socket.id,
+                                            {
+                                              units: event.currentTarget.value,
+                                            },
+                                          );
+                                        }}
+                                      />
+                                    </div>
+                                    <div class="flex flex-col gap-1">
+                                      <span class={ioLabel}>Format</span>
+                                      <select
+                                        class={ioSelect}
+                                        value={
+                                          row.socket.metadata?.format ?? "auto"
+                                        }
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketMetadata(
+                                            node,
+                                            row.socket.id,
+                                            {
+                                              format: event.currentTarget
+                                                .value as GraphSocketNumberFormat,
+                                            },
+                                          );
+                                        }}
+                                      >
+                                        <For each={socketNumberFormats}>
+                                          {(format) => (
+                                            <option value={format}>
+                                              {formatSocketNumberFormat(format)}
+                                            </option>
+                                          )}
+                                        </For>
+                                      </select>
+                                    </div>
+                                    <div class="flex flex-col gap-1">
+                                      <span class={ioLabel}>Min</span>
+                                      <input
+                                        class={ioInput}
+                                        value={row.socket.metadata?.min ?? ""}
+                                        placeholder="(none)"
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketMetadata(
+                                            node,
+                                            row.socket.id,
+                                            {
+                                              min: parseOptionalNumber(
+                                                event.currentTarget.value,
+                                              ),
+                                            },
+                                          );
+                                        }}
+                                      />
+                                    </div>
+                                    <div class="flex flex-col gap-1">
+                                      <span class={ioLabel}>Max</span>
+                                      <input
+                                        class={ioInput}
+                                        value={row.socket.metadata?.max ?? ""}
+                                        placeholder="(none)"
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketMetadata(
+                                            node,
+                                            row.socket.id,
+                                            {
+                                              max: parseOptionalNumber(
+                                                event.currentTarget.value,
+                                              ),
+                                            },
+                                          );
+                                        }}
+                                      />
+                                    </div>
+                                    <div class="col-span-2 flex flex-col gap-1">
+                                      <span class={ioLabel}>Step</span>
+                                      <input
+                                        class={ioInput}
+                                        value={row.socket.metadata?.step ?? ""}
+                                        placeholder="(none)"
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketMetadata(
+                                            node,
+                                            row.socket.id,
+                                            {
+                                              step: parseOptionalNumber(
+                                                event.currentTarget.value,
+                                              ),
+                                            },
+                                          );
+                                        }}
+                                      />
+                                    </div>
                                   </div>
                                 </div>
                               </div>
@@ -2623,9 +4036,282 @@ export default function EditorShell() {
                                     {getSocketTypeLabel(row.socket.dataType)}
                                   </div>
                                 </div>
+                                <div class="flex flex-col gap-1">
+                                  <span class={ioLabel}>Label</span>
+                                  <div class="grid grid-cols-2 gap-2">
+                                    <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={
+                                          row.socket.labelSettings?.visible !==
+                                          false
+                                        }
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketLabelVisibility(
+                                            node,
+                                            row.socket.id,
+                                            event.currentTarget.checked,
+                                          );
+                                        }}
+                                      />
+                                      Show
+                                    </label>
+                                    <select
+                                      class={ioSelect}
+                                      value={
+                                        row.socket.labelSettings?.position ??
+                                        "auto"
+                                      }
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketLabelPosition(
+                                          node,
+                                          row.socket.id,
+                                          event.currentTarget
+                                            .value as GraphSocketLabelPosition,
+                                        );
+                                      }}
+                                    >
+                                      <For each={socketLabelPositions}>
+                                        {(position) => (
+                                          <option value={position}>
+                                            {formatSocketLabelPosition(
+                                              position,
+                                            )}
+                                          </option>
+                                        )}
+                                      </For>
+                                    </select>
+                                    <input
+                                      class={ioInput}
+                                      value={
+                                        row.socket.labelSettings?.offset?.x ??
+                                        ""
+                                      }
+                                      placeholder="Offset X"
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketLabelOffset(
+                                          node,
+                                          row.socket.id,
+                                          "x",
+                                          event.currentTarget.value,
+                                        );
+                                      }}
+                                    />
+                                    <input
+                                      class={ioInput}
+                                      value={
+                                        row.socket.labelSettings?.offset?.y ??
+                                        ""
+                                      }
+                                      placeholder="Offset Y"
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketLabelOffset(
+                                          node,
+                                          row.socket.id,
+                                          "y",
+                                          event.currentTarget.value,
+                                        );
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2">
+                                  <div class="flex flex-col gap-1">
+                                    <span class={ioLabel}>Units</span>
+                                    <input
+                                      class={ioInput}
+                                      value={row.socket.metadata?.units ?? ""}
+                                      placeholder="(none)"
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketMetadata(
+                                          node,
+                                          row.socket.id,
+                                          {
+                                            units: event.currentTarget.value,
+                                          },
+                                        );
+                                      }}
+                                    />
+                                  </div>
+                                  <div class="flex flex-col gap-1">
+                                    <span class={ioLabel}>Format</span>
+                                    <select
+                                      class={ioSelect}
+                                      value={
+                                        row.socket.metadata?.format ?? "auto"
+                                      }
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketMetadata(
+                                          node,
+                                          row.socket.id,
+                                          {
+                                            format: event.currentTarget
+                                              .value as GraphSocketNumberFormat,
+                                          },
+                                        );
+                                      }}
+                                    >
+                                      <For each={socketNumberFormats}>
+                                        {(format) => (
+                                          <option value={format}>
+                                            {formatSocketNumberFormat(format)}
+                                          </option>
+                                        )}
+                                      </For>
+                                    </select>
+                                  </div>
+                                  <div class="flex flex-col gap-1">
+                                    <span class={ioLabel}>Min</span>
+                                    <input
+                                      class={ioInput}
+                                      value={row.socket.metadata?.min ?? ""}
+                                      placeholder="(none)"
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketMetadata(
+                                          node,
+                                          row.socket.id,
+                                          {
+                                            min: parseOptionalNumber(
+                                              event.currentTarget.value,
+                                            ),
+                                          },
+                                        );
+                                      }}
+                                    />
+                                  </div>
+                                  <div class="flex flex-col gap-1">
+                                    <span class={ioLabel}>Max</span>
+                                    <input
+                                      class={ioInput}
+                                      value={row.socket.metadata?.max ?? ""}
+                                      placeholder="(none)"
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketMetadata(
+                                          node,
+                                          row.socket.id,
+                                          {
+                                            max: parseOptionalNumber(
+                                              event.currentTarget.value,
+                                            ),
+                                          },
+                                        );
+                                      }}
+                                    />
+                                  </div>
+                                  <div class="col-span-2 flex flex-col gap-1">
+                                    <span class={ioLabel}>Step</span>
+                                    <input
+                                      class={ioInput}
+                                      value={row.socket.metadata?.step ?? ""}
+                                      placeholder="(none)"
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketMetadata(
+                                          node,
+                                          row.socket.id,
+                                          {
+                                            step: parseOptionalNumber(
+                                              event.currentTarget.value,
+                                            ),
+                                          },
+                                        );
+                                      }}
+                                    />
+                                  </div>
+                                </div>
                               </div>
                             )}
                           </For>
+
+                          <div class="flex items-center justify-between">
+                            <span class={sidePanelTitle}>Promoted Params</span>
+                            <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                              {subgraphPromotedCount()}
+                            </span>
+                          </div>
+                          {subgraphPromotableFields().length === 0 ? (
+                            <div class={`${sidePanelRow} ${sidePanelMuted}`}>
+                              No promotable params
+                            </div>
+                          ) : (
+                            <div class={ioPanel}>
+                              <For each={subgraphPromotableFields()}>
+                                {(row) => (
+                                  <div class="flex items-center justify-between gap-2">
+                                    <div class="flex min-w-0 flex-1 flex-col gap-1">
+                                      <span class={ioLabel}>{row.label}</span>
+                                      <span class="truncate text-[0.7rem] text-[color:var(--text-strong)]">
+                                        {row.field.label}
+                                      </span>
+                                      {row.promotion ? (
+                                        <span class="text-[0.6rem] text-[color:var(--text-muted)]">
+                                          Socket: {row.promotion.key} -{" "}
+                                          {getSocketTypeLabel(
+                                            getParamSocketType(row.field),
+                                          )}
+                                        </span>
+                                      ) : (
+                                        <span class="text-[0.6rem] text-[color:var(--text-muted)]">
+                                          {getSocketTypeLabel(
+                                            getParamSocketType(row.field),
+                                          )}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={!!row.promotion}
+                                        onChange={(event) =>
+                                          updateSubgraphParamPromotion(
+                                            row.node,
+                                            row.field,
+                                            event.currentTarget.checked,
+                                          )
+                                        }
+                                      />
+                                      Expose
+                                    </label>
+                                  </div>
+                                )}
+                              </For>
+                            </div>
+                          )}
 
                           <div class="flex items-center justify-between">
                             <span class={sidePanelTitle}>
@@ -2658,12 +4344,407 @@ export default function EditorShell() {
                   ) : null}
                 </div>
               ) : null}
+              {(() => {
+                const frame = selectedFrame();
+                if (!frame || selectedNode()) {
+                  return null;
+                }
+                const groups = frameSocketGroups();
+                return (
+                  <div class="flex flex-col gap-2">
+                    <div class="flex items-center gap-2">
+                      <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                      <span class={sidePanelTitle}>Frame</span>
+                    </div>
+                    <div class={ioPanel}>
+                      <div class="flex flex-col gap-1">
+                        <span class={ioLabel}>Title</span>
+                        <input
+                          class={ioInput}
+                          value={frame.title}
+                          onChange={(event) =>
+                            updateFrame(frame.id, {
+                              title: sanitizeFrameTitle(
+                                event.currentTarget.value,
+                              ),
+                            })
+                          }
+                        />
+                      </div>
+                      <div class="flex flex-col gap-1">
+                        <span class={ioLabel}>Description</span>
+                        <textarea
+                          class={`${ioInput} min-h-[64px] resize-y`}
+                          value={frame.description ?? ""}
+                          onChange={(event) =>
+                            updateFrame(frame.id, {
+                              description: event.currentTarget.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div class="flex items-center justify-between gap-3">
+                        <div class="flex flex-col gap-1">
+                          <span class={ioLabel}>Color</span>
+                          <input
+                            class={ioInput}
+                            type="color"
+                            value={formatFrameColor(frame.color)}
+                            onChange={(event) => {
+                              const parsed = parseFrameColor(
+                                event.currentTarget.value,
+                              );
+                              if (parsed !== null) {
+                                updateFrame(frame.id, { color: parsed });
+                              }
+                            }}
+                          />
+                        </div>
+                        <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                          <input
+                            type="checkbox"
+                            checked={frame.collapsed ?? false}
+                            onChange={(event) =>
+                              updateFrame(frame.id, {
+                                collapsed: event.currentTarget.checked,
+                              })
+                            }
+                          />
+                          Collapsed
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-between">
+                      <span class={sidePanelTitle}>Exposed Inputs</span>
+                      <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                        {groups.inputs.length}
+                      </span>
+                    </div>
+                    {groups.inputs.length === 0 ? (
+                      <div class={`${sidePanelRow} ${sidePanelMuted}`}>
+                        No inputs inside frame
+                      </div>
+                    ) : (
+                      <div class={ioPanel}>
+                        <For each={groups.inputs}>
+                          {(row) => (
+                            <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                              <input
+                                type="checkbox"
+                                checked={row.exposed}
+                                onChange={(event) =>
+                                  updateFrameExposure(
+                                    frame,
+                                    row.socket.id,
+                                    "input",
+                                    event.currentTarget.checked,
+                                  )
+                                }
+                              />
+                              <span class="truncate">
+                                {formatFrameSocketLabel(row)}
+                              </span>
+                            </label>
+                          )}
+                        </For>
+                      </div>
+                    )}
+
+                    <div class="flex items-center justify-between">
+                      <span class={sidePanelTitle}>Exposed Outputs</span>
+                      <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                        {groups.outputs.length}
+                      </span>
+                    </div>
+                    {groups.outputs.length === 0 ? (
+                      <div class={`${sidePanelRow} ${sidePanelMuted}`}>
+                        No outputs inside frame
+                      </div>
+                    ) : (
+                      <div class={ioPanel}>
+                        <For each={groups.outputs}>
+                          {(row) => (
+                            <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                              <input
+                                type="checkbox"
+                                checked={row.exposed}
+                                onChange={(event) =>
+                                  updateFrameExposure(
+                                    frame,
+                                    row.socket.id,
+                                    "output",
+                                    event.currentTarget.checked,
+                                  )
+                                }
+                              />
+                              <span class="truncate">
+                                {formatFrameSocketLabel(row)}
+                              </span>
+                            </label>
+                          )}
+                        </For>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </aside>
         ) : null}
       </div>
 
-      <Toast.Region class={toastRegion} duration={4200} limit={3}>
+      <Dialog.Root
+        open={settingsOpen()}
+        onOpenChange={setSettingsOpen}
+        modal={true}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay class="fixed inset-0 z-[var(--layer-modal-overlay)] bg-[color:var(--overlay-bg)] backdrop-blur-sm" />
+          <Dialog.Content class={settingsModalRoot}>
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="flex flex-col gap-1">
+                <Dialog.Title class={settingsTitle}>Settings</Dialog.Title>
+                <Dialog.Description class={settingsNote}>
+                  Configure global editor preferences.
+                </Dialog.Description>
+              </div>
+              <button
+                class={settingsClose}
+                type="button"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                class={`${settingsTabBase} ${
+                  settingsTab() === "canvas"
+                    ? settingsTabActive
+                    : settingsTabInactive
+                }`}
+                onClick={() => setSettingsTab("canvas")}
+              >
+                Canvas
+              </button>
+              <button
+                type="button"
+                class={`${settingsTabBase} ${
+                  settingsTab() === "interaction"
+                    ? settingsTabActive
+                    : settingsTabInactive
+                }`}
+                onClick={() => setSettingsTab("interaction")}
+              >
+                Interaction
+              </button>
+              <button
+                type="button"
+                class={`${settingsTabBase} ${
+                  settingsTab() === "display"
+                    ? settingsTabActive
+                    : settingsTabInactive
+                }`}
+                onClick={() => setSettingsTab("display")}
+              >
+                Display
+              </button>
+            </div>
+
+            <div class="mt-4">
+              {settingsTab() === "canvas" ? (
+                <div class={settingsSection}>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Grid visibility</span>
+                      <span class={settingsValue}>
+                        {gridVisible() ? "Visible" : "Hidden"}
+                      </span>
+                      <span class={settingsNote}>
+                        Show or hide the canvas grid.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      class={`${settingsToggle} ${
+                        gridVisible() ? controlMenuInfo : controlMenuMuted
+                      }`}
+                      onClick={() =>
+                        store.updateSettings({
+                          gridVisible: !store.settings().gridVisible,
+                        })
+                      }
+                    >
+                      {gridVisible() ? "On" : "Off"}
+                    </button>
+                  </div>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Snap to grid</span>
+                      <span class={settingsValue}>
+                        {snapToGrid() ? "Enabled" : "Disabled"}
+                      </span>
+                      <span class={settingsNote}>
+                        Align nodes to grid cells when moving.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      class={`${settingsToggle} ${
+                        snapToGrid() ? controlMenuInfo : controlMenuMuted
+                      }`}
+                      onClick={() =>
+                        store.updateSettings({
+                          snapToGrid: !store.settings().snapToGrid,
+                        })
+                      }
+                    >
+                      {snapToGrid() ? "On" : "Off"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {settingsTab() === "interaction" ? (
+                <div class={settingsSection}>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Zoom sensitivity</span>
+                      <span class={settingsValue}>
+                        {formatSensitivity(store.settings().zoomSensitivity)}
+                      </span>
+                      <span class={settingsNote}>
+                        Increase for faster zooming.
+                      </span>
+                    </div>
+                    <div class="flex w-full max-w-[280px] flex-col gap-2">
+                      <input
+                        class={settingsRange}
+                        type="range"
+                        min={MIN_ZOOM_SENSITIVITY}
+                        max={MAX_ZOOM_SENSITIVITY}
+                        step={0.05}
+                        value={store.settings().zoomSensitivity}
+                        onInput={(event) => {
+                          const nextValue = clamp(
+                            event.currentTarget.valueAsNumber,
+                            MIN_ZOOM_SENSITIVITY,
+                            MAX_ZOOM_SENSITIVITY,
+                          );
+                          store.updateSettings({ zoomSensitivity: nextValue });
+                        }}
+                      />
+                      <div class="flex items-center justify-between text-[0.6rem] text-[color:var(--text-muted)]">
+                        <span>Slow</span>
+                        <span>Fast</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Pan sensitivity</span>
+                      <span class={settingsValue}>
+                        {formatSensitivity(store.settings().panSensitivity)}
+                      </span>
+                      <span class={settingsNote}>
+                        Adjusts drag distance for canvas panning.
+                      </span>
+                    </div>
+                    <div class="flex w-full max-w-[280px] flex-col gap-2">
+                      <input
+                        class={settingsRange}
+                        type="range"
+                        min={MIN_PAN_SENSITIVITY}
+                        max={MAX_PAN_SENSITIVITY}
+                        step={0.05}
+                        value={store.settings().panSensitivity}
+                        onInput={(event) => {
+                          const nextValue = clamp(
+                            event.currentTarget.valueAsNumber,
+                            MIN_PAN_SENSITIVITY,
+                            MAX_PAN_SENSITIVITY,
+                          );
+                          store.updateSettings({ panSensitivity: nextValue });
+                        }}
+                      />
+                      <div class="flex items-center justify-between text-[0.6rem] text-[color:var(--text-muted)]">
+                        <span>Short</span>
+                        <span>Long</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {settingsTab() === "display" ? (
+                <div class={settingsSection}>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Wire hover labels</span>
+                      <span class={settingsValue}>
+                        {wireHoverLabels() ? "Visible" : "Hidden"}
+                      </span>
+                      <span class={settingsNote}>
+                        Show value/type labels when hovering wires.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      class={`${settingsToggle} ${
+                        wireHoverLabels() ? controlMenuInfo : controlMenuMuted
+                      }`}
+                      onClick={() =>
+                        store.updateSettings({
+                          wireHoverLabels: !store.settings().wireHoverLabels,
+                        })
+                      }
+                    >
+                      {wireHoverLabels() ? "On" : "Off"}
+                    </button>
+                  </div>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Execution visualization</span>
+                      <span class={settingsValue}>
+                        {executionVizEnabled() ? "Active" : "Inactive"}
+                      </span>
+                      <span class={settingsNote}>
+                        Draw execution badges and timing overlays.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      class={`${settingsToggle} ${
+                        executionVizEnabled()
+                          ? controlMenuInfo
+                          : controlMenuMuted
+                      }`}
+                      onClick={() =>
+                        store.updateSettings({
+                          executionVizEnabled:
+                            !store.settings().executionVizEnabled,
+                        })
+                      }
+                    >
+                      {executionVizEnabled() ? "On" : "Off"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Toast.Region
+        class={toastRegion}
+        duration={4200}
+        limit={3}
+        aria-label="Notifications"
+      >
         <Toast.List class={toastList} />
       </Toast.Region>
 

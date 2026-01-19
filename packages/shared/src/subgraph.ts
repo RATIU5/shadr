@@ -22,11 +22,18 @@ export type SubgraphOutputMapping = Readonly<{
   socketId: SocketId;
 }>;
 
+export type SubgraphPromotedParam = Readonly<{
+  key: string;
+  nodeId: NodeId;
+  fieldId: string;
+}>;
+
 export type SubgraphParamOverrides = Readonly<Record<NodeId, JsonObject>>;
 
 export type SubgraphNodeParams = Readonly<{
   graph: GraphDocumentV1;
   inputs: ReadonlyArray<SubgraphInputMapping>;
   outputs: ReadonlyArray<SubgraphOutputMapping>;
+  promotedParams?: ReadonlyArray<SubgraphPromotedParam>;
   overrides?: SubgraphParamOverrides;
 }>;

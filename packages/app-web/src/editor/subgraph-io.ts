@@ -6,6 +6,7 @@ import type {
   SubgraphNodeParams,
   SubgraphOutputMapping,
   SubgraphParamOverrides,
+  SubgraphPromotedParam,
 } from "@shadr/shared";
 
 type RecordValue = Record<string, JsonValue>;
@@ -93,6 +94,37 @@ export const parseSubgraphParams = (
     return [{ key, socketId: socketId as SubgraphOutputMapping["socketId"] }];
   });
 
+  const promotedValue = params["promotedParams"];
+  let promotedParams: ReadonlyArray<SubgraphPromotedParam> | undefined;
+  if (promotedValue === null || promotedValue === undefined) {
+    promotedParams = undefined;
+  } else if (Array.isArray(promotedValue)) {
+    const entries = promotedValue.flatMap((entry) => {
+      if (!isRecord(entry)) {
+        return [];
+      }
+      const key = entry["key"];
+      const nodeId = entry["nodeId"];
+      const fieldId = entry["fieldId"];
+      if (!isString(key) || !isString(nodeId) || !isString(fieldId)) {
+        return [];
+      }
+      return [
+        {
+          key,
+          nodeId: nodeId as SubgraphPromotedParam["nodeId"],
+          fieldId,
+        },
+      ];
+    });
+    if (entries.length !== promotedValue.length) {
+      return null;
+    }
+    promotedParams = entries;
+  } else {
+    return null;
+  }
+
   if (inputs.length !== inputsValue.length) {
     return null;
   }
@@ -104,6 +136,7 @@ export const parseSubgraphParams = (
     graph: graphValue as GraphDocumentV1,
     inputs,
     outputs,
+    ...(promotedParams ? { promotedParams } : {}),
     ...(overrides ? { overrides } : {}),
   };
 };
@@ -114,5 +147,8 @@ export const serializeSubgraphParams = (
   graph: params.graph as unknown as JsonValue,
   inputs: params.inputs as unknown as JsonValue,
   outputs: params.outputs as unknown as JsonValue,
+  ...(params.promotedParams
+    ? { promotedParams: params.promotedParams as JsonValue }
+    : {}),
   ...(params.overrides ? { overrides: params.overrides as JsonValue } : {}),
 });

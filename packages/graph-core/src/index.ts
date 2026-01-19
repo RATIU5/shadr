@@ -649,6 +649,27 @@ export const moveFrames = (
   });
 };
 
+export const updateFrame = (
+  graph: Graph,
+  frameId: FrameId,
+  frame: GraphFrame,
+): GraphEffect<Graph> => {
+  if (!graph.frames.has(frameId)) {
+    return fail({ _tag: "MissingFrame", frameId });
+  }
+  const frames = cloneMap(graph.frames);
+  frames.set(frameId, frame);
+  return succeed({
+    graphId: graph.graphId,
+    nodes: cloneMap(graph.nodes),
+    sockets: cloneMap(graph.sockets),
+    wires: cloneMap(graph.wires),
+    frames,
+    outgoing: cloneSetMap(graph.outgoing),
+    incoming: cloneSetMap(graph.incoming),
+  });
+};
+
 export const updateParam = (
   graph: Graph,
   nodeId: NodeId,
@@ -765,6 +786,132 @@ export const updateNodeIo = (
     frames: cloneMap(graph.frames),
     outgoing: cloneSetMap(graph.outgoing),
     incoming: cloneSetMap(graph.incoming),
+  });
+};
+
+export const replaceNodeIo = (
+  graph: Graph,
+  nextNode: GraphNode,
+  sockets: ReadonlyArray<GraphSocket>,
+): GraphEffect<Graph> => {
+  const existingNode = graph.nodes.get(nextNode.id);
+  if (!existingNode) {
+    return fail({ _tag: "MissingNode", nodeId: nextNode.id });
+  }
+
+  const existingSocketIds = new Set<SocketId>([
+    ...existingNode.inputs,
+    ...existingNode.outputs,
+  ]);
+  const nextSocketIds = new Set<SocketId>([
+    ...nextNode.inputs,
+    ...nextNode.outputs,
+  ]);
+  const removedSocketIds = new Set<SocketId>();
+  for (const socketId of existingSocketIds) {
+    if (!nextSocketIds.has(socketId)) {
+      removedSocketIds.add(socketId);
+    }
+  }
+
+  const socketIds = new Set<SocketId>();
+  for (const socket of sockets) {
+    if (socketIds.has(socket.id)) {
+      return fail({ _tag: "DuplicateSocket", socketId: socket.id });
+    }
+    if (socket.nodeId !== nextNode.id) {
+      return fail({
+        _tag: "SocketNodeMismatch",
+        socketId: socket.id,
+        nodeId: nextNode.id,
+      });
+    }
+    const existingSocket = graph.sockets.get(socket.id);
+    if (existingSocket && existingSocket.nodeId !== nextNode.id) {
+      return fail({ _tag: "DuplicateSocket", socketId: socket.id });
+    }
+    socketIds.add(socket.id);
+  }
+
+  const inputIds = sockets
+    .filter((socket) => socket.direction === "input")
+    .map((socket) => socket.id);
+  const outputIds = sockets
+    .filter((socket) => socket.direction === "output")
+    .map((socket) => socket.id);
+
+  if (!sameIdSet(nextNode.inputs, inputIds)) {
+    return fail({
+      _tag: "NodeSocketMismatch",
+      nodeId: nextNode.id,
+      direction: "input",
+      socketIds: nextNode.inputs,
+    });
+  }
+
+  if (!sameIdSet(nextNode.outputs, outputIds)) {
+    return fail({
+      _tag: "NodeSocketMismatch",
+      nodeId: nextNode.id,
+      direction: "output",
+      socketIds: nextNode.outputs,
+    });
+  }
+
+  const nodes = cloneMap(graph.nodes);
+  nodes.set(nextNode.id, nextNode);
+
+  const socketsMap = cloneMap(graph.sockets);
+  for (const socketId of removedSocketIds) {
+    socketsMap.delete(socketId);
+  }
+  for (const socket of sockets) {
+    socketsMap.set(socket.id, socket);
+  }
+
+  const wires = cloneMap(graph.wires);
+  for (const [wireId, wire] of graph.wires) {
+    if (
+      removedSocketIds.has(wire.fromSocketId) ||
+      removedSocketIds.has(wire.toSocketId)
+    ) {
+      wires.delete(wireId);
+    }
+  }
+
+  const outgoing = new Map<NodeId, Set<NodeId>>();
+  const incoming = new Map<NodeId, Set<NodeId>>();
+  for (const nodeId of nodes.keys()) {
+    outgoing.set(nodeId, new Set());
+    incoming.set(nodeId, new Set());
+  }
+  for (const wire of wires.values()) {
+    const fromSocket = socketsMap.get(wire.fromSocketId);
+    if (!fromSocket) {
+      return fail({ _tag: "MissingSocket", socketId: wire.fromSocketId });
+    }
+    const toSocket = socketsMap.get(wire.toSocketId);
+    if (!toSocket) {
+      return fail({ _tag: "MissingSocket", socketId: wire.toSocketId });
+    }
+    const nextOutgoing = outgoing.get(fromSocket.nodeId);
+    if (nextOutgoing) {
+      nextOutgoing.add(toSocket.nodeId);
+    }
+    const nextIncoming = incoming.get(toSocket.nodeId);
+    if (nextIncoming) {
+      nextIncoming.add(fromSocket.nodeId);
+    }
+  }
+
+  return succeed({
+    graphId: graph.graphId,
+    nodes,
+    sockets: socketsMap,
+    wires,
+    frames: cloneMap(graph.frames),
+    outgoing,
+    incoming,
   });
 };
 

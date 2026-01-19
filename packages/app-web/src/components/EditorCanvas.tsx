@@ -10,7 +10,12 @@ import type {
 } from "@shadr/graph-core";
 import { downstreamClosure, upstreamClosure } from "@shadr/graph-core";
 import type { NodeDefinition } from "@shadr/plugin-system";
-import type { JsonObject, JsonValue } from "@shadr/shared";
+import type {
+  GraphSocketLabelPosition,
+  GraphSocketNumberFormat,
+  JsonObject,
+  JsonValue,
+} from "@shadr/shared";
 import {
   getSocketTypeMetadata,
   isSocketTypeCompatible,
@@ -21,6 +26,8 @@ import {
   SUBGRAPH_NODE_TYPE,
 } from "@shadr/shared";
 import {
+  type CanvasExecutionNodeState,
+  type CanvasExecutionState,
   CanvasScene,
   type CanvasTheme,
   darkCanvasTheme,
@@ -39,12 +46,23 @@ import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import NodeParamMeasure, {
   type NodeParamSize,
 } from "~/components/NodeParamMeasure";
+import { CONVERSION_REGISTRY } from "~/editor/conversion-registry";
+import {
+  buildDeleteSelectionCommands,
+  type DeleteSelectionMode,
+} from "~/editor/delete-selection";
+import {
+  buildFrameHierarchy,
+  collectFrameDescendants,
+  getNodeFrameOwners,
+} from "~/editor/frame-utils";
 import {
   createMoveFramesCommand,
   createMoveNodesCommand,
   createRemoveFrameCommand,
   createRemoveNodeCommand,
   createRemoveWireCommand,
+  createUpdateFrameCommand,
   type GraphCommand,
   isNoopCommand,
 } from "~/editor/history";
@@ -57,6 +75,7 @@ import {
 } from "~/editor/node-catalog";
 import { GRID_SIZE, snapPointToGrid } from "~/editor/settings";
 import type { EditorStore } from "~/editor/store";
+import type { ConnectionAttemptReason } from "~/editor/validation-warnings";
 import { runAppEffectSyncEither } from "~/services/runtime";
 
 type Point = Readonly<{ x: number; y: number }>;
@@ -67,12 +86,19 @@ type Bounds = Readonly<{
   maxY: number;
 }>;
 type WireHoverStatus = "neutral" | "valid" | "invalid";
+type WireHoverResult = Readonly<{
+  status: WireHoverStatus;
+  targetPosition: Point | null;
+  targetSocketId: SocketId | null;
+  reason: ConnectionAttemptReason | null;
+}>;
 type SocketTooltip = Readonly<{
   x: number;
   y: number;
   title: string;
   typeLabel: string;
   valueLabel: string;
+  connectionLabel?: string;
 }>;
 type WireTooltip = Readonly<{
   x: number;
@@ -85,6 +111,7 @@ type ContextMenuState = Readonly<{
   screen: Point;
   world: Point;
   hit: ReturnType<CanvasScene["hitTest"]>;
+  mode: "full" | "wire-insert";
 }>;
 type ContextMenuEntry =
   | Readonly<{
@@ -109,6 +136,9 @@ type CanvasPalette = Readonly<{
   wireHoverValid: number;
   wireHoverInvalid: number;
 }>;
+
+type FrameResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+type WireDragMode = "from-output" | "from-input";
 
 const getCanvasPalette = (scheme: ThemeScheme): CanvasPalette => {
   if (scheme === "light") {
@@ -150,8 +180,16 @@ type DragState =
   | {
       kind: "drag-frames";
       origin: Point;
-      startPositions: Map<FrameId, Point>;
+      startFramePositions: Map<FrameId, Point>;
+      startNodePositions: Map<NodeId, Point>;
       bounds: Bounds;
+    }
+  | {
+      kind: "resize-frame";
+      frameId: FrameId;
+      handle: FrameResizeHandle;
+      origin: Point;
+      startFrame: GraphFrame;
     }
   | {
       kind: "marquee";
@@ -161,8 +199,9 @@ type DragState =
     }
   | {
       kind: "wire";
-      fromSocketId: SocketId;
-      fromPosition: Point;
+      dragMode: WireDragMode;
+      anchorSocketId: SocketId;
+      anchorPosition: Point;
       current: Point;
       grabbedWire: GraphWire | null;
     }
@@ -179,13 +218,24 @@ type EditorCanvasProps = Readonly<{
   onCollapseSelectionToSubgraph?: () => void;
 }>;
 
-type ClipboardPayload = Readonly<{
+type ClipboardPayloadV1 = Readonly<{
   kind: "shadr-clipboard";
   version: 1;
   nodes: ReadonlyArray<GraphNode>;
   sockets: ReadonlyArray<GraphSocket>;
   wires: ReadonlyArray<GraphWire>;
 }>;
+
+type ClipboardPayloadV2 = Readonly<{
+  kind: "shadr-clipboard";
+  version: 2;
+  nodes: ReadonlyArray<GraphNode>;
+  sockets: ReadonlyArray<GraphSocket>;
+  wires: ReadonlyArray<GraphWire>;
+  frames: ReadonlyArray<GraphFrame>;
+}>;
+
+type ClipboardPayload = ClipboardPayloadV2;
 
 type WireInsertCandidate = Readonly<{
   nodeType: string;
@@ -198,14 +248,37 @@ type WireInsertCandidate = Readonly<{
 type IdFactory<T> = (value: string) => T;
 
 const CLIPBOARD_KIND = "shadr-clipboard";
-const CLIPBOARD_VERSION = 1 as const;
+const CLIPBOARD_VERSION = 2 as const;
 let clipboardFallback: ClipboardPayload | null = null;
 const DUPLICATE_OFFSET: Point = { x: 32, y: 32 };
 const LONG_PRESS_DURATION_MS = 450;
 const WIRE_TOOLTIP_DELAY_MS = 180;
 const LONG_PRESS_MOVE_THRESHOLD = 8;
+const WIRE_SNAP_DISTANCE_PX = 28;
+const WIRE_AUTO_SCROLL_MARGIN_PX = 36;
+const WIRE_AUTO_SCROLL_SPEED_PX = 18;
 const DEFAULT_FRAME_SIZE = { width: 320, height: 220 };
-const WIRE_INSERT_NODE_TYPES: Record<string, ReadonlyArray<string>> = {
+const FRAME_MIN_SIZE = { width: 180, height: 120 };
+const FRAME_RESIZE_HIT_SIZE = 10;
+const GROUP_FRAME_PADDING = { x: 40, y: 48 };
+
+const buildWireInsertNodeTypes = (
+  base: Record<string, ReadonlyArray<string>>,
+): Record<string, ReadonlyArray<string>> => {
+  const result: Record<string, string[]> = {};
+  for (const [key, value] of Object.entries(base)) {
+    result[key] = [...value];
+  }
+  for (const entry of CONVERSION_REGISTRY.entries) {
+    const list = result[entry.fromType] ?? [];
+    if (!list.includes(entry.nodeType)) {
+      result[entry.fromType] = [...list, entry.nodeType];
+    }
+  }
+  return result;
+};
+
+const BASE_WIRE_INSERT_NODE_TYPES: Record<string, ReadonlyArray<string>> = {
   float: ["reroute-float", "clamp"],
   int: ["reroute-int"],
   bool: ["reroute-bool"],
@@ -216,12 +289,82 @@ const WIRE_INSERT_NODE_TYPES: Record<string, ReadonlyArray<string>> = {
   mat4: ["reroute-mat4"],
   sampler2D: ["reroute-sampler2d"],
 };
+const WIRE_INSERT_NODE_TYPES = buildWireInsertNodeTypes(
+  BASE_WIRE_INSERT_NODE_TYPES,
+);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((entry) => typeof entry === "string");
+
+const isGraphSocketLabelPosition = (
+  value: unknown,
+): value is GraphSocketLabelPosition =>
+  value === "auto" ||
+  value === "left" ||
+  value === "right" ||
+  value === "top" ||
+  value === "bottom";
+
+const isGraphSocketNumberFormat = (
+  value: unknown,
+): value is GraphSocketNumberFormat =>
+  value === "auto" ||
+  value === "integer" ||
+  value === "fixed-2" ||
+  value === "fixed-3" ||
+  value === "percent";
+
+const isGraphSocketLabelSettings = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.visible !== undefined && typeof value.visible !== "boolean") {
+    return false;
+  }
+  if (
+    value.position !== undefined &&
+    !isGraphSocketLabelPosition(value.position)
+  ) {
+    return false;
+  }
+  if (value.offset !== undefined) {
+    if (!isRecord(value.offset)) {
+      return false;
+    }
+    if (
+      typeof value.offset.x !== "number" ||
+      typeof value.offset.y !== "number"
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isGraphSocketMetadata = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.units !== undefined && typeof value.units !== "string") {
+    return false;
+  }
+  if (value.min !== undefined && typeof value.min !== "number") {
+    return false;
+  }
+  if (value.max !== undefined && typeof value.max !== "number") {
+    return false;
+  }
+  if (value.step !== undefined && typeof value.step !== "number") {
+    return false;
+  }
+  if (value.format !== undefined && !isGraphSocketNumberFormat(value.format)) {
+    return false;
+  }
+  return true;
+};
 
 const isJsonObject = (value: JsonValue): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -286,6 +429,9 @@ const isGraphSocketValue = (value: unknown): value is GraphSocket => {
   if (value.direction !== "input" && value.direction !== "output") {
     return false;
   }
+  if (value.label !== undefined && typeof value.label !== "string") {
+    return false;
+  }
   if (typeof value.required !== "boolean") {
     return false;
   }
@@ -299,6 +445,15 @@ const isGraphSocketValue = (value: unknown): value is GraphSocket => {
     value.maxConnections !== undefined &&
     typeof value.maxConnections !== "number"
   ) {
+    return false;
+  }
+  if (
+    value.labelSettings !== undefined &&
+    !isGraphSocketLabelSettings(value.labelSettings)
+  ) {
+    return false;
+  }
+  if (value.metadata !== undefined && !isGraphSocketMetadata(value.metadata)) {
     return false;
   }
   return true;
@@ -315,11 +470,41 @@ const isGraphWireValue = (value: unknown): value is GraphWire => {
   );
 };
 
-const isClipboardPayload = (value: unknown): value is ClipboardPayload => {
+const isGraphFrameValue = (value: unknown): value is GraphFrame => {
   if (!isRecord(value)) {
     return false;
   }
-  if (value.kind !== CLIPBOARD_KIND || value.version !== CLIPBOARD_VERSION) {
+  if (typeof value.id !== "string" || typeof value.title !== "string") {
+    return false;
+  }
+  if (!isRecord(value.position) || !isRecord(value.size)) {
+    return false;
+  }
+  if (
+    typeof value.position.x !== "number" ||
+    typeof value.position.y !== "number"
+  ) {
+    return false;
+  }
+  if (
+    typeof value.size.width !== "number" ||
+    typeof value.size.height !== "number"
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const isClipboardPayload = (
+  value: unknown,
+): value is ClipboardPayloadV1 | ClipboardPayloadV2 => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.kind !== CLIPBOARD_KIND) {
+    return false;
+  }
+  if (value.version !== 1 && value.version !== 2) {
     return false;
   }
   if (!Array.isArray(value.nodes) || !Array.isArray(value.sockets)) {
@@ -337,8 +522,19 @@ const isClipboardPayload = (value: unknown): value is ClipboardPayload => {
   if (!value.wires.every(isGraphWireValue)) {
     return false;
   }
+  if (
+    value.version === 2 &&
+    (!Array.isArray(value.frames) || !value.frames.every(isGraphFrameValue))
+  ) {
+    return false;
+  }
   return true;
 };
+
+const normalizeClipboardPayload = (
+  payload: ClipboardPayloadV1 | ClipboardPayloadV2,
+): ClipboardPayload =>
+  payload.version === 2 ? payload : { ...payload, version: 2, frames: [] };
 
 export default function EditorCanvas(props: EditorCanvasProps) {
   let container: HTMLDivElement | undefined;
@@ -348,6 +544,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   let dragState: DragState = { kind: "none" };
   let isViewportEmpty = false;
   let canvasPalette: CanvasPalette = getCanvasPalette("dark");
+  let wireTapCandidate: {
+    pointerId: number;
+    wireId: WireId;
+    screen: Point;
+    client: Point;
+  } | null = null;
 
   const { onViewportEmpty, onDiveIntoSubgraph, onCollapseSelectionToSubgraph } =
     props;
@@ -360,6 +562,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     bypassedNodes,
     collapsedNodes,
     settings,
+    execVisualization,
     canvasCenter,
     pointerPosition,
     commandPaletteOpen,
@@ -370,6 +573,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     commitHistoryBatch,
     refreshActiveOutput,
     clearSelection,
+    recordConnectionAttempt,
     setNodeSelection,
     setFrameSelection,
     setWireSelection,
@@ -391,6 +595,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   let bypassedNodesSnapshot = bypassedNodes();
   let collapsedNodesSnapshot = collapsedNodes();
   let settingsSnapshot = settings();
+  let execVisualizationSnapshot = execVisualization();
   let commandPaletteOpenSnapshot = commandPaletteOpen();
   let hoveredNodeIdSnapshot: NodeId | null = null;
   let hoveredFrameIdSnapshot: FrameId | null = null;
@@ -422,7 +627,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const parseClipboardPayload = (text: string): ClipboardPayload | null => {
     try {
       const parsed = JSON.parse(text) as unknown;
-      return isClipboardPayload(parsed) ? parsed : null;
+      return isClipboardPayload(parsed)
+        ? normalizeClipboardPayload(parsed)
+        : null;
     } catch (error) {
       console.warn("Clipboard parse failed", error);
       return null;
@@ -479,15 +686,25 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const buildPasteCommands = (
     payload: ClipboardPayload,
     offset: Point,
-  ): { commands: GraphCommand[]; newNodeIds: NodeId[] } | null => {
-    if (payload.nodes.length === 0) {
+  ): {
+    commands: GraphCommand[];
+    newNodeIds: NodeId[];
+    newFrameIds: FrameId[];
+  } | null => {
+    if (payload.nodes.length === 0 && payload.frames.length === 0) {
       return null;
     }
 
     const usedNodeIds = new Set<NodeId>(graphSnapshot.nodes.keys());
     const usedWireIds = new Set<WireId>(graphSnapshot.wires.keys());
+    const usedFrameIds = new Set<FrameId>(graphSnapshot.frames.keys());
     const nextNodeId = createIdFactory<NodeId>("node", usedNodeIds, makeNodeId);
     const nextWireId = createIdFactory<WireId>("wire", usedWireIds, makeWireId);
+    const nextFrameId = createIdFactory<FrameId>(
+      "frame",
+      usedFrameIds,
+      makeFrameId,
+    );
 
     const socketsByNode = new Map<NodeId, GraphSocket[]>();
     for (const socket of payload.sockets) {
@@ -502,6 +719,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     const socketIdMap = new Map<SocketId, SocketId>();
     const commands: GraphCommand[] = [];
     const newNodeIds: NodeId[] = [];
+    const newFrameIds: FrameId[] = [];
 
     for (const node of payload.nodes) {
       const newNodeId = nextNodeId();
@@ -542,6 +760,36 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       });
     }
 
+    const mapFrameSocketIds = (
+      ids?: ReadonlyArray<SocketId>,
+    ): SocketId[] | undefined => {
+      if (!ids) {
+        return undefined;
+      }
+      return ids.flatMap((socketId) => {
+        const mapped = socketIdMap.get(socketId);
+        return mapped ? [mapped] : [];
+      });
+    };
+
+    for (const frame of payload.frames) {
+      const newFrameId = nextFrameId();
+      newFrameIds.push(newFrameId);
+      const exposedInputs = mapFrameSocketIds(frame.exposedInputs);
+      const exposedOutputs = mapFrameSocketIds(frame.exposedOutputs);
+      const newFrame: GraphFrame = {
+        ...frame,
+        id: newFrameId,
+        position: {
+          x: frame.position.x + offset.x,
+          y: frame.position.y + offset.y,
+        },
+        ...(exposedInputs !== undefined ? { exposedInputs } : {}),
+        ...(exposedOutputs !== undefined ? { exposedOutputs } : {}),
+      };
+      commands.push({ kind: "add-frame", frame: newFrame });
+    }
+
     for (const wire of payload.wires) {
       const fromSocketId = socketIdMap.get(wire.fromSocketId);
       const toSocketId = socketIdMap.get(wire.toSocketId);
@@ -562,34 +810,61 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       return null;
     }
 
-    return { commands, newNodeIds };
+    return { commands, newNodeIds, newFrameIds };
   };
 
-  const resolveCopyNodeIds = (): Set<NodeId> => {
-    if (selectedNodesSnapshot.size > 0) {
-      return new Set(selectedNodesSnapshot);
+  const resolveCopySelection = (): {
+    nodeIds: Set<NodeId>;
+    frameIds: Set<FrameId>;
+  } => {
+    const nodeIds = new Set<NodeId>(selectedNodesSnapshot);
+    const frameIds = new Set<FrameId>();
+    if (selectedFramesSnapshot.size > 0) {
+      const hierarchy = buildFrameHierarchy(graphSnapshot.frames.values());
+      const descendants = collectFrameDescendants(
+        selectedFramesSnapshot,
+        hierarchy,
+      );
+      for (const frameId of descendants) {
+        frameIds.add(frameId);
+      }
+      const nodeOwners = getNodeFrameOwners(
+        graphSnapshot.nodes.values(),
+        layout,
+        hierarchy,
+      );
+      for (const [nodeId, ownerFrameId] of nodeOwners.entries()) {
+        if (frameIds.has(ownerFrameId)) {
+          nodeIds.add(nodeId);
+        }
+      }
     }
-    const nodeIds = new Set<NodeId>();
-    for (const wireId of selectedWiresSnapshot) {
-      const wire = graphSnapshot.wires.get(wireId);
-      if (!wire) {
-        continue;
-      }
-      const fromSocket = graphSnapshot.sockets.get(wire.fromSocketId);
-      const toSocket = graphSnapshot.sockets.get(wire.toSocketId);
-      if (fromSocket) {
-        nodeIds.add(fromSocket.nodeId);
-      }
-      if (toSocket) {
-        nodeIds.add(toSocket.nodeId);
+    if (
+      nodeIds.size === 0 &&
+      frameIds.size === 0 &&
+      selectedWiresSnapshot.size > 0
+    ) {
+      for (const wireId of selectedWiresSnapshot) {
+        const wire = graphSnapshot.wires.get(wireId);
+        if (!wire) {
+          continue;
+        }
+        const fromSocket = graphSnapshot.sockets.get(wire.fromSocketId);
+        const toSocket = graphSnapshot.sockets.get(wire.toSocketId);
+        if (fromSocket) {
+          nodeIds.add(fromSocket.nodeId);
+        }
+        if (toSocket) {
+          nodeIds.add(toSocket.nodeId);
+        }
       }
     }
-    return nodeIds;
+    return { nodeIds, frameIds };
   };
 
   const buildClipboardPayload = (): ClipboardPayload | null => {
-    const nodeIds = resolveCopyNodeIds();
-    if (nodeIds.size === 0) {
+    const { nodeIds, frameIds } = resolveCopySelection();
+    if (nodeIds.size === 0 && frameIds.size === 0) {
       return null;
     }
     const nodes: GraphNode[] = [];
@@ -624,18 +899,33 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         wires.push({ ...wire });
       }
     }
+    const frames: GraphFrame[] = [];
+    for (const frameId of frameIds) {
+      const frame = graphSnapshot.frames.get(frameId);
+      if (frame) {
+        frames.push({
+          ...frame,
+          position: { ...frame.position },
+          size: { ...frame.size },
+        });
+      }
+    }
     return {
       kind: CLIPBOARD_KIND,
       version: CLIPBOARD_VERSION,
       nodes,
       sockets,
       wires,
+      frames,
     };
   };
 
   const pasteClipboardPayload = async (): Promise<void> => {
     const payload = await readClipboardPayload();
-    if (!payload || payload.nodes.length === 0) {
+    if (
+      !payload ||
+      (payload.nodes.length === 0 && payload.frames.length === 0)
+    ) {
       return;
     }
     let minX = Infinity;
@@ -643,6 +933,10 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     for (const node of payload.nodes) {
       minX = Math.min(minX, node.position.x);
       minY = Math.min(minY, node.position.y);
+    }
+    for (const frame of payload.frames) {
+      minX = Math.min(minX, frame.position.x);
+      minY = Math.min(minY, frame.position.y);
     }
     if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
       return;
@@ -655,6 +949,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     }
     if (applyCommands("paste-selection", payloadResult.commands)) {
       setNodeSelection(new Set(payloadResult.newNodeIds));
+      if (payloadResult.newFrameIds.length > 0) {
+        setFrameSelection(new Set(payloadResult.newFrameIds));
+      }
     }
   };
 
@@ -669,6 +966,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     }
     if (applyCommands("duplicate-selection", payloadResult.commands)) {
       setNodeSelection(new Set(payloadResult.newNodeIds));
+      if (payloadResult.newFrameIds.length > 0) {
+        setFrameSelection(new Set(payloadResult.newFrameIds));
+      }
     }
   };
   const [socketTooltip, setSocketTooltip] = createSignal<SocketTooltip | null>(
@@ -712,6 +1012,101 @@ export default function EditorCanvas(props: EditorCanvasProps) {
 
   const applySnap = (point: Point): Point =>
     settingsSnapshot.snapToGrid ? snapPointToGrid(point) : point;
+
+  const getSceneSocketPosition = (socketId: SocketId): Point | null =>
+    scene?.getSocketPosition(socketId) ??
+    getSocketPosition(graphSnapshot, socketId, layout);
+
+  const getFrameResizeHandle = (
+    frame: GraphFrame,
+    worldPoint: Point,
+  ): FrameResizeHandle | null => {
+    const localX = worldPoint.x - frame.position.x;
+    const localY = worldPoint.y - frame.position.y;
+    const { width, height } = frame.size;
+    const within =
+      localX >= -FRAME_RESIZE_HIT_SIZE &&
+      localX <= width + FRAME_RESIZE_HIT_SIZE &&
+      localY >= -FRAME_RESIZE_HIT_SIZE &&
+      localY <= height + FRAME_RESIZE_HIT_SIZE;
+    if (!within) {
+      return null;
+    }
+    const nearLeft = localX <= FRAME_RESIZE_HIT_SIZE;
+    const nearRight = localX >= width - FRAME_RESIZE_HIT_SIZE;
+    const nearTop = localY <= FRAME_RESIZE_HIT_SIZE;
+    const nearBottom = localY >= height - FRAME_RESIZE_HIT_SIZE;
+    if (nearTop && nearLeft) {
+      return "nw";
+    }
+    if (nearTop && nearRight) {
+      return "ne";
+    }
+    if (nearBottom && nearLeft) {
+      return "sw";
+    }
+    if (nearBottom && nearRight) {
+      return "se";
+    }
+    if (nearTop) {
+      return "n";
+    }
+    if (nearBottom) {
+      return "s";
+    }
+    if (nearLeft) {
+      return "w";
+    }
+    if (nearRight) {
+      return "e";
+    }
+    return null;
+  };
+
+  const resizeFrame = (
+    frame: GraphFrame,
+    handle: FrameResizeHandle,
+    delta: Point,
+  ): GraphFrame => {
+    const startWidth = frame.size.width;
+    const startHeight = frame.size.height;
+    let nextX = frame.position.x;
+    let nextY = frame.position.y;
+    let nextWidth = startWidth;
+    let nextHeight = startHeight;
+
+    if (handle.includes("e")) {
+      nextWidth = startWidth + delta.x;
+    }
+    if (handle.includes("s")) {
+      nextHeight = startHeight + delta.y;
+    }
+    if (handle.includes("w")) {
+      nextWidth = startWidth - delta.x;
+      nextX = frame.position.x + (startWidth - nextWidth);
+    }
+    if (handle.includes("n")) {
+      nextHeight = startHeight - delta.y;
+      nextY = frame.position.y + (startHeight - nextHeight);
+    }
+
+    const clampedWidth = Math.max(FRAME_MIN_SIZE.width, nextWidth);
+    const clampedHeight = Math.max(FRAME_MIN_SIZE.height, nextHeight);
+    if (clampedWidth !== nextWidth) {
+      nextX = frame.position.x + (startWidth - clampedWidth);
+      nextWidth = clampedWidth;
+    }
+    if (clampedHeight !== nextHeight) {
+      nextY = frame.position.y + (startHeight - clampedHeight);
+      nextHeight = clampedHeight;
+    }
+
+    return {
+      ...frame,
+      position: { x: nextX, y: nextY },
+      size: { width: nextWidth, height: nextHeight },
+    };
+  };
 
   const isHeaderToggleHit = (node: GraphNode, worldPoint: Point): boolean => {
     if (layout.isRerouteNode?.(node)) {
@@ -783,6 +1178,24 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       }
     }
     return bounds;
+  };
+
+  const mergeBounds = (
+    left: Bounds | null,
+    right: Bounds | null,
+  ): Bounds | null => {
+    if (!left) {
+      return right;
+    }
+    if (!right) {
+      return left;
+    }
+    return {
+      minX: Math.min(left.minX, right.minX),
+      minY: Math.min(left.minY, right.minY),
+      maxX: Math.max(left.maxX, right.maxX),
+      maxY: Math.max(left.maxY, right.maxY),
+    };
   };
 
   const getDragDelta = (
@@ -1010,6 +1423,26 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     }
   };
 
+  const buildExecutionState = (): CanvasExecutionState => {
+    if (
+      !settingsSnapshot.executionVizEnabled ||
+      !execVisualizationSnapshot ||
+      execVisualizationSnapshot.nodes.size === 0
+    ) {
+      return { enabled: false };
+    }
+    const nodes = new Map<NodeId, CanvasExecutionNodeState>();
+    for (const entry of execVisualizationSnapshot.nodes.values()) {
+      nodes.set(entry.nodeId, {
+        order: entry.order,
+        durationMs: entry.durationMs,
+        maxDurationMs: Math.max(1, execVisualizationSnapshot.maxDurationMs),
+        cacheHit: entry.cacheHit,
+      });
+    }
+    return { enabled: true, nodes };
+  };
+
   const syncScene = (): void => {
     scene?.syncGraph(
       graphSnapshot,
@@ -1030,6 +1463,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       {
         hoveredFrameId: hoveredFrameIdSnapshot,
       },
+      buildExecutionState(),
     );
     updateGrid();
     updateViewportEmptyState();
@@ -1065,10 +1499,19 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     return changed;
   };
 
-  const removeNodes = (nodeIds: Iterable<NodeId>, label: string): boolean => {
-    const commands = Array.from(nodeIds)
-      .map((nodeId) => createRemoveNodeCommand(graphSnapshot, nodeId))
-      .filter((command): command is NonNullable<typeof command> => !!command);
+  const removeNodesWithReconnect = (
+    nodeIds: Iterable<NodeId>,
+    label: string,
+    reconnectMode: DeleteSelectionMode,
+  ): boolean => {
+    const commands = buildDeleteSelectionCommands({
+      graph: graphSnapshot,
+      nodeIds: Array.from(nodeIds),
+      frameIds: [],
+      wireIds: [],
+      reconnectMode,
+      createWireId: nextWireId,
+    });
     const changed = applyCommands(label, commands);
     if (changed) {
       clearSelection();
@@ -1095,6 +1538,10 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     const frame: GraphFrame = {
       id: frameId,
       title: "Frame",
+      description: "",
+      collapsed: false,
+      exposedInputs: [],
+      exposedOutputs: [],
       position: applySnap(position),
       size: { ...DEFAULT_FRAME_SIZE },
     };
@@ -1104,6 +1551,122 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       return frameId;
     }
     return null;
+  };
+
+  const getBoundsForNodeIds = (nodeIds: Iterable<NodeId>): Bounds | null => {
+    const positions = new Map<NodeId, Point>();
+    for (const nodeId of nodeIds) {
+      const node = graphSnapshot.nodes.get(nodeId);
+      if (node) {
+        positions.set(nodeId, { ...node.position });
+      }
+    }
+    return getDragBounds(positions);
+  };
+
+  const getBoundsForFrameIds = (frameIds: Iterable<FrameId>): Bounds | null => {
+    const positions = new Map<FrameId, Point>();
+    for (const frameId of frameIds) {
+      const frame = graphSnapshot.frames.get(frameId);
+      if (frame) {
+        positions.set(frameId, { ...frame.position });
+      }
+    }
+    return getFrameDragBounds(positions);
+  };
+
+  const createFrameFromBounds = (title: string, bounds: Bounds): GraphFrame => {
+    const width = Math.max(
+      bounds.maxX - bounds.minX + GROUP_FRAME_PADDING.x * 2,
+      FRAME_MIN_SIZE.width,
+    );
+    const height = Math.max(
+      bounds.maxY - bounds.minY + GROUP_FRAME_PADDING.y * 2,
+      FRAME_MIN_SIZE.height,
+    );
+    const position = applySnap({
+      x: bounds.minX - GROUP_FRAME_PADDING.x,
+      y: bounds.minY - GROUP_FRAME_PADDING.y,
+    });
+    return {
+      id: nextFrameId(),
+      title,
+      description: "",
+      collapsed: false,
+      exposedInputs: [],
+      exposedOutputs: [],
+      position,
+      size: { width, height },
+    };
+  };
+
+  const groupSelectionIntoFrame = (): void => {
+    const bounds = mergeBounds(
+      getBoundsForNodeIds(selectedNodesSnapshot),
+      getBoundsForFrameIds(selectedFramesSnapshot),
+    );
+    if (!bounds) {
+      return;
+    }
+    const frame = createFrameFromBounds("Group", bounds);
+    if (applyCommands("group-selection", [{ kind: "add-frame", frame }])) {
+      setFrameSelection(new Set([frame.id]));
+    }
+  };
+
+  const ungroupSelectedFrames = (): void => {
+    if (selectedFramesSnapshot.size === 0) {
+      return;
+    }
+    removeFrames(selectedFramesSnapshot, "ungroup-frames");
+  };
+
+  const frameNodesByCategory = (): void => {
+    const nodeIds =
+      selectedNodesSnapshot.size > 0
+        ? Array.from(selectedNodesSnapshot)
+        : Array.from(graphSnapshot.nodes.keys());
+    if (nodeIds.length === 0) {
+      return;
+    }
+    const nodesByCategory = new Map<string, NodeId[]>();
+    for (const nodeId of nodeIds) {
+      const node = graphSnapshot.nodes.get(nodeId);
+      if (!node) {
+        continue;
+      }
+      const category =
+        getNodeCatalogEntry(node.type)?.category ?? "Uncategorized";
+      const bucket = nodesByCategory.get(category);
+      if (bucket) {
+        bucket.push(nodeId);
+      } else {
+        nodesByCategory.set(category, [nodeId]);
+      }
+    }
+    const commands: GraphCommand[] = [];
+    const newFrameIds: FrameId[] = [];
+    for (const [category, ids] of nodesByCategory.entries()) {
+      const bounds = getBoundsForNodeIds(ids);
+      if (!bounds) {
+        continue;
+      }
+      const frame = createFrameFromBounds(category, bounds);
+      commands.push({ kind: "add-frame", frame });
+      newFrameIds.push(frame.id);
+    }
+    if (applyCommands("frame-by-category", commands)) {
+      setFrameSelection(new Set(newFrameIds));
+    }
+  };
+
+  const toggleFrameCollapsed = (frameId: FrameId): void => {
+    const frame = graphSnapshot.frames.get(frameId);
+    if (!frame) {
+      return;
+    }
+    const updated = { ...frame, collapsed: !frame.collapsed };
+    applyGraphCommand(createUpdateFrameCommand(frame, updated));
   };
 
   const disconnectInputSocket = (socketId: SocketId): void => {
@@ -1126,7 +1689,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     removeWires(wiresToRemove, "disconnect-output");
   };
 
-  const deleteSelection = (): void => {
+  const deleteSelection = (
+    reconnectMode: DeleteSelectionMode = "remove",
+  ): void => {
     if (
       selectedNodesSnapshot.size === 0 &&
       selectedFramesSnapshot.size === 0 &&
@@ -1134,26 +1699,14 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     ) {
       return;
     }
-    const nodeCommands = Array.from(selectedNodesSnapshot)
-      .map((nodeId) => createRemoveNodeCommand(graphSnapshot, nodeId))
-      .filter((command): command is NonNullable<typeof command> => !!command);
-    const frameCommands = Array.from(selectedFramesSnapshot)
-      .map((frameId) => createRemoveFrameCommand(graphSnapshot, frameId))
-      .filter((command): command is NonNullable<typeof command> => !!command);
-    const removedWireIds = new Set<WireId>();
-    for (const command of nodeCommands) {
-      if (command.kind !== "remove-node") {
-        continue;
-      }
-      for (const wire of command.wires) {
-        removedWireIds.add(wire.id);
-      }
-    }
-    const wireCommands = Array.from(selectedWiresSnapshot)
-      .filter((wireId) => !removedWireIds.has(wireId))
-      .map((wireId) => createRemoveWireCommand(graphSnapshot, wireId))
-      .filter((command): command is NonNullable<typeof command> => !!command);
-    const commands = [...nodeCommands, ...frameCommands, ...wireCommands];
+    const commands = buildDeleteSelectionCommands({
+      graph: graphSnapshot,
+      nodeIds: Array.from(selectedNodesSnapshot),
+      frameIds: Array.from(selectedFramesSnapshot),
+      wireIds: Array.from(selectedWiresSnapshot),
+      reconnectMode,
+      createWireId: nextWireId,
+    });
     if (applyCommands("delete-selection", commands)) {
       clearSelection();
     }
@@ -1201,6 +1754,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     graphics.fill({ color: canvasPalette.marquee, alpha: 0.1 });
   };
 
+  const distanceSquared = (a: Point, b: Point): number => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return dx * dx + dy * dy;
+  };
+
   const getSocketConnectionCount = (socket: GraphSocket): number => {
     let count = 0;
     for (const wire of graphSnapshot.wires.values()) {
@@ -1222,17 +1781,94 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     return socket.direction === "input" ? 1 : null;
   };
 
-  const formatValue = (value: JsonValue | null): string => {
+  const formatNumberValue = (
+    value: number,
+    format: GraphSocketNumberFormat | undefined,
+  ): string => {
+    switch (format) {
+      case "integer":
+        return `${Math.round(value)}`;
+      case "fixed-2":
+        return value.toFixed(2);
+      case "fixed-3":
+        return value.toFixed(3);
+      case "percent":
+        return `${(value * 100).toFixed(1)}%`;
+      default:
+        return String(value);
+    }
+  };
+
+  const formatSocketValue = (
+    socket: GraphSocket,
+    value: JsonValue | null,
+  ): string => {
     if (value === null) {
       return "null";
     }
-    if (typeof value === "number" || typeof value === "boolean") {
+    const metadata = socket.metadata;
+    const units = metadata?.units?.trim();
+    const format = metadata?.format;
+    const appendUnits = (label: string): string =>
+      units && units.length > 0 ? `${label} ${units}` : label;
+    if (typeof value === "number") {
+      return appendUnits(formatNumberValue(value, format));
+    }
+    if (typeof value === "boolean") {
       return String(value);
     }
     if (typeof value === "string") {
       return `"${value}"`;
     }
+    if (
+      Array.isArray(value) &&
+      value.every((entry) => typeof entry === "number")
+    ) {
+      const formatted = value.map((entry) => formatNumberValue(entry, format));
+      return appendUnits(`(${formatted.join(", ")})`);
+    }
     return JSON.stringify(value);
+  };
+
+  const getSocketDisplayLabel = (socket: GraphSocket): string =>
+    socket.label?.trim().length ? socket.label : socket.name;
+
+  const formatSocketRangeLabel = (socket: GraphSocket): string | null => {
+    const metadata = socket.metadata;
+    if (!metadata) {
+      return null;
+    }
+    const { min, max } = metadata;
+    const units = metadata.units?.trim();
+    const appendUnits = (label: string): string =>
+      units && units.length > 0 ? `${label} ${units}` : label;
+    if (min === undefined && max === undefined) {
+      return null;
+    }
+    if (min !== undefined && max !== undefined) {
+      return appendUnits(`Range: ${min}–${max}`);
+    }
+    if (min !== undefined) {
+      return appendUnits(`Range: ≥${min}`);
+    }
+    return appendUnits(`Range: ≤${max}`);
+  };
+
+  const formatSocketTypeLabel = (socket: GraphSocket): string => {
+    const base = `Type: ${getSocketTypeLabel(socket.dataType)}`;
+    const rangeLabel = formatSocketRangeLabel(socket);
+    return rangeLabel ? `${base} • ${rangeLabel}` : base;
+  };
+
+  const formatSocketConnectionLabel = (socket: GraphSocket): string => {
+    const current = getSocketConnectionCount(socket);
+    const max = getSocketMaxConnections(socket);
+    if (max === null) {
+      return `Connections: ${current} / many (one-to-many)`;
+    }
+    const mode = max === 1 ? "one-to-one" : `max ${max}`;
+    const limitNote = current >= max ? " • limit reached" : "";
+    return `Connections: ${current} / ${max} (${mode})${limitNote}`;
   };
 
   const getCachedOutputValue = (
@@ -1265,16 +1901,16 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     if (!socket) {
       return null;
     }
-    const title = `${socket.direction === "input" ? "Input" : "Output"}: ${
-      socket.name
-    }`;
-    const typeLabel = `Type: ${socket.dataType}`;
+    const title = `${socket.direction === "input" ? "Input" : "Output"}: ${getSocketDisplayLabel(
+      socket,
+    )}`;
+    const typeLabel = formatSocketTypeLabel(socket);
     let valueLabel = "Value: No cached value";
 
     if (socket.direction === "output") {
       const cached = getCachedOutputValue(socket);
       if (cached !== undefined) {
-        valueLabel = `Value: ${formatValue(cached)}`;
+        valueLabel = `Value: ${formatSocketValue(socket, cached)}`;
       }
     } else {
       const inputWireId = findInputWire(socket.id);
@@ -1288,7 +1924,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         if (fromSocket) {
           const cached = getCachedOutputValue(fromSocket);
           if (cached !== undefined) {
-            valueLabel = `Value: ${formatValue(cached)}`;
+            valueLabel = `Value: ${formatSocketValue(fromSocket, cached)}`;
           }
         }
       }
@@ -1300,6 +1936,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       title,
       typeLabel,
       valueLabel,
+      connectionLabel: formatSocketConnectionLabel(socket),
     };
   };
 
@@ -1324,16 +1961,18 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       return null;
     }
     const screenPoint = scene.worldToScreen(midpoint);
-    const typeLabel = `Type: ${getSocketTypeLabel(fromSocket.dataType)}`;
+    const typeLabel = formatSocketTypeLabel(fromSocket);
     let valueLabel = "Value: No cached value";
     const cached = getCachedOutputValue(fromSocket);
     if (cached !== undefined) {
-      valueLabel = `Value: ${formatValue(cached)}`;
+      valueLabel = `Value: ${formatSocketValue(fromSocket, cached)}`;
     }
     return {
       x: screenPoint.x + 12,
       y: screenPoint.y + 12,
-      title: `${fromSocket.name} -> ${toSocket.name}`,
+      title: `${getSocketDisplayLabel(fromSocket)} -> ${getSocketDisplayLabel(
+        toSocket,
+      )}`,
       typeLabel,
       valueLabel,
     };
@@ -1373,72 +2012,228 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const getWireHoverStatus = (
     fromSocketId: SocketId,
     hit: ReturnType<CanvasScene["hitTest"]>,
-  ): {
-    status: WireHoverStatus;
-    targetPosition: Point | null;
-    targetSocketId: SocketId | null;
-  } => {
+  ): WireHoverResult => {
     if (hit.kind !== "socket") {
-      return { status: "neutral", targetPosition: null, targetSocketId: null };
-    }
-    const fromSocket = graphSnapshot.sockets.get(fromSocketId);
-    const toSocket = graphSnapshot.sockets.get(hit.socketId);
-    if (!fromSocket || !toSocket) {
       return {
-        status: "invalid",
-        targetPosition: hit.position,
+        status: "neutral",
+        targetPosition: null,
         targetSocketId: null,
+        reason: null,
       };
     }
+    return getWireHoverStatusFromOutput(
+      fromSocketId,
+      hit.socketId,
+      hit.position,
+    );
+  };
+
+  const getWireConnectionCheck = (
+    fromSocket: GraphSocket,
+    toSocket: GraphSocket,
+  ): Readonly<{
+    status: WireHoverStatus;
+    reason: ConnectionAttemptReason | null;
+  }> => {
     if (fromSocket.direction !== "output" || toSocket.direction !== "input") {
-      return {
-        status: "invalid",
-        targetPosition: hit.position,
-        targetSocketId: toSocket.id,
-      };
+      return { status: "invalid", reason: "direction" };
     }
     if (fromSocket.nodeId === toSocket.nodeId) {
-      return {
-        status: "invalid",
-        targetPosition: hit.position,
-        targetSocketId: toSocket.id,
-      };
+      return { status: "invalid", reason: "self-loop" };
     }
     if (!isSocketTypeCompatible(fromSocket.dataType, toSocket.dataType)) {
-      return {
-        status: "invalid",
-        targetPosition: hit.position,
-        targetSocketId: toSocket.id,
-      };
+      return { status: "invalid", reason: "type-mismatch" };
     }
     const fromMax = getSocketMaxConnections(fromSocket);
     if (fromMax !== null && getSocketConnectionCount(fromSocket) >= fromMax) {
-      return {
-        status: "invalid",
-        targetPosition: hit.position,
-        targetSocketId: toSocket.id,
-      };
+      return { status: "invalid", reason: "connection-limit" };
     }
     const toMax = getSocketMaxConnections(toSocket);
     if (toMax !== null && getSocketConnectionCount(toSocket) >= toMax) {
-      return {
-        status: "invalid",
-        targetPosition: hit.position,
-        targetSocketId: toSocket.id,
-      };
+      return { status: "invalid", reason: "connection-limit" };
     }
     if (wouldCreateCycle(fromSocket.nodeId, toSocket.nodeId)) {
+      return { status: "invalid", reason: "cycle" };
+    }
+    return { status: "valid", reason: null };
+  };
+
+  const getWireHoverStatusFromOutput = (
+    fromSocketId: SocketId,
+    targetSocketId: SocketId,
+    targetPosition: Point,
+  ): WireHoverResult => {
+    const fromSocket = graphSnapshot.sockets.get(fromSocketId);
+    const toSocket = graphSnapshot.sockets.get(targetSocketId);
+    if (!fromSocket || !toSocket) {
       return {
         status: "invalid",
-        targetPosition: hit.position,
-        targetSocketId: toSocket.id,
+        targetPosition,
+        targetSocketId: null,
+        reason: "missing-socket",
       };
     }
+    const connectionCheck = getWireConnectionCheck(fromSocket, toSocket);
     return {
-      status: "valid",
-      targetPosition: hit.position,
+      status: connectionCheck.status,
+      targetPosition,
       targetSocketId: toSocket.id,
+      reason: connectionCheck.reason,
     };
+  };
+
+  const getWireHoverStatusFromInput = (
+    toSocketId: SocketId,
+    targetSocketId: SocketId,
+    targetPosition: Point,
+  ): WireHoverResult => {
+    const toSocket = graphSnapshot.sockets.get(toSocketId);
+    const fromSocket = graphSnapshot.sockets.get(targetSocketId);
+    if (!fromSocket || !toSocket) {
+      return {
+        status: "invalid",
+        targetPosition,
+        targetSocketId: null,
+        reason: "missing-socket",
+      };
+    }
+    const connectionCheck = getWireConnectionCheck(fromSocket, toSocket);
+    return {
+      status: connectionCheck.status,
+      targetPosition,
+      targetSocketId: fromSocket.id,
+      reason: connectionCheck.reason,
+    };
+  };
+
+  const getSnapSocketHit = (
+    worldPoint: Point,
+    direction: GraphSocket["direction"],
+    excludeSocketId: SocketId | null,
+  ): ReturnType<CanvasScene["hitTest"]> | null => {
+    if (!scene) {
+      return null;
+    }
+    const zoom = Math.max(scene.getZoom(), 0.001);
+    const maxDistanceWorld = WIRE_SNAP_DISTANCE_PX / zoom;
+    const maxDistanceSq = maxDistanceWorld * maxDistanceWorld;
+    let best: {
+      socketId: SocketId;
+      nodeId: NodeId;
+      position: Point;
+      distanceSq: number;
+    } | null = null;
+    for (const socket of graphSnapshot.sockets.values()) {
+      if (socket.direction !== direction) {
+        continue;
+      }
+      if (excludeSocketId && socket.id === excludeSocketId) {
+        continue;
+      }
+      const position = getSceneSocketPosition(socket.id);
+      if (!position) {
+        continue;
+      }
+      const distanceSq = distanceSquared(worldPoint, position);
+      if (distanceSq > maxDistanceSq) {
+        continue;
+      }
+      if (!best || distanceSq < best.distanceSq) {
+        best = {
+          socketId: socket.id,
+          nodeId: socket.nodeId,
+          position,
+          distanceSq,
+        };
+      }
+    }
+    if (!best) {
+      return null;
+    }
+    return {
+      kind: "socket",
+      socketId: best.socketId,
+      nodeId: best.nodeId,
+      position: best.position,
+    };
+  };
+
+  const getWireDragHover = (
+    screenPoint: Point,
+    worldPoint: Point,
+    drag: Extract<DragState, { kind: "wire" }>,
+  ): WireHoverResult => {
+    if (!scene) {
+      return {
+        status: "neutral",
+        targetPosition: null,
+        targetSocketId: null,
+        reason: null,
+      };
+    }
+    let hit = scene.hitTest(screenPoint);
+    if (hit.kind !== "socket") {
+      const snapDirection =
+        drag.dragMode === "from-output" ? "input" : "output";
+      const snapHit = getSnapSocketHit(
+        worldPoint,
+        snapDirection,
+        drag.anchorSocketId,
+      );
+      if (snapHit) {
+        hit = snapHit;
+      }
+    }
+    if (hit.kind !== "socket") {
+      return {
+        status: "neutral",
+        targetPosition: null,
+        targetSocketId: null,
+        reason: null,
+      };
+    }
+    if (drag.dragMode === "from-output") {
+      return getWireHoverStatus(drag.anchorSocketId, hit);
+    }
+    return getWireHoverStatusFromInput(
+      drag.anchorSocketId,
+      hit.socketId,
+      hit.position,
+    );
+  };
+
+  const applyWireAutoScroll = (screenPoint: Point): boolean => {
+    if (!scene || !container) {
+      return false;
+    }
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    const margin = WIRE_AUTO_SCROLL_MARGIN_PX;
+    const maxX = width - margin;
+    const maxY = height - margin;
+    let deltaX = 0;
+    let deltaY = 0;
+    if (screenPoint.x < margin) {
+      deltaX = -((margin - screenPoint.x) / margin) * WIRE_AUTO_SCROLL_SPEED_PX;
+    } else if (screenPoint.x > maxX) {
+      deltaX = ((screenPoint.x - maxX) / margin) * WIRE_AUTO_SCROLL_SPEED_PX;
+    }
+    if (screenPoint.y < margin) {
+      deltaY = -((margin - screenPoint.y) / margin) * WIRE_AUTO_SCROLL_SPEED_PX;
+    } else if (screenPoint.y > maxY) {
+      deltaY = ((screenPoint.y - maxY) / margin) * WIRE_AUTO_SCROLL_SPEED_PX;
+    }
+    if (deltaX === 0 && deltaY === 0) {
+      return false;
+    }
+    const zoom = Math.max(scene.getZoom(), 0.05);
+    scene.panCameraBy({ x: deltaX / zoom, y: deltaY / zoom });
+    setCanvasCenter(scene.getCameraCenter());
+    syncScene();
+    return true;
   };
 
   const getWireColor = (status: WireHoverStatus): number => {
@@ -1482,8 +2277,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     if (!wire) {
       return null;
     }
-    const from = getSocketPosition(graphSnapshot, wire.fromSocketId, layout);
-    const to = getSocketPosition(graphSnapshot, wire.toSocketId, layout);
+    const from = getSceneSocketPosition(wire.fromSocketId);
+    const to = getSceneSocketPosition(wire.toSocketId);
     if (!from || !to) {
       return null;
     }
@@ -1600,14 +2395,6 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     commitHistoryBatch();
     if (inserted) {
       setWireSelection(new Set<WireId>());
-    }
-  };
-
-  const insertDefaultNodeOnWire = (wireId: WireId): void => {
-    const candidates = getWireInsertCandidates(wireId);
-    const defaultCandidate = candidates[0];
-    if (defaultCandidate) {
-      insertNodeOnWire(wireId, defaultCandidate);
     }
   };
 
@@ -1759,6 +2546,16 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const buildContextMenuEntries = (
     menu: ContextMenuState,
   ): ContextMenuEntry[] => {
+    if (menu.mode === "wire-insert" && menu.hit.kind === "wire") {
+      const insertCandidates = getWireInsertCandidates(menu.hit.wireId);
+      return insertCandidates.map((candidate) => ({
+        kind: "item",
+        label: `Insert ${candidate.label}`,
+        onSelect: () => {
+          insertNodeOnWire(menu.hit.wireId, candidate);
+        },
+      }));
+    }
     const entries: ContextMenuEntry[] = [
       {
         kind: "item",
@@ -1775,6 +2572,43 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         },
       },
     ];
+    const hasGroupingTargets =
+      selectedNodesSnapshot.size > 0 || selectedFramesSnapshot.size > 0;
+    const hasGroupingEntries =
+      hasGroupingTargets || graphSnapshot.nodes.size > 0;
+    if (hasGroupingEntries) {
+      pushSeparator(entries);
+      if (hasGroupingTargets) {
+        entries.push({
+          kind: "item",
+          label: "Group Selection",
+          onSelect: () => {
+            groupSelectionIntoFrame();
+          },
+        });
+      }
+      if (selectedFramesSnapshot.size > 0) {
+        entries.push({
+          kind: "item",
+          label: "Ungroup Frames",
+          onSelect: () => {
+            ungroupSelectedFrames();
+          },
+        });
+      }
+      if (graphSnapshot.nodes.size > 0) {
+        entries.push({
+          kind: "item",
+          label:
+            selectedNodesSnapshot.size > 0
+              ? "Frame Selection by Category"
+              : "Frame by Category",
+          onSelect: () => {
+            frameNodesByCategory();
+          },
+        });
+      }
+    }
     const hasSelection =
       selectedNodesSnapshot.size > 0 ||
       selectedFramesSnapshot.size > 0 ||
@@ -1787,6 +2621,15 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           deleteSelection();
         },
       });
+      if (selectedNodesSnapshot.size > 0) {
+        entries.push({
+          kind: "item",
+          label: "Delete Selection + Bridge Wires",
+          onSelect: () => {
+            deleteSelection("bridge");
+          },
+        });
+      }
     }
     if (selectedNodesSnapshot.size > 0 && onCollapseSelectionToSubgraph) {
       entries.push({
@@ -1839,7 +2682,22 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           kind: "item",
           label: "Delete Node",
           onSelect: () => {
-            removeNodes([menu.hit.nodeId], "delete-node");
+            removeNodesWithReconnect(
+              [menu.hit.nodeId],
+              "delete-node",
+              "remove",
+            );
+          },
+        });
+        entries.push({
+          kind: "item",
+          label: "Delete Node + Bridge Wires",
+          onSelect: () => {
+            removeNodesWithReconnect(
+              [menu.hit.nodeId],
+              "delete-node-bridge",
+              "bridge",
+            );
           },
         });
         entries.push({
@@ -1853,6 +2711,18 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       }
       case "frame":
         pushSeparator(entries);
+        {
+          const frame = graphSnapshot.frames.get(menu.hit.frameId);
+          if (frame) {
+            entries.push({
+              kind: "item",
+              label: frame.collapsed ? "Expand Frame" : "Collapse Frame",
+              onSelect: () => {
+                toggleFrameCollapsed(menu.hit.frameId);
+              },
+            });
+          }
+        }
         entries.push({
           kind: "item",
           label: "Delete Frame",
@@ -1989,7 +2859,11 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         if (!scene) {
           return;
         }
-        scene.updateWireFlow(performance.now());
+        scene.updateWireFlow(performance.now(), {
+          enabled:
+            settingsSnapshot.executionVizEnabled &&
+            (execVisualizationSnapshot?.active ?? false),
+        });
       };
       app.ticker.add(onTick);
 
@@ -2026,6 +2900,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       const openContextMenu = (
         screenPoint: Point,
         clientPoint: Point,
+        mode: ContextMenuState["mode"] = "full",
       ): void => {
         if (!scene) {
           return;
@@ -2059,6 +2934,44 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           screen: screenPoint,
           world: worldPoint,
           hit,
+          mode,
+        });
+      };
+
+      const openWireInsertMenu = (
+        screenPoint: Point,
+        clientPoint: Point,
+        wireId: WireId,
+      ): void => {
+        if (!scene) {
+          return;
+        }
+        const insertCandidates = getWireInsertCandidates(wireId);
+        if (insertCandidates.length === 0) {
+          return;
+        }
+        const hit = scene.hitTest(screenPoint);
+        if (hit.kind !== "wire" || hit.wireId !== wireId) {
+          return;
+        }
+        const worldPoint = scene.screenToWorld(screenPoint);
+        updatePointerPosition(worldPoint, {
+          clientX: clientPoint.x,
+          clientY: clientPoint.y,
+        });
+        setSocketTooltip(null);
+        setHoveredNodeId(null);
+        setHoveredFrameId(null);
+        setHoveredWireId(null);
+        if (!selectedWiresSnapshot.has(wireId)) {
+          setWireSelection(new Set([wireId]));
+          setNodeSelection(new Set<NodeId>());
+        }
+        setContextMenu({
+          screen: screenPoint,
+          world: worldPoint,
+          hit,
+          mode: "wire-insert",
         });
       };
 
@@ -2100,8 +3013,55 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           } catch {
             // ignore capture errors when pointer isn't held
           }
-          openContextMenu(screen, client);
+          openContextMenu(screen, client, "full");
         }, LONG_PRESS_DURATION_MS);
+      };
+
+      const startWireDragFromWire = (
+        wireId: WireId,
+        worldPoint: Point,
+        pointerId: number,
+      ): boolean => {
+        const wire = graphSnapshot.wires.get(wireId);
+        if (!wire) {
+          return false;
+        }
+        const fromPosition = getSceneSocketPosition(wire.fromSocketId);
+        const toPosition = getSceneSocketPosition(wire.toSocketId);
+        if (!fromPosition || !toPosition) {
+          return false;
+        }
+        const dragOutputEnd =
+          distanceSquared(worldPoint, fromPosition) <=
+          distanceSquared(worldPoint, toPosition);
+        const removed = applyGraphCommandTransient({
+          kind: "remove-wire",
+          wire,
+        });
+        if (!removed) {
+          return false;
+        }
+        const dragMode: WireDragMode = dragOutputEnd
+          ? "from-input"
+          : "from-output";
+        const anchorSocketId = dragOutputEnd
+          ? wire.toSocketId
+          : wire.fromSocketId;
+        const anchorPosition = dragOutputEnd ? toPosition : fromPosition;
+        ghostWire.visible = true;
+        updateGhostWire(ghostWire, anchorPosition, worldPoint, "neutral");
+        socketHover.clear();
+        socketHover.visible = false;
+        dragState = {
+          kind: "wire",
+          dragMode,
+          anchorSocketId,
+          anchorPosition,
+          current: worldPoint,
+          grabbedWire: wire,
+        };
+        app.canvas.setPointerCapture(pointerId);
+        return true;
       };
 
       const onPointerDown = (event: PointerEvent): void => {
@@ -2109,6 +3069,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           return;
         }
         startLongPress(event);
+        wireTapCandidate = null;
         if (event.button === 1) {
           event.preventDefault();
           setContextMenu(null);
@@ -2137,8 +3098,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             updateGhostWire(ghostWire, hit.position, worldPoint, "neutral");
             dragState = {
               kind: "wire",
-              fromSocketId: socket.id,
-              fromPosition: hit.position,
+              dragMode: "from-output",
+              anchorSocketId: socket.id,
+              anchorPosition: hit.position,
               current: worldPoint,
               grabbedWire: null,
             };
@@ -2155,8 +3117,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               return;
             }
             const fromPosition =
-              getSocketPosition(graphSnapshot, wire.fromSocketId, layout) ??
-              hit.position;
+              getSceneSocketPosition(wire.fromSocketId) ?? hit.position;
             const removed = applyGraphCommandTransient({
               kind: "remove-wire",
               wire,
@@ -2168,8 +3129,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             updateGhostWire(ghostWire, fromPosition, worldPoint, "neutral");
             dragState = {
               kind: "wire",
-              fromSocketId: wire.fromSocketId,
-              fromPosition,
+              dragMode: "from-output",
+              anchorSocketId: wire.fromSocketId,
+              anchorPosition: fromPosition,
               current: worldPoint,
               grabbedWire: wire,
             };
@@ -2224,6 +3186,23 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         }
 
         if (hit.kind === "frame") {
+          const frame = graphSnapshot.frames.get(hit.frameId);
+          const resizeHandle =
+            frame && !event.shiftKey
+              ? getFrameResizeHandle(frame, worldPoint)
+              : null;
+          if (frame && resizeHandle) {
+            setFrameSelection(new Set([hit.frameId]));
+            dragState = {
+              kind: "resize-frame",
+              frameId: hit.frameId,
+              handle: resizeHandle,
+              origin: worldPoint,
+              startFrame: frame,
+            };
+            app.canvas.setPointerCapture(event.pointerId);
+            return;
+          }
           const next = new Set(selectedFramesSnapshot);
           if (event.shiftKey) {
             if (next.has(hit.frameId)) {
@@ -2240,14 +3219,34 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             dragState = { kind: "none" };
             return;
           }
-          const startPositions = new Map<FrameId, Point>();
-          for (const frameId of next) {
+          const hierarchy = buildFrameHierarchy(graphSnapshot.frames.values());
+          const moveFrameIds = collectFrameDescendants(next, hierarchy);
+          const nodeOwners = getNodeFrameOwners(
+            graphSnapshot.nodes.values(),
+            layout,
+            hierarchy,
+          );
+          const startFramePositions = new Map<FrameId, Point>();
+          for (const frameId of moveFrameIds) {
             const frame = graphSnapshot.frames.get(frameId);
             if (frame) {
-              startPositions.set(frameId, { ...frame.position });
+              startFramePositions.set(frameId, { ...frame.position });
             }
           }
-          const dragBounds = getFrameDragBounds(startPositions);
+          const startNodePositions = new Map<NodeId, Point>();
+          for (const [nodeId, ownerFrameId] of nodeOwners.entries()) {
+            if (!moveFrameIds.has(ownerFrameId)) {
+              continue;
+            }
+            const node = graphSnapshot.nodes.get(nodeId);
+            if (node) {
+              startNodePositions.set(nodeId, { ...node.position });
+            }
+          }
+          const dragBounds = mergeBounds(
+            getFrameDragBounds(startFramePositions),
+            getDragBounds(startNodePositions),
+          );
           if (!dragBounds) {
             dragState = { kind: "none" };
             return;
@@ -2255,7 +3254,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           dragState = {
             kind: "drag-frames",
             origin: worldPoint,
-            startPositions,
+            startFramePositions,
+            startNodePositions,
             bounds: dragBounds,
           };
           app.canvas.setPointerCapture(event.pointerId);
@@ -2266,6 +3266,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           const next = new Set<WireId>();
           next.add(hit.wireId);
           setWireSelection(next);
+          wireTapCandidate = {
+            pointerId: event.pointerId,
+            wireId: hit.wireId,
+            screen: screenPoint,
+            client: { x: event.clientX, y: event.clientY },
+          };
           return;
         }
 
@@ -2303,7 +3309,30 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           }
         }
         const screenPoint = getScreenPoint(event);
-        const worldPoint = scene.screenToWorld(screenPoint);
+        if (
+          wireTapCandidate &&
+          event.pointerId === wireTapCandidate.pointerId
+        ) {
+          const dx = screenPoint.x - wireTapCandidate.screen.x;
+          const dy = screenPoint.y - wireTapCandidate.screen.y;
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_THRESHOLD) {
+            const candidate = wireTapCandidate;
+            wireTapCandidate = null;
+            if (dragState.kind === "none") {
+              const worldPoint = scene.screenToWorld(screenPoint);
+              if (
+                startWireDragFromWire(
+                  candidate.wireId,
+                  worldPoint,
+                  event.pointerId,
+                )
+              ) {
+                updatePointerPosition(worldPoint, event);
+              }
+            }
+          }
+        }
+        let worldPoint = scene.screenToWorld(screenPoint);
         updatePointerPosition(worldPoint, event);
 
         if (dragState.kind === "drag-nodes") {
@@ -2347,8 +3376,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             worldPoint,
             dragState.bounds,
           );
-          const beforeUpdates = Array.from(
-            dragState.startPositions.entries(),
+          const beforeFrameUpdates = Array.from(
+            dragState.startFramePositions.entries(),
           ).map(([frameId, start]) => {
             const current =
               graphSnapshot.frames.get(frameId)?.position ?? start;
@@ -2357,14 +3386,52 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               position: { x: current.x, y: current.y },
             };
           });
-          const afterUpdates = Array.from(
-            dragState.startPositions.entries(),
+          const afterFrameUpdates = Array.from(
+            dragState.startFramePositions.entries(),
           ).map(([frameId, start]) => ({
             frameId,
             position: { x: start.x + delta.x, y: start.y + delta.y },
           }));
+          const beforeNodeUpdates = Array.from(
+            dragState.startNodePositions.entries(),
+          ).map(([nodeId, start]) => {
+            const current = graphSnapshot.nodes.get(nodeId)?.position ?? start;
+            return {
+              nodeId,
+              position: { x: current.x, y: current.y },
+            };
+          });
+          const afterNodeUpdates = Array.from(
+            dragState.startNodePositions.entries(),
+          ).map(([nodeId, start]) => ({
+            nodeId,
+            position: { x: start.x + delta.x, y: start.y + delta.y },
+          }));
           applyGraphCommandTransient(
-            createMoveFramesCommand(beforeUpdates, afterUpdates),
+            createMoveNodesCommand(beforeNodeUpdates, afterNodeUpdates),
+          );
+          applyGraphCommandTransient(
+            createMoveFramesCommand(beforeFrameUpdates, afterFrameUpdates),
+          );
+          return;
+        }
+
+        if (dragState.kind === "resize-frame") {
+          setSocketTooltip(null);
+          setHoveredNodeId(null);
+          setHoveredFrameId(null);
+          setHoveredWireId(null);
+          const delta = {
+            x: worldPoint.x - dragState.origin.x,
+            y: worldPoint.y - dragState.origin.y,
+          };
+          const nextFrame = resizeFrame(
+            dragState.startFrame,
+            dragState.handle,
+            delta,
+          );
+          applyGraphCommandTransient(
+            createUpdateFrameCommand(dragState.startFrame, nextFrame),
           );
           return;
         }
@@ -2380,18 +3447,27 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         }
 
         if (dragState.kind === "wire") {
-          const hit = scene.hitTest(screenPoint);
-          const hover = getWireHoverStatus(dragState.fromSocketId, hit);
+          if (applyWireAutoScroll(screenPoint)) {
+            worldPoint = scene.screenToWorld(screenPoint);
+            updatePointerPosition(worldPoint, event);
+          }
+          const hover = getWireDragHover(screenPoint, worldPoint, dragState);
           const targetPosition = hover.targetPosition ?? worldPoint;
           dragState = { ...dragState, current: targetPosition };
           updateGhostWire(
             ghostWire,
-            dragState.fromPosition,
+            dragState.anchorPosition,
             targetPosition,
             hover.status,
           );
           updateSocketHover(socketHover, hover.targetPosition, hover.status);
-          setSocketTooltip(null);
+          if (hover.targetSocketId) {
+            setSocketTooltip(
+              buildSocketTooltip(hover.targetSocketId, screenPoint),
+            );
+          } else {
+            setSocketTooltip(null);
+          }
           setHoveredNodeId(null);
           setHoveredFrameId(null);
           setHoveredWireId(null);
@@ -2537,12 +3613,15 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           ghostWire.visible = false;
           socketHover.clear();
           socketHover.visible = false;
-          const hit = scene.hitTest(screenPoint);
-          const hover = getWireHoverStatus(dragState.fromSocketId, hit);
+          const hover = getWireDragHover(screenPoint, worldPoint, dragState);
           const grabbedWire = dragState.grabbedWire;
           if (hover.status === "valid" && hover.targetSocketId) {
             if (grabbedWire) {
-              if (hover.targetSocketId === grabbedWire.toSocketId) {
+              const isSameTarget =
+                dragState.dragMode === "from-output"
+                  ? hover.targetSocketId === grabbedWire.toSocketId
+                  : hover.targetSocketId === grabbedWire.fromSocketId;
+              if (isSameTarget) {
                 applyGraphCommandTransient({
                   kind: "add-wire",
                   wire: grabbedWire,
@@ -2554,8 +3633,14 @@ export default function EditorCanvas(props: EditorCanvasProps) {
                 kind: "add-wire",
                 wire: {
                   id: grabbedWire.id,
-                  fromSocketId: dragState.fromSocketId,
-                  toSocketId: hover.targetSocketId,
+                  fromSocketId:
+                    dragState.dragMode === "from-output"
+                      ? dragState.anchorSocketId
+                      : hover.targetSocketId,
+                  toSocketId:
+                    dragState.dragMode === "from-output"
+                      ? hover.targetSocketId
+                      : dragState.anchorSocketId,
                 },
               };
               const added = applyGraphCommandTransient(addCommand);
@@ -2567,7 +3652,11 @@ export default function EditorCanvas(props: EditorCanvasProps) {
                 dragState = { kind: "none" };
                 return;
               }
-              beginHistoryBatch("rewire-input");
+              beginHistoryBatch(
+                dragState.dragMode === "from-output"
+                  ? "rewire-input"
+                  : "rewire-output",
+              );
               recordGraphCommand({ kind: "remove-wire", wire: grabbedWire });
               recordGraphCommand(addCommand);
               commitHistoryBatch();
@@ -2581,8 +3670,14 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               kind: "add-wire",
               wire: {
                 id: wireId,
-                fromSocketId: dragState.fromSocketId,
-                toSocketId: hover.targetSocketId,
+                fromSocketId:
+                  dragState.dragMode === "from-output"
+                    ? dragState.anchorSocketId
+                    : hover.targetSocketId,
+                toSocketId:
+                  dragState.dragMode === "from-output"
+                    ? hover.targetSocketId
+                    : dragState.anchorSocketId,
               },
             });
             if (connected) {
@@ -2591,11 +3686,44 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             dragState = { kind: "none" };
             return;
           }
+          if (
+            hover.status === "invalid" &&
+            hover.targetSocketId &&
+            hover.reason
+          ) {
+            const fromSocketId =
+              dragState.dragMode === "from-output"
+                ? dragState.anchorSocketId
+                : hover.targetSocketId;
+            const toSocketId =
+              dragState.dragMode === "from-output"
+                ? hover.targetSocketId
+                : dragState.anchorSocketId;
+            recordConnectionAttempt(fromSocketId, toSocketId, hover.reason);
+          }
           if (grabbedWire) {
-            applyGraphCommandTransient({ kind: "add-wire", wire: grabbedWire });
+            beginHistoryBatch("disconnect-wire");
+            recordGraphCommand({ kind: "remove-wire", wire: grabbedWire });
+            commitHistoryBatch();
+            refreshActiveOutput();
+            setWireSelection(new Set<WireId>());
           }
           dragState = { kind: "none" };
           return;
+        }
+
+        if (
+          wireTapCandidate &&
+          event.pointerId === wireTapCandidate.pointerId
+        ) {
+          const tap = wireTapCandidate;
+          wireTapCandidate = null;
+          if (!contextMenu()) {
+            const hit = scene.hitTest(screenPoint);
+            if (hit.kind === "wire" && hit.wireId === tap.wireId) {
+              openWireInsertMenu(tap.screen, tap.client, tap.wireId);
+            }
+          }
         }
 
         if (dragState.kind === "drag-nodes") {
@@ -2631,19 +3759,65 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             worldPoint,
             dragState.bounds,
           );
-          const beforeUpdates = Array.from(
-            dragState.startPositions.entries(),
+          const beforeFrameUpdates = Array.from(
+            dragState.startFramePositions.entries(),
           ).map(([frameId, start]) => ({
             frameId,
             position: { x: start.x, y: start.y },
           }));
-          const afterUpdates = Array.from(
-            dragState.startPositions.entries(),
+          const afterFrameUpdates = Array.from(
+            dragState.startFramePositions.entries(),
           ).map(([frameId, start]) => ({
             frameId,
             position: { x: start.x + delta.x, y: start.y + delta.y },
           }));
-          const command = createMoveFramesCommand(beforeUpdates, afterUpdates);
+          const beforeNodeUpdates = Array.from(
+            dragState.startNodePositions.entries(),
+          ).map(([nodeId, start]) => ({
+            nodeId,
+            position: { x: start.x, y: start.y },
+          }));
+          const afterNodeUpdates = Array.from(
+            dragState.startNodePositions.entries(),
+          ).map(([nodeId, start]) => ({
+            nodeId,
+            position: { x: start.x + delta.x, y: start.y + delta.y },
+          }));
+          const frameCommand = createMoveFramesCommand(
+            beforeFrameUpdates,
+            afterFrameUpdates,
+          );
+          const nodeCommand = createMoveNodesCommand(
+            beforeNodeUpdates,
+            afterNodeUpdates,
+          );
+          beginHistoryBatch("move-frames");
+          if (!isNoopCommand(nodeCommand)) {
+            recordGraphCommand(nodeCommand);
+          }
+          if (!isNoopCommand(frameCommand)) {
+            recordGraphCommand(frameCommand);
+          }
+          commitHistoryBatch();
+          dragState = { kind: "none" };
+          setSocketTooltip(null);
+          return;
+        }
+
+        if (dragState.kind === "resize-frame") {
+          const delta = {
+            x: worldPoint.x - dragState.origin.x,
+            y: worldPoint.y - dragState.origin.y,
+          };
+          const nextFrame = resizeFrame(
+            dragState.startFrame,
+            dragState.handle,
+            delta,
+          );
+          const command = createUpdateFrameCommand(
+            dragState.startFrame,
+            nextFrame,
+          );
           if (!isNoopCommand(command)) {
             recordGraphCommand(command);
           }
@@ -2676,7 +3850,6 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         };
         const hit = scene.hitTest(screenPoint);
         if (hit.kind === "wire") {
-          insertDefaultNodeOnWire(hit.wireId);
           return;
         }
         if (hit.kind === "node") {
@@ -2783,6 +3956,25 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           } else {
             frameNodes(selectedNodesSnapshot);
           }
+          return;
+        }
+
+        const isGroup =
+          event.key.toLowerCase() === "g" &&
+          (event.metaKey || event.ctrlKey) &&
+          !event.shiftKey;
+        const isUngroup =
+          event.key.toLowerCase() === "g" &&
+          (event.metaKey || event.ctrlKey) &&
+          event.shiftKey;
+        if (isGroup) {
+          event.preventDefault();
+          groupSelectionIntoFrame();
+          return;
+        }
+        if (isUngroup) {
+          event.preventDefault();
+          ungroupSelectedFrames();
           return;
         }
 
@@ -2950,6 +4142,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     bypassedNodesSnapshot = bypassedNodes();
     collapsedNodesSnapshot = collapsedNodes();
     settingsSnapshot = settings();
+    execVisualizationSnapshot = execVisualization();
     commandPaletteOpenSnapshot = commandPaletteOpen();
     hoveredNodeIdSnapshot = hoveredNodeId();
     hoveredFrameIdSnapshot = hoveredFrameId();
@@ -3049,7 +4242,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       />
       {socketTooltip() ? (
         <div
-          class="pointer-events-none absolute z-10 max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
+          class="pointer-events-none absolute z-[var(--layer-canvas-overlay)] max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
           style={{
             left: `${socketTooltip()!.x}px`,
             top: `${socketTooltip()!.y}px`,
@@ -3064,11 +4257,16 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           <div class="mt-[0.2rem] text-[color:var(--text-strong)]">
             {socketTooltip()!.valueLabel}
           </div>
+          {socketTooltip()!.connectionLabel ? (
+            <div class="mt-[0.2rem] text-[color:var(--text-muted)]">
+              {socketTooltip()!.connectionLabel}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {wireTooltip() ? (
         <div
-          class="pointer-events-none absolute z-10 max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
+          class="pointer-events-none absolute z-[var(--layer-canvas-overlay)] max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
           style={{
             left: `${wireTooltip()!.x}px`,
             top: `${wireTooltip()!.y}px`,
@@ -3086,13 +4284,14 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       {contextMenu() ? (
         <>
           <div
-            class="absolute inset-0 z-10"
+            class="absolute inset-0 z-[var(--layer-canvas-overlay)]"
+            aria-hidden="true"
             onPointerDown={() => {
               setContextMenu(null);
             }}
           />
           <div
-            class="absolute z-20 min-w-[200px] rounded-xl border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-strong)] p-2 text-[0.8rem] text-[color:var(--text-soft)] shadow-[var(--shadow-panel)]"
+            class="absolute z-[var(--layer-canvas-menu)] min-w-[200px] rounded-xl border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-strong)] p-2 text-[0.8rem] text-[color:var(--text-soft)] shadow-[var(--shadow-panel)]"
             style={{
               left: `clamp(12px, ${contextMenu()!.screen.x}px, calc(100% - 220px))`,
               top: `clamp(12px, ${contextMenu()!.screen.y}px, calc(100% - 220px))`,
@@ -3100,13 +4299,19 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             onPointerDown={(event) => {
               event.stopPropagation();
             }}
+            role="menu"
+            aria-label="Canvas actions"
           >
             {buildContextMenuEntries(contextMenu()!).map((entry) =>
               entry.kind === "separator" ? (
-                <div class="my-1 h-px bg-[color:var(--border-subtle)]" />
+                <div
+                  class="my-1 h-px bg-[color:var(--border-subtle)]"
+                  role="separator"
+                />
               ) : (
                 <button
                   class="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--surface-highlight)]"
+                  role="menuitem"
                   onClick={() => {
                     entry.onSelect();
                     setContextMenu(null);

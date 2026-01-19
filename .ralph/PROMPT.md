@@ -2,7 +2,7 @@
 
 ## 0. Orientation
 
-0a. Study `AGENT.md` to understand build/run commands and learnings.
+0a. Study `AGENTS.md` to understand build/run commands and learnings.
 0b. Study `fix_plan.md` to understand current tasks and priorities.
 0c. Study `specs/architecture.md` to understand project structure.
 0d. Study `FEATURES.md` to understand overall goals and features of the project.
@@ -38,7 +38,7 @@ When you make changes:
 
 - Update `fix_plan.md`: mark task complete `[x]` or add new discoveries
 - Update `specs/architecture.md` if you change project structure
-- Update `AGENT.md` Learnings section if you discover important patterns
+- Update `docs/agents/learnings.md` Learnings section if you discover important patterns
 
 **Capture the why** - document not just what you did, but why it matters.
 
@@ -58,4 +58,4 @@ When you make changes:
 
 104. If you discover bugs unrelated to current task, document them in `fix_plan.md` but don't fix them this iteration.
 
-105. If stuck for multiple attempts, document the blocker in `AGENT.md` Learnings section and move on.
+105. If stuck for multiple attempts, document the blocker in `docs/agents/learnings.md` Learnings section and move on.

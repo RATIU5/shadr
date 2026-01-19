@@ -19,6 +19,8 @@ export {
   getSocketPosition,
 };
 export type {
+  CanvasExecutionNodeState,
+  CanvasExecutionState,
   CanvasSceneOptions,
   HitTestConfig,
   HitTestResult,

@@ -21,6 +21,8 @@ import {
   removeFrame,
   removeNode,
   removeWire,
+  replaceNodeIo,
+  updateFrame,
   updateNodeIo,
   updateParam,
 } from "@shadr/graph-core";
@@ -65,6 +67,11 @@ export type GraphCommand =
       after: ReadonlyArray<FramePositionUpdate>;
     }>
   | Readonly<{
+      kind: "update-frame";
+      before: GraphFrame;
+      after: GraphFrame;
+    }>
+  | Readonly<{
       kind: "update-param";
       nodeId: NodeId;
       key: string;
@@ -78,6 +85,15 @@ export type GraphCommand =
         sockets: ReadonlyArray<GraphSocket>;
       }>;
       after: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>;
+    }>
+  | Readonly<{
+      kind: "replace-node-io";
+      before: Readonly<{
+        node: GraphNode;
+        sockets: ReadonlyArray<GraphSocket>;
+      }>;
+      after: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>;
+      removedWires: ReadonlyArray<GraphWire>;
     }>;
 
 export type HistoryEntry = Readonly<{
@@ -152,6 +168,12 @@ export const isNoopCommand = (command: GraphCommand): boolean => {
       areSocketsEqual(command.before.sockets, command.after.sockets)
     );
   }
+  if (command.kind === "replace-node-io") {
+    return (
+      isNodeEqual(command.before.node, command.after.node) &&
+      areSocketsEqual(command.before.sockets, command.after.sockets)
+    );
+  }
   if (command.kind === "move-nodes") {
     if (command.before.length !== command.after.length) {
       return false;
@@ -184,6 +206,9 @@ export const isNoopCommand = (command: GraphCommand): boolean => {
     }
     return true;
   }
+  if (command.kind === "update-frame") {
+    return isFrameEqual(command.before, command.after);
+  }
   return false;
 };
 
@@ -208,10 +233,14 @@ export const applyCommandEffect = (
       return moveNodes(graph, command.after);
     case "move-frames":
       return moveFrames(graph, command.after);
+    case "update-frame":
+      return updateFrame(graph, command.after.id, command.after);
     case "update-param":
       return updateParam(graph, command.nodeId, command.key, command.after);
     case "update-node-io":
       return updateNodeIo(graph, command.after.node, command.after.sockets);
+    case "replace-node-io":
+      return replaceNodeIo(graph, command.after.node, command.after.sockets);
   }
 };
 
@@ -257,6 +286,14 @@ export const getUndoCommands = (
           after: command.before,
         },
       ];
+    case "update-frame":
+      return [
+        {
+          kind: "update-frame",
+          before: command.after,
+          after: command.before,
+        },
+      ];
     case "update-param":
       return [
         {
@@ -274,6 +311,16 @@ export const getUndoCommands = (
           before: command.after,
           after: command.before,
         },
+      ];
+    case "replace-node-io":
+      return [
+        {
+          kind: "replace-node-io",
+          before: command.after,
+          after: command.before,
+          removedWires: command.removedWires,
+        },
+        ...command.removedWires.map((wire) => ({ kind: "add-wire", wire })),
       ];
   }
 };
@@ -349,6 +396,15 @@ export const createMoveFramesCommand = (
   after,
 });
 
+export const createUpdateFrameCommand = (
+  before: GraphFrame,
+  after: GraphFrame,
+): GraphCommand => ({
+  kind: "update-frame",
+  before,
+  after,
+});
+
 export const createUpdateParamCommand = (
   nodeId: NodeId,
   key: string,
@@ -378,7 +434,44 @@ export const commandAffectsExecution = (command: GraphCommand): boolean =>
     "remove-node",
     "update-param",
     "update-node-io",
+    "replace-node-io",
   ].includes(command.kind);
+
+export const createReplaceNodeIoCommand = (
+  graph: Graph,
+  before: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>,
+  after: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>,
+): GraphCommand => {
+  const beforeSocketIds = new Set<SocketId>([
+    ...before.node.inputs,
+    ...before.node.outputs,
+  ]);
+  const afterSocketIds = new Set<SocketId>([
+    ...after.node.inputs,
+    ...after.node.outputs,
+  ]);
+  const removedSocketIds = new Set<SocketId>();
+  for (const socketId of beforeSocketIds) {
+    if (!afterSocketIds.has(socketId)) {
+      removedSocketIds.add(socketId);
+    }
+  }
+  const removedWires: GraphWire[] = [];
+  for (const wire of graph.wires.values()) {
+    if (
+      removedSocketIds.has(wire.fromSocketId) ||
+      removedSocketIds.has(wire.toSocketId)
+    ) {
+      removedWires.push(wire);
+    }
+  }
+  return {
+    kind: "replace-node-io",
+    before,
+    after,
+    removedWires,
+  };
+};
 
 const isNodeEqual = (left: GraphNode, right: GraphNode): boolean => {
   if (
@@ -394,6 +487,29 @@ const isNodeEqual = (left: GraphNode, right: GraphNode): boolean => {
     return false;
   }
   if (!arrayEqual(left.outputs, right.outputs)) {
+    return false;
+  }
+  return true;
+};
+
+const isFrameEqual = (left: GraphFrame, right: GraphFrame): boolean => {
+  if (
+    left.id !== right.id ||
+    left.title !== right.title ||
+    left.description !== right.description ||
+    left.color !== right.color ||
+    left.collapsed !== right.collapsed ||
+    left.position.x !== right.position.x ||
+    left.position.y !== right.position.y ||
+    left.size.width !== right.size.width ||
+    left.size.height !== right.size.height
+  ) {
+    return false;
+  }
+  if (!arrayEqual(left.exposedInputs ?? [], right.exposedInputs ?? [])) {
+    return false;
+  }
+  if (!arrayEqual(left.exposedOutputs ?? [], right.exposedOutputs ?? [])) {
     return false;
   }
   return true;
@@ -426,16 +542,65 @@ const areSocketsEqual = (
   return true;
 };
 
+const isLabelSettingsEqual = (
+  left: GraphSocket["labelSettings"],
+  right: GraphSocket["labelSettings"],
+): boolean => {
+  if (!left && !right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  if (left.visible !== right.visible) {
+    return false;
+  }
+  if (left.position !== right.position) {
+    return false;
+  }
+  const leftOffset = left.offset;
+  const rightOffset = right.offset;
+  if (!leftOffset && !rightOffset) {
+    return true;
+  }
+  if (!leftOffset || !rightOffset) {
+    return false;
+  }
+  return leftOffset.x === rightOffset.x && leftOffset.y === rightOffset.y;
+};
+
+const isSocketMetadataEqual = (
+  left: GraphSocket["metadata"],
+  right: GraphSocket["metadata"],
+): boolean => {
+  if (!left && !right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.units === right.units &&
+    left.min === right.min &&
+    left.max === right.max &&
+    left.step === right.step &&
+    left.format === right.format
+  );
+};
+
 const isSocketEqual = (left: GraphSocket, right: GraphSocket): boolean => {
   if (
     left.id !== right.id ||
     left.nodeId !== right.nodeId ||
     left.name !== right.name ||
+    left.label !== right.label ||
     left.direction !== right.direction ||
     left.dataType !== right.dataType ||
     left.required !== right.required ||
     left.minConnections !== right.minConnections ||
-    left.maxConnections !== right.maxConnections
+    left.maxConnections !== right.maxConnections ||
+    !isLabelSettingsEqual(left.labelSettings, right.labelSettings) ||
+    !isSocketMetadataEqual(left.metadata, right.metadata)
   ) {
     return false;
   }

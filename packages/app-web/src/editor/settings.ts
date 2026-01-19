@@ -6,6 +6,7 @@ export type EditorSettings = Readonly<{
   gridVisible: boolean;
   snapToGrid: boolean;
   wireHoverLabels: boolean;
+  executionVizEnabled: boolean;
 }>;
 
 export type PointLike = Readonly<{ x: number; y: number }>;
@@ -23,6 +24,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   gridVisible: true,
   snapToGrid: false,
   wireHoverLabels: false,
+  executionVizEnabled: false,
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -67,6 +69,9 @@ export const coerceSettings = (value: JsonObject | null): EditorSettings => {
     wireHoverLabels: isBoolean(value.wireHoverLabels)
       ? value.wireHoverLabels
       : DEFAULT_SETTINGS.wireHoverLabels,
+    executionVizEnabled: isBoolean(value.executionVizEnabled)
+      ? value.executionVizEnabled
+      : DEFAULT_SETTINGS.executionVizEnabled,
   };
 };
 
@@ -77,6 +82,7 @@ export const settingsToJson = (settings: EditorSettings): JsonObject => ({
   gridVisible: settings.gridVisible,
   snapToGrid: settings.snapToGrid,
   wireHoverLabels: settings.wireHoverLabels,
+  executionVizEnabled: settings.executionVizEnabled,
 });
 
 export const snapPointToGrid = <T extends PointLike>(point: T): T => ({

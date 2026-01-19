@@ -1,5 +1,11 @@
 /* eslint-disable no-unused-vars */
-import type { JsonValue, NodeId, SocketTypeId } from "@shadr/shared";
+import type {
+  GraphSocketLabelSettings,
+  GraphSocketMetadata,
+  JsonValue,
+  NodeId,
+  SocketTypeId,
+} from "@shadr/shared";
 import type { Effect } from "effect";
 
 export type PluginId = string;
@@ -52,6 +58,8 @@ export type NodeSocketBase = Readonly<{
   isOptional?: boolean;
   minConnections?: number;
   maxConnections?: number;
+  labelSettings?: GraphSocketLabelSettings;
+  metadata?: GraphSocketMetadata;
 }>;
 
 export type NodeInputDefinition = NodeSocketBase &

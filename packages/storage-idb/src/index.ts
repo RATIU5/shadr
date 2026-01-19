@@ -100,6 +100,27 @@ const isGraphFrameV1 = (value: unknown): boolean => {
   if (!isString(record["id"]) || !isString(record["title"])) {
     return false;
   }
+  if (record["description"] !== undefined && !isString(record["description"])) {
+    return false;
+  }
+  if (record["color"] !== undefined && !isNumber(record["color"])) {
+    return false;
+  }
+  if (record["collapsed"] !== undefined && !isBoolean(record["collapsed"])) {
+    return false;
+  }
+  if (
+    record["exposedInputs"] !== undefined &&
+    !isStringArray(record["exposedInputs"])
+  ) {
+    return false;
+  }
+  if (
+    record["exposedOutputs"] !== undefined &&
+    !isStringArray(record["exposedOutputs"])
+  ) {
+    return false;
+  }
   const position = record["position"];
   const size = record["size"];
   if (!isRecord(position) || !isRecord(size)) {

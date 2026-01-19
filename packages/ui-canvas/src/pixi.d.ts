@@ -41,6 +41,7 @@ declare module "pixi.js" {
     clear(): this;
     rect(x: number, y: number, width: number, height: number): this;
     circle(x: number, y: number, radius: number): this;
+    poly(points: ReadonlyArray<number>, close?: boolean): this;
     fill(color?: number): this;
     moveTo(x: number, y: number): this;
     lineTo(x: number, y: number): this;

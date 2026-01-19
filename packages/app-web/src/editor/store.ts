@@ -38,8 +38,14 @@ import { Either } from "effect";
 import type { Accessor } from "solid-js";
 import { createSignal } from "solid-js";
 
+import { CONVERSION_REGISTRY } from "~/editor/conversion-registry";
+import type { DebugEvent } from "~/editor/debug-events";
 import { resolveNodeDefinition } from "~/editor/exec";
 import type { ExecDebugEntry, ExecDebugNodeError } from "~/editor/exec-debug";
+import {
+  createExecWorkerClient,
+  type ExecWorkerProgress,
+} from "~/editor/exec-worker-client";
 import type { GraphCommand, HistoryEntry } from "~/editor/history";
 import {
   applyCommandEffect,
@@ -53,12 +59,19 @@ import {
   createDefaultParams,
   getNodeCatalogEntry,
 } from "~/editor/node-catalog";
+import { isOutputNodeType } from "~/editor/output-artifacts";
 import {
   DEFAULT_SETTINGS,
   type EditorSettings,
   snapPointToGrid,
 } from "~/editor/settings";
 import type { GraphBreadcrumb } from "~/editor/ui-state";
+import type {
+  ConnectionAttempt,
+  ConnectionAttemptReason,
+  ValidationWarning,
+} from "~/editor/validation-warnings";
+import { collectValidationWarnings } from "~/editor/validation-warnings";
 import {
   evaluateSocketWithStatsEffect,
   markDirtyForWireChangeEffect,
@@ -69,7 +82,26 @@ import { runAppEffectSyncEither } from "~/services/runtime";
 type ExecStatsWindow = Window & { __SHADR_EXEC_STATS__?: ExecEvaluationStats };
 type Point = Readonly<{ x: number; y: number }>;
 type PointerPosition = Readonly<{ screen: Point; world: Point }>;
+type ExecProgress = Readonly<{ completed: number; total: number }>;
+export type ExecVisualizationEntry = Readonly<{
+  nodeId: NodeId;
+  nodeType: string;
+  durationMs: number;
+  cacheHit: boolean;
+  order: number;
+}>;
+export type ExecVisualizationState = Readonly<{
+  runId: number;
+  active: boolean;
+  totalMs: number;
+  maxDurationMs: number;
+  nodes: ReadonlyMap<NodeId, ExecVisualizationEntry>;
+  timeline: ReadonlyArray<ExecVisualizationEntry>;
+}>;
 const MAX_EXEC_HISTORY = 50;
+const MAX_CONNECTION_ATTEMPTS = 50;
+const MAX_DEBUG_EVENTS = 200;
+const MAX_WATCHED_SOCKETS = 50;
 
 /* eslint-disable no-unused-vars */
 export type EditorStore = Readonly<{
@@ -79,7 +111,12 @@ export type EditorStore = Readonly<{
   activeOutputSocketId: Accessor<SocketId | null>;
   outputValue: Accessor<JsonValue | null>;
   outputError: Accessor<ExecError | null>;
+  outputProgress: Accessor<ExecProgress | null>;
   execHistory: Accessor<ReadonlyArray<ExecDebugEntry>>;
+  execVisualization: Accessor<ExecVisualizationState | null>;
+  debugEvents: Accessor<ReadonlyArray<DebugEvent>>;
+  watchedSockets: Accessor<ReadonlyArray<SocketId>>;
+  validationWarnings: Accessor<ReadonlyArray<ValidationWarning>>;
   selectedNodes: Accessor<ReadonlySet<NodeId>>;
   selectedFrames: Accessor<ReadonlySet<FrameId>>;
   selectedWires: Accessor<ReadonlySet<WireId>>;
@@ -95,8 +132,10 @@ export type EditorStore = Readonly<{
   updateNodeParam: (nodeId: NodeId, key: string, value: JsonValue) => boolean;
   requestOutput: (socketId: SocketId) => void;
   clearOutput: () => void;
+  cancelOutputEvaluation: () => void;
   refreshActiveOutput: () => void;
   clearExecHistory: () => void;
+  clearDebugEvents: () => void;
   clearSelection: () => void;
   setNodeSelection: (next: ReadonlySet<NodeId>) => void;
   setFrameSelection: (next: ReadonlySet<FrameId>) => void;
@@ -111,6 +150,14 @@ export type EditorStore = Readonly<{
   setSettings: (next: EditorSettings) => void;
   updateSettings: (patch: Partial<EditorSettings>) => void;
   setGraphPath: (path: ReadonlyArray<GraphBreadcrumb>) => void;
+  addWatchedSocket: (socketId: SocketId) => void;
+  removeWatchedSocket: (socketId: SocketId) => void;
+  clearWatchedSockets: () => void;
+  recordConnectionAttempt: (
+    fromSocketId: SocketId,
+    toSocketId: SocketId,
+    reason: ConnectionAttemptReason,
+  ) => void;
   addNodeAt: (nodeType: string, position?: Point) => NodeId | null;
   collapseSelectionToSubgraph: () => NodeId | null;
   applyGraphCommand: (command: GraphCommand) => boolean;
@@ -136,9 +183,28 @@ export const createEditorStore = (): EditorStore => {
     createSignal<SocketId | null>(null);
   const [outputValue, setOutputValue] = createSignal<JsonValue | null>(null);
   const [outputError, setOutputError] = createSignal<ExecError | null>(null);
+  const [outputProgress, setOutputProgress] = createSignal<ExecProgress | null>(
+    null,
+  );
   const [execHistory, setExecHistory] = createSignal<ExecDebugEntry[]>([], {
     equals: false,
   });
+  const [execVisualization, setExecVisualization] =
+    createSignal<ExecVisualizationState | null>(null, { equals: false });
+  const [debugEvents, setDebugEvents] = createSignal<DebugEvent[]>([], {
+    equals: false,
+  });
+  const [watchedSockets, setWatchedSockets] = createSignal<SocketId[]>([], {
+    equals: false,
+  });
+  const [validationWarnings, setValidationWarnings] = createSignal<
+    ReadonlyArray<ValidationWarning>
+  >([], { equals: false });
+  const execWorker =
+    typeof window !== "undefined" && typeof Worker !== "undefined"
+      ? createExecWorkerClient()
+      : null;
+  let evaluationToken = 0;
   const [selectedNodes, setSelectedNodes] = createSignal<ReadonlySet<NodeId>>(
     new Set(),
   );
@@ -154,7 +220,7 @@ export const createEditorStore = (): EditorStore => {
   const [collapsedNodes, setCollapsedNodes] = createSignal<ReadonlySet<NodeId>>(
     new Set(),
   );
-  const [settings, setSettings] =
+  const [settings, setSettingsState] =
     createSignal<EditorSettings>(DEFAULT_SETTINGS);
   const [canvasCenter, setCanvasCenter] = createSignal<Point>({ x: 0, y: 0 });
   const [pointerPosition, setPointerPosition] =
@@ -165,11 +231,16 @@ export const createEditorStore = (): EditorStore => {
     undo: 0,
     redo: 0,
   });
+  const [connectionAttempts, setConnectionAttempts] = createSignal<
+    ReadonlyArray<ConnectionAttempt>
+  >([], { equals: false });
   let undoStack: HistoryEntry[] = [];
   let redoStack: HistoryEntry[] = [];
   let openBatch: HistoryEntry | null = null;
   let nodeCounter = 1;
   let execHistoryCounter = 1;
+  let connectionAttemptCounter = 1;
+  let debugEventCounter = 1;
 
   const nextNodeCounterForGraph = (nextGraph: Graph): number => {
     let max = 0;
@@ -186,6 +257,22 @@ export const createEditorStore = (): EditorStore => {
     return max + 1;
   };
 
+  const buildValidationWarnings = (
+    graphSnapshot: Graph,
+    attempts: ReadonlyArray<ConnectionAttempt>,
+  ): ReadonlyArray<ValidationWarning> =>
+    collectValidationWarnings(graphSnapshot, attempts, {
+      conversionRegistry: CONVERSION_REGISTRY,
+      isOutputNodeType,
+    });
+
+  const refreshValidationWarnings = (
+    graphSnapshot: Graph,
+    attempts: ReadonlyArray<ConnectionAttempt> = connectionAttempts(),
+  ): void => {
+    setValidationWarnings(buildValidationWarnings(graphSnapshot, attempts));
+  };
+
   const resetGraphState = (nextGraph: Graph): void => {
     setGraph(nextGraph);
     setGraphPath([{ id: nextGraph.graphId, label: "Main" }]);
@@ -194,18 +281,25 @@ export const createEditorStore = (): EditorStore => {
     setOutputValue(null);
     setOutputError(null);
     setExecHistory([]);
+    setExecVisualization(null);
+    setDebugEvents([]);
+    setWatchedSockets([]);
     setSelectedNodes(new Set());
     setSelectedFrames(new Set());
     setSelectedWires(new Set());
     setBypassedNodes(new Set());
     setCollapsedNodes(new Set());
     setPointerPosition(null);
+    setConnectionAttempts([]);
     nodeCounter = nextNodeCounterForGraph(nextGraph);
     execHistoryCounter = 1;
+    connectionAttemptCounter = 1;
+    debugEventCounter = 1;
     undoStack = [];
     redoStack = [];
     openBatch = null;
     setHistoryState({ undo: 0, redo: 0 });
+    refreshValidationWarnings(nextGraph, []);
   };
 
   const collectNodeErrors = (state: DirtyState): ExecDebugNodeError[] => {
@@ -237,6 +331,118 @@ export const createEditorStore = (): EditorStore => {
     });
   };
 
+  const recordDebugEvent = (entry: Omit<DebugEvent, "id">): void => {
+    const resolved: DebugEvent = {
+      id: debugEventCounter,
+      ...entry,
+    };
+    debugEventCounter += 1;
+    setDebugEvents((current) => {
+      const next = [resolved, ...current];
+      return next.length > MAX_DEBUG_EVENTS
+        ? next.slice(0, MAX_DEBUG_EVENTS)
+        : next;
+    });
+  };
+
+  const pruneWatchedSockets = (graphSnapshot: Graph): void => {
+    setWatchedSockets((current) =>
+      current.filter((socketId) => graphSnapshot.sockets.has(socketId)),
+    );
+  };
+
+  const formatGraphCommandEvent = (
+    command: GraphCommand,
+  ): Omit<DebugEvent, "id"> => {
+    const timestamp = Date.now();
+    switch (command.kind) {
+      case "add-node":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Node added",
+          detail: `${command.node.type} (${command.node.id})`,
+        };
+      case "remove-node":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Node removed",
+          detail: `${command.node.type} (${command.node.id})`,
+        };
+      case "add-frame":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Frame added",
+          detail: `${command.frame.title} (${command.frame.id})`,
+        };
+      case "remove-frame":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Frame removed",
+          detail: `${command.frame.title} (${command.frame.id})`,
+        };
+      case "add-wire":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Wire connected",
+          detail: `${command.wire.fromSocketId} -> ${command.wire.toSocketId}`,
+        };
+      case "remove-wire":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Wire disconnected",
+          detail: `${command.wire.fromSocketId} -> ${command.wire.toSocketId}`,
+        };
+      case "move-nodes":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Nodes moved",
+          detail: `${command.after.length} node(s)`,
+        };
+      case "move-frames":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Frames moved",
+          detail: `${command.after.length} frame(s)`,
+        };
+      case "update-frame":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Frame updated",
+          detail: `${command.after.title} (${command.after.id})`,
+        };
+      case "update-param":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Param updated",
+          detail: `${command.nodeId}.${command.key}`,
+        };
+      case "update-node-io":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Node IO updated",
+          detail: `${command.after.node.type} (${command.after.node.id})`,
+        };
+      case "replace-node-io":
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Node IO replaced",
+          detail: `${command.after.node.type} (${command.after.node.id})`,
+        };
+    }
+  };
+
   const runGraphEffect = (effect: GraphEffect<Graph>): Graph | null => {
     const result = runAppEffectSyncEither(effect);
     if (Either.isLeft(result)) {
@@ -244,7 +450,36 @@ export const createEditorStore = (): EditorStore => {
       return null;
     }
     setGraph(result.right);
+    refreshValidationWarnings(result.right);
+    pruneWatchedSockets(result.right);
     return result.right;
+  };
+
+  const recordConnectionAttempt = (
+    fromSocketId: SocketId,
+    toSocketId: SocketId,
+    reason: ConnectionAttemptReason,
+  ): void => {
+    const graphSnapshot = graph();
+    const fromSocket = graphSnapshot.sockets.get(fromSocketId);
+    const toSocket = graphSnapshot.sockets.get(toSocketId);
+    const attempt: ConnectionAttempt = {
+      id: connectionAttemptCounter,
+      timestamp: Date.now(),
+      fromSocketId,
+      toSocketId,
+      ...(fromSocket ? { fromType: fromSocket.dataType } : {}),
+      ...(toSocket ? { toType: toSocket.dataType } : {}),
+      reason,
+    };
+    connectionAttemptCounter += 1;
+    const nextAttempts = [attempt, ...connectionAttempts()];
+    const trimmed =
+      nextAttempts.length > MAX_CONNECTION_ATTEMPTS
+        ? nextAttempts.slice(0, MAX_CONNECTION_ATTEMPTS)
+        : nextAttempts;
+    setConnectionAttempts(trimmed);
+    setValidationWarnings(buildValidationWarnings(graphSnapshot, trimmed));
   };
 
   const recordHistoryEntry = (entry: HistoryEntry): void => {
@@ -336,6 +571,9 @@ export const createEditorStore = (): EditorStore => {
     if (command.kind === "update-node-io") {
       markDirtyForNodeChange(command.after.node.id);
     }
+    if (command.kind === "replace-node-io") {
+      markDirtyForNodeChange(command.after.node.id);
+    }
     const nextGraph = runGraphEffect(applyCommandEffect(graph(), command));
     if (!nextGraph) {
       return false;
@@ -354,6 +592,7 @@ export const createEditorStore = (): EditorStore => {
     if (options.refresh && commandAffectsExecution(command)) {
       refreshActiveOutput();
     }
+    recordDebugEvent(formatGraphCommandEvent(command));
     return true;
   };
 
@@ -364,10 +603,167 @@ export const createEditorStore = (): EditorStore => {
       return false;
     }
     resetGraphState(result.right);
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "system",
+      label: "Graph loaded",
+      detail: result.right.graphId,
+    });
     return true;
   };
 
+  const buildExecVisualization = (
+    runId: number,
+    stats: ExecEvaluationStats,
+  ): ExecVisualizationState => {
+    const nodes = new Map<NodeId, ExecVisualizationEntry>();
+    const timeline: ExecVisualizationEntry[] = [];
+    let maxDurationMs = 0;
+    stats.nodeTimings.forEach((timing, index) => {
+      const entry: ExecVisualizationEntry = {
+        nodeId: timing.nodeId,
+        nodeType: timing.nodeType,
+        durationMs: timing.durationMs,
+        cacheHit: timing.cacheHit,
+        order: index + 1,
+      };
+      timeline.push(entry);
+      nodes.set(entry.nodeId, entry);
+      maxDurationMs = Math.max(maxDurationMs, timing.durationMs);
+    });
+    const safeMaxDurationMs = Math.max(1, maxDurationMs);
+    return {
+      runId,
+      active: false,
+      totalMs: stats.totalMs,
+      maxDurationMs: safeMaxDurationMs,
+      nodes,
+      timeline,
+    };
+  };
+
+  const applyExecProgress = (
+    current: ExecVisualizationState | null,
+    runId: number,
+    progress: ExecWorkerProgress,
+  ): ExecVisualizationState | null => {
+    if (!current || current.runId !== runId) {
+      return current;
+    }
+    if (!progress.nodeId || !progress.nodeType) {
+      return current;
+    }
+    if (current.nodes.has(progress.nodeId)) {
+      return current;
+    }
+    const durationMs =
+      typeof progress.durationMs === "number" ? progress.durationMs : 0;
+    const cacheHit = progress.cacheHit === true;
+    const entry: ExecVisualizationEntry = {
+      nodeId: progress.nodeId,
+      nodeType: progress.nodeType,
+      durationMs,
+      cacheHit,
+      order: current.timeline.length + 1,
+    };
+    const nodes = new Map(current.nodes);
+    nodes.set(entry.nodeId, entry);
+    const nextMaxDurationMs = Math.max(
+      1,
+      Math.max(current.maxDurationMs, durationMs),
+    );
+    return {
+      ...current,
+      nodes,
+      timeline: [...current.timeline, entry],
+      maxDurationMs: nextMaxDurationMs,
+    };
+  };
+
   const evaluateOutputSocket = (socketId: SocketId): void => {
+    evaluationToken += 1;
+    const runId = evaluationToken;
+    if (execWorker) {
+      execWorker.cancel();
+      setOutputProgress(null);
+      if (settings().executionVizEnabled) {
+        setExecVisualization({
+          runId,
+          active: true,
+          totalMs: 0,
+          maxDurationMs: 1,
+          nodes: new Map(),
+          timeline: [],
+        });
+      } else {
+        setExecVisualization(null);
+      }
+      execWorker
+        .evaluate(graph(), socketId, dirtyState(), (progress) => {
+          if (runId !== evaluationToken) {
+            return;
+          }
+          setOutputProgress({
+            completed: progress.completed,
+            total: progress.total,
+          });
+          if (settings().executionVizEnabled) {
+            setExecVisualization((current) =>
+              applyExecProgress(current, runId, progress),
+            );
+          }
+        })
+        .then(({ result, execState }) => {
+          if (runId !== evaluationToken) {
+            return;
+          }
+          const timestamp = Date.now();
+          const outputSocketId = socketId;
+          setOutputError(null);
+          setOutputValue(result.value);
+          if (typeof window !== "undefined") {
+            const target = window as ExecStatsWindow;
+            target.__SHADR_EXEC_STATS__ = result.stats;
+          }
+          if (settings().executionVizEnabled) {
+            setExecVisualization(buildExecVisualization(runId, result.stats));
+          } else {
+            setExecVisualization(null);
+          }
+          recordExecHistory({
+            timestamp,
+            outputSocketId,
+            status: "success",
+            stats: result.stats,
+            nodeErrors: collectNodeErrors(execState),
+          });
+          setDirtyState(execState);
+        })
+        .catch((error: ExecError) => {
+          if (runId !== evaluationToken) {
+            return;
+          }
+          const timestamp = Date.now();
+          const outputSocketId = socketId;
+          console.warn("Output evaluation failed", error);
+          setOutputError(error);
+          setOutputValue(null);
+          setExecVisualization(null);
+          recordExecHistory({
+            timestamp,
+            outputSocketId,
+            status: "error",
+            error,
+          });
+        })
+        .finally(() => {
+          if (runId === evaluationToken) {
+            setOutputProgress(null);
+          }
+        });
+      return;
+    }
+
     const result = runAppEffectSyncEither(
       evaluateSocketWithStatsEffect(
         graph(),
@@ -382,6 +778,7 @@ export const createEditorStore = (): EditorStore => {
       console.warn("Output evaluation failed", result.left);
       setOutputError(result.left);
       setOutputValue(null);
+      setExecVisualization(null);
       recordExecHistory({
         timestamp,
         outputSocketId,
@@ -395,6 +792,11 @@ export const createEditorStore = (): EditorStore => {
         const target = window as ExecStatsWindow;
         target.__SHADR_EXEC_STATS__ = result.right.stats;
       }
+      if (settings().executionVizEnabled) {
+        setExecVisualization(buildExecVisualization(runId, result.right.stats));
+      } else {
+        setExecVisualization(null);
+      }
       recordExecHistory({
         timestamp,
         outputSocketId,
@@ -404,6 +806,7 @@ export const createEditorStore = (): EditorStore => {
       });
     }
     setDirtyState(dirtyState());
+    setOutputProgress(null);
   };
 
   const updateNodeParam = (
@@ -424,26 +827,109 @@ export const createEditorStore = (): EditorStore => {
     });
   };
 
+  const cancelOutputEvaluationInternal = (notify: boolean): void => {
+    if (!execWorker) {
+      return;
+    }
+    evaluationToken += 1;
+    execWorker.cancel();
+    setOutputProgress(null);
+    setExecVisualization(null);
+    if (notify) {
+      setOutputError({ _tag: "ExecutionCanceled" });
+      setOutputValue(null);
+    }
+  };
+
+  const cancelOutputEvaluation = (): void => {
+    cancelOutputEvaluationInternal(true);
+  };
+
   const requestOutput = (socketId: SocketId): void => {
     setActiveOutputSocketId(socketId);
     evaluateOutputSocket(socketId);
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "execution",
+      label: "Output requested",
+      detail: socketId,
+    });
   };
 
   const clearOutput = (): void => {
+    cancelOutputEvaluationInternal(false);
     setActiveOutputSocketId(null);
     setOutputValue(null);
     setOutputError(null);
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "execution",
+      label: "Output cleared",
+    });
   };
 
   const refreshActiveOutput = (): void => {
     const socketId = activeOutputSocketId();
     if (socketId) {
       evaluateOutputSocket(socketId);
+      recordDebugEvent({
+        timestamp: Date.now(),
+        kind: "execution",
+        label: "Output refreshed",
+        detail: socketId,
+      });
     }
   };
 
   const clearExecHistory = (): void => {
     setExecHistory([]);
+  };
+
+  const clearDebugEvents = (): void => {
+    setDebugEvents([]);
+    debugEventCounter = 1;
+  };
+
+  const addWatchedSocket = (socketId: SocketId): void => {
+    if (!graph().sockets.has(socketId)) {
+      return;
+    }
+    setWatchedSockets((current) => {
+      if (current.includes(socketId)) {
+        return current;
+      }
+      const next = [socketId, ...current];
+      return next.length > MAX_WATCHED_SOCKETS
+        ? next.slice(0, MAX_WATCHED_SOCKETS)
+        : next;
+    });
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "watch",
+      label: "Socket watched",
+      detail: socketId,
+    });
+  };
+
+  const removeWatchedSocket = (socketId: SocketId): void => {
+    setWatchedSockets((current) =>
+      current.filter((entry) => entry !== socketId),
+    );
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "watch",
+      label: "Socket unwatch",
+      detail: socketId,
+    });
+  };
+
+  const clearWatchedSockets = (): void => {
+    setWatchedSockets([]);
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "watch",
+      label: "Watch list cleared",
+    });
   };
 
   const markDirtyForNodeChange = (nodeId: NodeId): void => {
@@ -454,24 +940,47 @@ export const createEditorStore = (): EditorStore => {
     setSelectedNodes(new Set());
     setSelectedFrames(new Set());
     setSelectedWires(new Set());
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "selection",
+      label: "Selection cleared",
+    });
   };
 
   const setNodeSelection = (next: ReadonlySet<NodeId>): void => {
     setSelectedNodes(new Set(next));
     setSelectedFrames(new Set());
     setSelectedWires(new Set());
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "selection",
+      label: "Node selection",
+      detail: `${next.size} nodes`,
+    });
   };
 
   const setFrameSelection = (next: ReadonlySet<FrameId>): void => {
     setSelectedFrames(new Set(next));
     setSelectedNodes(new Set());
     setSelectedWires(new Set());
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "selection",
+      label: "Frame selection",
+      detail: `${next.size} frames`,
+    });
   };
 
   const setWireSelection = (next: ReadonlySet<WireId>): void => {
     setSelectedWires(new Set(next));
     setSelectedNodes(new Set());
     setSelectedFrames(new Set());
+    recordDebugEvent({
+      timestamp: Date.now(),
+      kind: "selection",
+      label: "Wire selection",
+      detail: `${next.size} wires`,
+    });
   };
 
   const toggleBypassNodes = (nodeIds: ReadonlySet<NodeId>): void => {
@@ -537,11 +1046,14 @@ export const createEditorStore = (): EditorStore => {
         id: socketId,
         nodeId,
         name: input.key,
+        label: input.label,
         direction: "input",
         dataType: input.dataType,
         required: input.isOptional ? false : true,
         minConnections: input.minConnections,
         maxConnections: input.maxConnections ?? 1,
+        labelSettings: input.labelSettings,
+        metadata: input.metadata,
       });
     }
     for (const output of definition.outputs) {
@@ -551,11 +1063,14 @@ export const createEditorStore = (): EditorStore => {
         id: socketId,
         nodeId,
         name: output.key,
+        label: output.label,
         direction: "output",
         dataType: output.dataType,
         required: false,
         minConnections: output.minConnections,
         maxConnections: output.maxConnections,
+        labelSettings: output.labelSettings,
+        metadata: output.metadata,
       });
     }
     return { sockets, inputIds, outputIds };
@@ -1016,7 +1531,11 @@ export const createEditorStore = (): EditorStore => {
     activeOutputSocketId,
     outputValue,
     outputError,
+    outputProgress,
     execHistory,
+    debugEvents,
+    watchedSockets,
+    validationWarnings,
     selectedNodes,
     selectedFrames,
     selectedWires,
@@ -1026,14 +1545,17 @@ export const createEditorStore = (): EditorStore => {
     canvasCenter,
     pointerPosition,
     commandPaletteOpen,
+    execVisualization,
     canUndo: () => historyState().undo > 0,
     canRedo: () => historyState().redo > 0,
     loadGraphDocument,
     updateNodeParam,
     requestOutput,
     clearOutput,
+    cancelOutputEvaluation,
     refreshActiveOutput,
     clearExecHistory,
+    clearDebugEvents,
     markDirtyForNodeChange,
     clearSelection,
     setNodeSelection,
@@ -1046,11 +1568,26 @@ export const createEditorStore = (): EditorStore => {
     setCanvasCenter,
     setPointerPosition,
     setCommandPaletteOpen,
-    setSettings,
+    setSettings: (next) => {
+      setSettingsState(next);
+      if (!next.executionVizEnabled) {
+        setExecVisualization(null);
+      }
+    },
     updateSettings: (patch) => {
-      setSettings((current) => ({ ...current, ...patch }));
+      setSettingsState((current) => {
+        const next = { ...current, ...patch };
+        if (!next.executionVizEnabled) {
+          setExecVisualization(null);
+        }
+        return next;
+      });
     },
     setGraphPath,
+    addWatchedSocket,
+    removeWatchedSocket,
+    clearWatchedSockets,
+    recordConnectionAttempt,
     addNodeAt,
     collapseSelectionToSubgraph,
     applyGraphCommand,

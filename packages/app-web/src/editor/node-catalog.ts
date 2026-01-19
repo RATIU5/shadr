@@ -6,6 +6,8 @@ import type {
 } from "@shadr/plugin-system";
 import type { JsonObject, JsonValue } from "@shadr/shared";
 
+import { CONVERSION_NODE_DEFINITIONS } from "./conversion-registry";
+
 export const NODE_DRAG_TYPE = "application/x-shadr-node";
 
 export type NodeCatalogEntry = Readonly<{
@@ -1227,6 +1229,7 @@ export const NODE_DEFINITIONS: ReadonlyArray<NodeDefinition> = [
   ...CONSTANT_NODES,
   ...MATH_NODES,
   ...VECTOR_NODES,
+  ...CONVERSION_NODE_DEFINITIONS,
   ...REROUTE_NODES,
   ...OUTPUT_NODES,
 ];

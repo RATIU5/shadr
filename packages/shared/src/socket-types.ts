@@ -1,3 +1,5 @@
+import { err, isErr, ok, type Result } from "./result.js";
+
 export const SOCKET_TYPE_PRIMITIVES = [
   "float",
   "int",
@@ -103,7 +105,113 @@ export const getSocketTypeMetadata = (
 ): SocketTypeMetadata | undefined =>
   isPrimitiveSocketType(id) ? primitiveSocketTypeMetadata[id] : undefined;
 
+export type SocketTypeCompatibilityEntry = Readonly<{
+  fromType: SocketTypeId;
+  toType: SocketTypeId;
+}>;
+
+export type SocketTypeCompatibilityIssue = Readonly<{
+  _tag: "DuplicateCompatibilityPair";
+  fromType: SocketTypeId;
+  toType: SocketTypeId;
+}>;
+
+export type SocketTypeCompatibilityMatrix = Readonly<{
+  entries: ReadonlyArray<SocketTypeCompatibilityEntry>;
+  byFromType: ReadonlyMap<SocketTypeId, ReadonlySet<SocketTypeId>>;
+}>;
+
+const makeCompatibilityKey = (
+  fromType: SocketTypeId,
+  toType: SocketTypeId,
+): string => `${fromType}->${toType}`;
+
+export const createSocketTypeCompatibilityMatrix = (
+  entries: ReadonlyArray<SocketTypeCompatibilityEntry>,
+): Result<
+  SocketTypeCompatibilityMatrix,
+  ReadonlyArray<SocketTypeCompatibilityIssue>
+> => {
+  const issues: SocketTypeCompatibilityIssue[] = [];
+  const byFromType = new Map<SocketTypeId, Set<SocketTypeId>>();
+  const seenPairs = new Set<string>();
+
+  for (const entry of entries) {
+    const pairKey = makeCompatibilityKey(entry.fromType, entry.toType);
+    if (seenPairs.has(pairKey)) {
+      issues.push({
+        _tag: "DuplicateCompatibilityPair",
+        fromType: entry.fromType,
+        toType: entry.toType,
+      });
+      continue;
+    }
+    seenPairs.add(pairKey);
+
+    const targets = byFromType.get(entry.fromType);
+    if (targets) {
+      targets.add(entry.toType);
+    } else {
+      byFromType.set(entry.fromType, new Set([entry.toType]));
+    }
+  }
+
+  if (issues.length > 0) {
+    return err(issues);
+  }
+
+  const readonlyByFromType = new Map<SocketTypeId, ReadonlySet<SocketTypeId>>(
+    Array.from(byFromType.entries(), ([key, value]) => [key, new Set(value)]),
+  );
+
+  return ok({
+    entries,
+    byFromType: readonlyByFromType,
+  });
+};
+
+const DEFAULT_SOCKET_TYPE_COMPATIBILITY_ENTRIES: ReadonlyArray<SocketTypeCompatibilityEntry> =
+  [];
+
+const defaultCompatibilityResult = createSocketTypeCompatibilityMatrix(
+  DEFAULT_SOCKET_TYPE_COMPATIBILITY_ENTRIES,
+);
+if (isErr(defaultCompatibilityResult)) {
+  const details = defaultCompatibilityResult.left
+    .map((issue) => `${issue.fromType}->${issue.toType}`)
+    .join(", ");
+  throw new Error(
+    `Invalid socket compatibility matrix entries: ${details || "unknown"}`,
+  );
+}
+
+const DEFAULT_SOCKET_TYPE_COMPATIBILITY_MATRIX =
+  defaultCompatibilityResult.right;
+
+let activeCompatibilityMatrix = DEFAULT_SOCKET_TYPE_COMPATIBILITY_MATRIX;
+
+export const getSocketTypeCompatibilityMatrix =
+  (): SocketTypeCompatibilityMatrix => activeCompatibilityMatrix;
+
+export const setSocketTypeCompatibilityMatrix = (
+  matrix: SocketTypeCompatibilityMatrix,
+): void => {
+  activeCompatibilityMatrix = matrix;
+};
+
+export const isSocketTypeCompatibleWithMatrix = (
+  matrix: SocketTypeCompatibilityMatrix,
+  fromType: SocketTypeId,
+  toType: SocketTypeId,
+): boolean => {
+  if (fromType === toType) {
+    return true;
+  }
+  return matrix.byFromType.get(fromType)?.has(toType) ?? false;
+};
+
 export const isSocketTypeCompatible = (
   fromType: SocketTypeId,
   toType: SocketTypeId,
-): boolean => fromType === toType;
+): boolean =>
+  isSocketTypeCompatibleWithMatrix(activeCompatibilityMatrix, fromType, toType);

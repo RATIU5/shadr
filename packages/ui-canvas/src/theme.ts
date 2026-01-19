@@ -17,6 +17,11 @@ export type CanvasTheme = Readonly<{
     headerTextMuted: number;
     badgeError: number;
     badgeBypass: number;
+    executionBadgeFill: number;
+    executionBadgeText: number;
+    executionBarFill: number;
+    executionBarCacheHit: number;
+    executionBarTrack: number;
   }>;
   wire: Readonly<{
     defaultColor: number;
@@ -50,6 +55,11 @@ export const darkCanvasTheme: CanvasTheme = {
     headerTextMuted: 0xa5adbf,
     badgeError: 0xff6a6a,
     badgeBypass: 0x7a7f90,
+    executionBadgeFill: 0x2b4c7a,
+    executionBadgeText: 0xe9f2ff,
+    executionBarFill: 0x5cc8ff,
+    executionBarCacheHit: 0x3f8aa6,
+    executionBarTrack: 0x1a2736,
   },
   wire: {
     defaultColor: 0x4d7cff,
@@ -83,6 +93,11 @@ export const lightCanvasTheme: CanvasTheme = {
     headerTextMuted: 0x4b5563,
     badgeError: 0xdc2626,
     badgeBypass: 0x64748b,
+    executionBadgeFill: 0x1d4ed8,
+    executionBadgeText: 0xf8fafc,
+    executionBarFill: 0x2563eb,
+    executionBarCacheHit: 0x0ea5e9,
+    executionBarTrack: 0xcbd5f5,
   },
   wire: {
     defaultColor: 0x2563eb,

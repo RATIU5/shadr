@@ -22,6 +22,14 @@
   --surface-chip: rgba(15, 20, 30, 0.7);
   --surface-highlight: rgba(120, 150, 190, 0.18);
   --overlay-bg: rgba(9, 12, 18, 0.7);
+  --layer-canvas: 0;
+  --layer-canvas-overlay: 10;
+  --layer-canvas-menu: 15;
+  --layer-hud: 20;
+  --layer-panel: 30;
+  --layer-toast: 40;
+  --layer-modal-overlay: 50;
+  --layer-modal: 60;
   --border-subtle: rgba(120, 150, 190, 0.2);
   --border-soft: rgba(120, 150, 190, 0.3);
   --border-strong: rgba(120, 150, 190, 0.45);

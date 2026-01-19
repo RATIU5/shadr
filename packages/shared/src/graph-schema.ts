@@ -15,16 +15,47 @@ export type JsonArray = ReadonlyArray<JsonValue>;
 
 export type GraphSocketDirectionV1 = "input" | "output";
 
+export type GraphSocketLabelPosition =
+  | "auto"
+  | "left"
+  | "right"
+  | "top"
+  | "bottom";
+
+export type GraphSocketLabelSettings = Readonly<{
+  visible?: boolean;
+  position?: GraphSocketLabelPosition;
+  offset?: Readonly<{ x: number; y: number }>;
+}>;
+
+export type GraphSocketNumberFormat =
+  | "auto"
+  | "integer"
+  | "fixed-2"
+  | "fixed-3"
+  | "percent";
+
+export type GraphSocketMetadata = Readonly<{
+  units?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  format?: GraphSocketNumberFormat;
+}>;
+
 export type GraphSocketV1 = Readonly<{
   id: SocketId;
   nodeId: NodeId;
   name: string;
+  label?: string;
   direction: GraphSocketDirectionV1;
   dataType: SocketTypeId;
   required: boolean;
   defaultValue?: JsonValue;
   minConnections?: number;
   maxConnections?: number;
+  labelSettings?: GraphSocketLabelSettings;
+  metadata?: GraphSocketMetadata;
 }>;
 
 export type GraphNodeV1 = Readonly<{
@@ -45,6 +76,11 @@ export type GraphWireV1 = Readonly<{
 export type GraphFrameV1 = Readonly<{
   id: FrameId;
   title: string;
+  description?: string;
+  color?: number;
+  collapsed?: boolean;
+  exposedInputs?: ReadonlyArray<SocketId>;
+  exposedOutputs?: ReadonlyArray<SocketId>;
   position: Readonly<{ x: number; y: number }>;
   size: Readonly<{ width: number; height: number }>;
 }>;
