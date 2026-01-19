@@ -21,6 +21,7 @@ import {
   removeFrame,
   removeNode,
   removeWire,
+  updateNodeIo,
   updateParam,
 } from "@shadr/graph-core";
 import type { JsonValue } from "@shadr/shared";
@@ -69,6 +70,14 @@ export type GraphCommand =
       key: string;
       before: JsonValue;
       after: JsonValue;
+    }>
+  | Readonly<{
+      kind: "update-node-io";
+      before: Readonly<{
+        node: GraphNode;
+        sockets: ReadonlyArray<GraphSocket>;
+      }>;
+      after: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>;
     }>;
 
 export type HistoryEntry = Readonly<{
@@ -137,6 +146,12 @@ export const isNoopCommand = (command: GraphCommand): boolean => {
   if (command.kind === "update-param") {
     return isJsonValueEqual(command.before, command.after);
   }
+  if (command.kind === "update-node-io") {
+    return (
+      isNodeEqual(command.before.node, command.after.node) &&
+      areSocketsEqual(command.before.sockets, command.after.sockets)
+    );
+  }
   if (command.kind === "move-nodes") {
     if (command.before.length !== command.after.length) {
       return false;
@@ -195,6 +210,8 @@ export const applyCommandEffect = (
       return moveFrames(graph, command.after);
     case "update-param":
       return updateParam(graph, command.nodeId, command.key, command.after);
+    case "update-node-io":
+      return updateNodeIo(graph, command.after.node, command.after.sockets);
   }
 };
 
@@ -246,6 +263,14 @@ export const getUndoCommands = (
           kind: "update-param",
           nodeId: command.nodeId,
           key: command.key,
+          before: command.after,
+          after: command.before,
+        },
+      ];
+    case "update-node-io":
+      return [
+        {
+          kind: "update-node-io",
           before: command.after,
           after: command.before,
         },
@@ -337,7 +362,85 @@ export const createUpdateParamCommand = (
   after,
 });
 
+export const createUpdateNodeIoCommand = (
+  before: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>,
+  after: Readonly<{ node: GraphNode; sockets: ReadonlyArray<GraphSocket> }>,
+): GraphCommand => ({
+  kind: "update-node-io",
+  before,
+  after,
+});
+
 export const commandAffectsExecution = (command: GraphCommand): boolean =>
-  ["add-wire", "remove-wire", "remove-node", "update-param"].includes(
-    command.kind,
+  [
+    "add-wire",
+    "remove-wire",
+    "remove-node",
+    "update-param",
+    "update-node-io",
+  ].includes(command.kind);
+
+const isNodeEqual = (left: GraphNode, right: GraphNode): boolean => {
+  if (
+    left.id !== right.id ||
+    left.type !== right.type ||
+    left.position.x !== right.position.x ||
+    left.position.y !== right.position.y ||
+    !isJsonValueEqual(left.params, right.params)
+  ) {
+    return false;
+  }
+  if (!arrayEqual(left.inputs, right.inputs)) {
+    return false;
+  }
+  if (!arrayEqual(left.outputs, right.outputs)) {
+    return false;
+  }
+  return true;
+};
+
+const arrayEqual = (
+  left: ReadonlyArray<string>,
+  right: ReadonlyArray<string>,
+) =>
+  left.length === right.length &&
+  left.every((value, index) => value === right[index]);
+
+const areSocketsEqual = (
+  left: ReadonlyArray<GraphSocket>,
+  right: ReadonlyArray<GraphSocket>,
+): boolean => {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const rightById = new Map<SocketId, GraphSocket>();
+  for (const socket of right) {
+    rightById.set(socket.id, socket);
+  }
+  for (const socket of left) {
+    const candidate = rightById.get(socket.id);
+    if (!candidate || !isSocketEqual(socket, candidate)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isSocketEqual = (left: GraphSocket, right: GraphSocket): boolean => {
+  if (
+    left.id !== right.id ||
+    left.nodeId !== right.nodeId ||
+    left.name !== right.name ||
+    left.direction !== right.direction ||
+    left.dataType !== right.dataType ||
+    left.required !== right.required ||
+    left.minConnections !== right.minConnections ||
+    left.maxConnections !== right.maxConnections
+  ) {
+    return false;
+  }
+  return isJsonValueEqual(
+    left.defaultValue ?? null,
+    right.defaultValue ?? null,
   );
+};

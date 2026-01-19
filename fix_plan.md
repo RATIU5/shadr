@@ -12,14 +12,6 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 > Break up large tasks or add context to tasks by adding new tasks to this list. Don't modify existing tasks.
 
 ## Critical
-
-- [ ] Implement full **subgraph system**: collapse selection into subgraph, generate internal graph document, and create a parent “Subgraph Node” wrapper with defined I/O. Subgraphs don't show outer graphs, helps with perf.
-- [ ] Implement **subgraph I/O authoring**: user-defined input/output sockets, renaming, reordering, type constraints, defaults, required flags
-- [ ] Implement **dive in/out navigation** for subgraphs with breadcrumbs, back/forward history, and focus restore
-- [ ] Implement **nested subgraphs** (up to 10 levels) with guardrails: recursion prevention, max depth enforcement, performance caps
-- [ ] Implement option to create subgraph, either from command menu or in context menu when nodes are selected
-- [ ] Implement **node instances** (reference semantics): multiple instances share the same source definition, updating source updates all instances deterministically (especially useful for collapsed subgraphs used in multiple places, edit the subgraph in one to edit all or edit per instance)
-- [ ] Implement **per-instance overrides** for params with clear diff UI and reset-to-default actions
 - [ ] Implement **async/background execution lane** (even if nodes remain sync): offload heavy graphs to a worker, keep UI responsive, and support cancelation + progress
 - [ ] Implement **execution flow visualization suite**: animated wires, execution order badges, per-node timing bars, and timeline view (must be toggleable for perf)
 
@@ -55,6 +47,14 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 ## Completed
 
+- [x] Implement **per-instance overrides** for params with clear diff UI and reset-to-default actions
+- [x] Implement **node instances** (reference semantics): multiple instances share the same source definition, updating source updates all instances deterministically (especially useful for collapsed subgraphs used in multiple places, edit the subgraph in one to edit all or edit per instance)
+- [x] Implement option to create subgraph, either from command menu or in context menu when nodes are selected
+- [x] Implement **nested subgraphs** (up to 10 levels) with guardrails: recursion prevention, max depth enforcement, performance caps
+- [x] Fix this client side error: store.ts:246 TypeError: Cannot read properties of undefined (reading 'parent') at \_Container.addChild (chunk-5P6HJJH3.js?v=f7b339c5:6941:15) at CanvasScene.updateNodeOrder (scene.ts:409:16) at CanvasScene.syncGraph (scene.ts:298:10) at syncScene (EditorCanvas.tsx:1009:12) at Object.fn (EditorCanvas.tsx:2925:5)
+- [x] Implement **dive in/out navigation** for subgraphs with breadcrumbs, back/forward history, and focus restore
+- [x] Implement **subgraph I/O authoring**: user-defined input/output sockets, renaming, reordering, type constraints, defaults, required flags
+- [x] Implement full **subgraph system**: collapse selection into subgraph, generate internal graph document, and create a parent “Subgraph Node” wrapper with defined I/O. Subgraphs don't show outer graphs, helps with perf.
 - [x] Dragging wire from input socket grabs wire, not deletes it, allowing user to re-position or move wire without creating a new one
 - [x] Add breadcrumb plumbing placeholders for future subgraphs (no real subgraphs yet)
 - [x] Add z-ordering controls (bring to front/back) if you end up needing it for overlapping nodes (automatic show selected node first) - ensure selected nodes render above overlaps for clarity

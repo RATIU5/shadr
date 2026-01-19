@@ -18,6 +18,7 @@ import {
   makeNodeId,
   makeSocketId,
   makeWireId,
+  SUBGRAPH_NODE_TYPE,
 } from "@shadr/shared";
 import {
   CanvasScene,
@@ -173,6 +174,9 @@ type DragState =
 type EditorCanvasProps = Readonly<{
   store: EditorStore;
   onViewportEmpty?: () => void;
+  // eslint-disable-next-line no-unused-vars -- type-only param name for TS call signature
+  onDiveIntoSubgraph?: (nodeId: NodeId) => void;
+  onCollapseSelectionToSubgraph?: () => void;
 }>;
 
 type ClipboardPayload = Readonly<{
@@ -345,7 +349,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   let isViewportEmpty = false;
   let canvasPalette: CanvasPalette = getCanvasPalette("dark");
 
-  const { onViewportEmpty } = props;
+  const { onViewportEmpty, onDiveIntoSubgraph, onCollapseSelectionToSubgraph } =
+    props;
   const {
     graph,
     dirtyState,
@@ -1783,6 +1788,15 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         },
       });
     }
+    if (selectedNodesSnapshot.size > 0 && onCollapseSelectionToSubgraph) {
+      entries.push({
+        kind: "item",
+        label: "Collapse to Subgraph",
+        onSelect: () => {
+          onCollapseSelectionToSubgraph();
+        },
+      });
+    }
     const connectedStartNodes = getConnectedStartNodes(menu);
     if (connectedStartNodes.length > 0) {
       pushSeparator(entries);
@@ -1809,8 +1823,18 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       });
     }
     switch (menu.hit.kind) {
-      case "node":
+      case "node": {
         pushSeparator(entries);
+        const node = graphSnapshot.nodes.get(menu.hit.nodeId);
+        if (node?.type === SUBGRAPH_NODE_TYPE && onDiveIntoSubgraph) {
+          entries.push({
+            kind: "item",
+            label: "Dive into Subgraph",
+            onSelect: () => {
+              onDiveIntoSubgraph(node.id);
+            },
+          });
+        }
         entries.push({
           kind: "item",
           label: "Delete Node",
@@ -1826,6 +1850,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           },
         });
         break;
+      }
       case "frame":
         pushSeparator(entries);
         entries.push({
@@ -2653,6 +2678,13 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         if (hit.kind === "wire") {
           insertDefaultNodeOnWire(hit.wireId);
           return;
+        }
+        if (hit.kind === "node") {
+          const node = graphSnapshot.nodes.get(hit.nodeId);
+          if (node?.type === SUBGRAPH_NODE_TYPE && onDiveIntoSubgraph) {
+            onDiveIntoSubgraph(node.id);
+            return;
+          }
         }
         const worldPoint = scene.screenToWorld(screenPoint);
         addNodeAt("basic", worldPoint);

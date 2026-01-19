@@ -677,6 +677,97 @@ export const updateParam = (
   });
 };
 
+export const updateNodeIo = (
+  graph: Graph,
+  nextNode: GraphNode,
+  sockets: ReadonlyArray<GraphSocket>,
+): GraphEffect<Graph> => {
+  const existingNode = graph.nodes.get(nextNode.id);
+  if (!existingNode) {
+    return fail({ _tag: "MissingNode", nodeId: nextNode.id });
+  }
+
+  if (!sameIdSet(existingNode.inputs, nextNode.inputs)) {
+    return fail({
+      _tag: "NodeSocketMismatch",
+      nodeId: nextNode.id,
+      direction: "input",
+      socketIds: existingNode.inputs,
+    });
+  }
+
+  if (!sameIdSet(existingNode.outputs, nextNode.outputs)) {
+    return fail({
+      _tag: "NodeSocketMismatch",
+      nodeId: nextNode.id,
+      direction: "output",
+      socketIds: existingNode.outputs,
+    });
+  }
+
+  const socketIds = new Set<SocketId>();
+  for (const socket of sockets) {
+    if (socketIds.has(socket.id)) {
+      return fail({ _tag: "DuplicateSocket", socketId: socket.id });
+    }
+    if (socket.nodeId !== nextNode.id) {
+      return fail({
+        _tag: "SocketNodeMismatch",
+        socketId: socket.id,
+        nodeId: nextNode.id,
+      });
+    }
+    const existingSocket = graph.sockets.get(socket.id);
+    if (existingSocket && existingSocket.nodeId !== nextNode.id) {
+      return fail({ _tag: "DuplicateSocket", socketId: socket.id });
+    }
+    socketIds.add(socket.id);
+  }
+
+  const inputIds = sockets
+    .filter((socket) => socket.direction === "input")
+    .map((socket) => socket.id);
+  const outputIds = sockets
+    .filter((socket) => socket.direction === "output")
+    .map((socket) => socket.id);
+
+  if (!sameIdSet(nextNode.inputs, inputIds)) {
+    return fail({
+      _tag: "NodeSocketMismatch",
+      nodeId: nextNode.id,
+      direction: "input",
+      socketIds: nextNode.inputs,
+    });
+  }
+
+  if (!sameIdSet(nextNode.outputs, outputIds)) {
+    return fail({
+      _tag: "NodeSocketMismatch",
+      nodeId: nextNode.id,
+      direction: "output",
+      socketIds: nextNode.outputs,
+    });
+  }
+
+  const nodes = cloneMap(graph.nodes);
+  nodes.set(nextNode.id, nextNode);
+
+  const socketsMap = cloneMap(graph.sockets);
+  for (const socket of sockets) {
+    socketsMap.set(socket.id, socket);
+  }
+
+  return succeed({
+    graphId: graph.graphId,
+    nodes,
+    sockets: socketsMap,
+    wires: cloneMap(graph.wires),
+    frames: cloneMap(graph.frames),
+    outgoing: cloneSetMap(graph.outgoing),
+    incoming: cloneSetMap(graph.incoming),
+  });
+};
+
 export const detectCycle = (graph: Graph): NodeId[] | null => {
   const visited = new Set<NodeId>();
   const visiting = new Set<NodeId>();

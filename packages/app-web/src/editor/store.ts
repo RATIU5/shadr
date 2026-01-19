@@ -12,14 +12,28 @@ import type {
   FrameId,
   Graph,
   GraphEffect,
+  GraphNode,
   GraphSocket,
+  GraphWire,
   NodeId,
   SocketId,
   WireId,
 } from "@shadr/graph-core";
 import { createGraph } from "@shadr/graph-core";
-import type { GraphDocumentV1, JsonValue } from "@shadr/shared";
-import { makeGraphId, makeNodeId, makeSocketId } from "@shadr/shared";
+import type { GraphDocumentV1, JsonObject, JsonValue } from "@shadr/shared";
+import {
+  GRAPH_DOCUMENT_V1_SCHEMA_VERSION,
+  makeGraphId,
+  makeNodeId,
+  makeSocketId,
+  makeSubgraphInputNodeType,
+  makeWireId,
+  SUBGRAPH_INPUT_SOCKET_KEY,
+  SUBGRAPH_NODE_TYPE,
+  type SubgraphInputMapping,
+  type SubgraphNodeParams,
+  type SubgraphOutputMapping,
+} from "@shadr/shared";
 import { Either } from "effect";
 import type { Accessor } from "solid-js";
 import { createSignal } from "solid-js";
@@ -30,6 +44,7 @@ import type { GraphCommand, HistoryEntry } from "~/editor/history";
 import {
   applyCommandEffect,
   commandAffectsExecution,
+  createRemoveNodeCommand,
   createUpdateParamCommand,
   getUndoCommands,
   isNoopCommand,
@@ -97,6 +112,7 @@ export type EditorStore = Readonly<{
   updateSettings: (patch: Partial<EditorSettings>) => void;
   setGraphPath: (path: ReadonlyArray<GraphBreadcrumb>) => void;
   addNodeAt: (nodeType: string, position?: Point) => NodeId | null;
+  collapseSelectionToSubgraph: () => NodeId | null;
   applyGraphCommand: (command: GraphCommand) => boolean;
   applyGraphCommandTransient: (command: GraphCommand) => boolean;
   recordGraphCommand: (command: GraphCommand) => void;
@@ -316,6 +332,9 @@ export const createEditorStore = (): EditorStore => {
     }
     if (command.kind === "remove-wire") {
       markDirtyForWireChangeGraph(graph(), command.wire.id);
+    }
+    if (command.kind === "update-node-io") {
+      markDirtyForNodeChange(command.after.node.id);
     }
     const nextGraph = runGraphEffect(applyCommandEffect(graph(), command));
     if (!nextGraph) {
@@ -589,6 +608,353 @@ export const createEditorStore = (): EditorStore => {
     recordCommand(command);
   };
 
+  const applyCommands = (label: string, commands: GraphCommand[]): boolean => {
+    if (commands.length === 0) {
+      return false;
+    }
+    beginHistoryBatch(label);
+    let changed = false;
+    for (const command of commands) {
+      if (applyGraphCommandTransient(command)) {
+        recordGraphCommand(command);
+        changed = true;
+      }
+    }
+    commitHistoryBatch();
+    if (changed) {
+      refreshActiveOutput();
+    }
+    return changed;
+  };
+
+  const collapseSelectionToSubgraph = (): NodeId | null => {
+    const graphSnapshot = graph();
+    const selection = selectedNodes();
+    if (selection.size === 0) {
+      return null;
+    }
+
+    const selectedNodesList: GraphNode[] = [];
+    for (const nodeId of selection) {
+      const node = graphSnapshot.nodes.get(nodeId);
+      if (!node) {
+        return null;
+      }
+      selectedNodesList.push(node);
+    }
+
+    const selectedNodeIds = new Set<NodeId>(
+      selectedNodesList.map((node) => node.id),
+    );
+
+    const selectedSockets: GraphSocket[] = [];
+    for (const node of selectedNodesList) {
+      for (const socketId of [...node.inputs, ...node.outputs]) {
+        const socket = graphSnapshot.sockets.get(socketId);
+        if (!socket) {
+          return null;
+        }
+        selectedSockets.push(socket);
+      }
+    }
+
+    const internalWires: GraphWire[] = [];
+    const boundaryInputs: Array<{
+      fromSocket: GraphSocket;
+      toSocket: GraphSocket;
+    }> = [];
+    const boundaryOutputs: Array<{
+      fromSocket: GraphSocket;
+      toSocket: GraphSocket;
+    }> = [];
+
+    for (const wire of graphSnapshot.wires.values()) {
+      const fromSocket = graphSnapshot.sockets.get(wire.fromSocketId);
+      const toSocket = graphSnapshot.sockets.get(wire.toSocketId);
+      if (!fromSocket || !toSocket) {
+        return null;
+      }
+      const fromInside = selectedNodeIds.has(fromSocket.nodeId);
+      const toInside = selectedNodeIds.has(toSocket.nodeId);
+      if (fromInside && toInside) {
+        internalWires.push(wire);
+      } else if (!fromInside && toInside) {
+        boundaryInputs.push({ fromSocket, toSocket });
+      } else if (fromInside && !toInside) {
+        boundaryOutputs.push({ fromSocket, toSocket });
+      }
+    }
+
+    const usedInputNames = new Set<string>();
+    const usedOutputNames = new Set<string>();
+    const makeUniqueName = (base: string, used: Set<string>): string => {
+      const root = base.trim().length > 0 ? base.trim() : "socket";
+      let candidate = root;
+      let index = 1;
+      while (used.has(candidate)) {
+        candidate = `${root}-${index}`;
+        index += 1;
+      }
+      used.add(candidate);
+      return candidate;
+    };
+    const getNodeLabel = (node: GraphNode): string =>
+      getNodeCatalogEntry(node.type)?.label ?? node.type;
+
+    const usedInternalNodeIds = new Set<NodeId>(selectedNodeIds);
+    const nextInternalNodeId = (() => {
+      let index = 1;
+      return () => {
+        let candidate = makeNodeId(`subgraph-input-${index}`);
+        while (usedInternalNodeIds.has(candidate)) {
+          index += 1;
+          candidate = makeNodeId(`subgraph-input-${index}`);
+        }
+        usedInternalNodeIds.add(candidate);
+        index += 1;
+        return candidate;
+      };
+    })();
+
+    const usedInternalWireIds = new Set<WireId>(
+      internalWires.map((wire) => wire.id),
+    );
+    const nextInternalWireId = (() => {
+      let index = 1;
+      return () => {
+        let candidate = makeWireId(`subgraph-wire-${index}`);
+        while (usedInternalWireIds.has(candidate)) {
+          index += 1;
+          candidate = makeWireId(`subgraph-wire-${index}`);
+        }
+        usedInternalWireIds.add(candidate);
+        index += 1;
+        return candidate;
+      };
+    })();
+
+    const usedWireIds = new Set<WireId>(graphSnapshot.wires.keys());
+    const nextOuterWireId = (() => {
+      let index = 1;
+      return () => {
+        let candidate = makeWireId(`wire-${index}`);
+        while (usedWireIds.has(candidate)) {
+          index += 1;
+          candidate = makeWireId(`wire-${index}`);
+        }
+        usedWireIds.add(candidate);
+        index += 1;
+        return candidate;
+      };
+    })();
+
+    let subgraphNodeId = makeNodeId(`node-${nodeCounter}`);
+    while (graphSnapshot.nodes.has(subgraphNodeId)) {
+      nodeCounter += 1;
+      subgraphNodeId = makeNodeId(`node-${nodeCounter}`);
+    }
+    nodeCounter += 1;
+
+    const internalNodes: GraphNode[] = [...selectedNodesList];
+    const internalSockets: GraphSocket[] = [...selectedSockets];
+    const internalWiresWithInputs: GraphWire[] = [...internalWires];
+    const inputMappings: SubgraphInputMapping[] = [];
+    const outputMappings: SubgraphOutputMapping[] = [];
+    const wrapperSockets: GraphSocket[] = [];
+    const wrapperInputIds: SocketId[] = [];
+    const wrapperOutputIds: SocketId[] = [];
+    const outerWires: GraphWire[] = [];
+
+    const boundaryInputsBySocket = new Map<SocketId, GraphSocket>();
+    for (const boundary of boundaryInputs) {
+      if (!boundaryInputsBySocket.has(boundary.toSocket.id)) {
+        boundaryInputsBySocket.set(boundary.toSocket.id, boundary.fromSocket);
+      }
+    }
+
+    for (const [toSocketId, fromSocket] of boundaryInputsBySocket) {
+      const toSocket = graphSnapshot.sockets.get(toSocketId);
+      if (!toSocket) {
+        return null;
+      }
+      const internalNode = graphSnapshot.nodes.get(toSocket.nodeId);
+      if (!internalNode) {
+        return null;
+      }
+      const baseName = `${getNodeLabel(internalNode)}.${toSocket.name}`;
+      const inputKey = makeUniqueName(baseName, usedInputNames);
+      const inputNodeId = nextInternalNodeId();
+      const inputSocketId = makeSocketId(
+        `${inputNodeId}.${SUBGRAPH_INPUT_SOCKET_KEY}`,
+      );
+      internalNodes.push({
+        id: inputNodeId,
+        type: makeSubgraphInputNodeType(toSocket.dataType),
+        position: {
+          x: internalNode.position.x - 220,
+          y: internalNode.position.y,
+        },
+        params: {},
+        inputs: [],
+        outputs: [inputSocketId],
+      });
+      internalSockets.push({
+        id: inputSocketId,
+        nodeId: inputNodeId,
+        name: SUBGRAPH_INPUT_SOCKET_KEY,
+        direction: "output",
+        dataType: toSocket.dataType,
+        required: false,
+      });
+      internalWiresWithInputs.push({
+        id: nextInternalWireId(),
+        fromSocketId: inputSocketId,
+        toSocketId: toSocket.id,
+      });
+      inputMappings.push({ key: inputKey, nodeId: inputNodeId });
+
+      const wrapperSocketId = makeSocketId(`${subgraphNodeId}.${inputKey}`);
+      wrapperInputIds.push(wrapperSocketId);
+      wrapperSockets.push({
+        id: wrapperSocketId,
+        nodeId: subgraphNodeId,
+        name: inputKey,
+        direction: "input",
+        dataType: toSocket.dataType,
+        required: toSocket.required,
+        defaultValue: toSocket.defaultValue,
+        minConnections: toSocket.minConnections,
+        maxConnections: toSocket.maxConnections,
+      });
+      outerWires.push({
+        id: nextOuterWireId(),
+        fromSocketId: fromSocket.id,
+        toSocketId: wrapperSocketId,
+      });
+    }
+
+    const boundaryOutputsBySocket = new Map<
+      SocketId,
+      { fromSocket: GraphSocket; toSockets: GraphSocket[] }
+    >();
+    for (const boundary of boundaryOutputs) {
+      const entry = boundaryOutputsBySocket.get(boundary.fromSocket.id);
+      if (entry) {
+        entry.toSockets.push(boundary.toSocket);
+      } else {
+        boundaryOutputsBySocket.set(boundary.fromSocket.id, {
+          fromSocket: boundary.fromSocket,
+          toSockets: [boundary.toSocket],
+        });
+      }
+    }
+
+    for (const entry of boundaryOutputsBySocket.values()) {
+      const internalNode = graphSnapshot.nodes.get(entry.fromSocket.nodeId);
+      if (!internalNode) {
+        return null;
+      }
+      const baseName = `${getNodeLabel(internalNode)}.${entry.fromSocket.name}`;
+      const outputKey = makeUniqueName(baseName, usedOutputNames);
+      const wrapperSocketId = makeSocketId(`${subgraphNodeId}.${outputKey}`);
+      wrapperOutputIds.push(wrapperSocketId);
+      wrapperSockets.push({
+        id: wrapperSocketId,
+        nodeId: subgraphNodeId,
+        name: outputKey,
+        direction: "output",
+        dataType: entry.fromSocket.dataType,
+        required: false,
+        minConnections: entry.fromSocket.minConnections,
+        maxConnections: entry.fromSocket.maxConnections,
+      });
+      outputMappings.push({
+        key: outputKey,
+        socketId: entry.fromSocket.id,
+      });
+      for (const toSocket of entry.toSockets) {
+        outerWires.push({
+          id: nextOuterWireId(),
+          fromSocketId: wrapperSocketId,
+          toSocketId: toSocket.id,
+        });
+      }
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const node of selectedNodesList) {
+      minX = Math.min(minX, node.position.x);
+      minY = Math.min(minY, node.position.y);
+      maxX = Math.max(maxX, node.position.x);
+      maxY = Math.max(maxY, node.position.y);
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+      return null;
+    }
+    const center = {
+      x: (minX + maxX) / 2,
+      y: (minY + maxY) / 2,
+    };
+    const subgraphPosition = settings().snapToGrid
+      ? snapPointToGrid(center)
+      : center;
+
+    const subgraphDocument: GraphDocumentV1 = {
+      schemaVersion: GRAPH_DOCUMENT_V1_SCHEMA_VERSION,
+      graphId: makeGraphId(`subgraph-${subgraphNodeId}`),
+      nodes: internalNodes,
+      sockets: internalSockets,
+      wires: internalWiresWithInputs,
+    };
+    const subgraphParams: SubgraphNodeParams = {
+      graph: subgraphDocument,
+      inputs: inputMappings,
+      outputs: outputMappings,
+    };
+    const params: JsonObject = {
+      graph: subgraphParams.graph as unknown as JsonValue,
+      inputs: subgraphParams.inputs as unknown as JsonValue,
+      outputs: subgraphParams.outputs as unknown as JsonValue,
+    };
+
+    const subgraphNode: GraphNode = {
+      id: subgraphNodeId,
+      type: SUBGRAPH_NODE_TYPE,
+      position: subgraphPosition,
+      params,
+      inputs: wrapperInputIds,
+      outputs: wrapperOutputIds,
+    };
+
+    const commands: GraphCommand[] = [];
+    for (const node of selectedNodesList) {
+      const command = createRemoveNodeCommand(graphSnapshot, node.id);
+      if (command) {
+        commands.push(command);
+      }
+    }
+    commands.push({
+      kind: "add-node",
+      node: subgraphNode,
+      sockets: wrapperSockets,
+    });
+    for (const wire of outerWires) {
+      commands.push({ kind: "add-wire", wire });
+    }
+
+    const changed = applyCommands("collapse-subgraph", commands);
+    if (!changed) {
+      return null;
+    }
+    setNodeSelection(new Set([subgraphNodeId]));
+    setWireSelection(new Set());
+    setFrameSelection(new Set());
+    return subgraphNodeId;
+  };
+
   const undo = (): void => {
     if (openBatch) {
       commitHistoryBatch();
@@ -686,6 +1052,7 @@ export const createEditorStore = (): EditorStore => {
     },
     setGraphPath,
     addNodeAt,
+    collapseSelectionToSubgraph,
     applyGraphCommand,
     applyGraphCommandTransient,
     recordGraphCommand,

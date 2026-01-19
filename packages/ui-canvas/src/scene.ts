@@ -406,7 +406,9 @@ export class CanvasScene {
     const nodesLayer = this.layers.nodes;
     const nextOrder = ordered.concat(selected);
     nodesLayer.removeChildren();
-    nodesLayer.addChild(...nextOrder);
+    if (nextOrder.length > 0) {
+      nodesLayer.addChild(...nextOrder);
+    }
     this.lastSelectedNodes = new Set(selectedNodes);
     this.lastOrderedNodes = nodeIds;
   }

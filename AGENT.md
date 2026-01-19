@@ -228,6 +228,8 @@ If you see patterns suggesting otherwise, **they are wrong** and should be corre
 - `app-web` runs Effectful work through `runAppEffect*` helpers and service Layers (`GraphService`, `ExecService`, `StorageService`, `UiEventService`) instead of calling Effect runners directly in components.
 - Selection-driven control surfaces should batch history mutations so undo/redo stays consistent while keeping the overlay UI hidden when nothing is selected.
 - Pixi-based canvas components should be loaded with `clientOnly` to avoid SSR evaluation and ensure the canvas mounts on the client.
+- Subgraph evaluation enforces max depth and node-count budgets; UI prevents nesting beyond limits with user-facing toasts.
+- Subgraph instances are synchronized by shared `graphId`; updating subgraph definitions or wrapper I/O propagates to all nodes referencing that `graphId`.
 
 ---
 

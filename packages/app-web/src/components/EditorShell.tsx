@@ -1,14 +1,33 @@
 import * as Toast from "@kobalte/core/toast";
 import {
   type FrameId,
+  type GraphNode,
+  type GraphSocket,
   graphToDocumentV1,
   type NodeId,
+  type SocketId,
   type WireId,
 } from "@shadr/graph-core";
-import type { GraphId } from "@shadr/shared";
+import type { ParamSchemaDefinition } from "@shadr/plugin-system";
+import type {
+  GraphDocumentV1,
+  GraphId,
+  JsonObject,
+  JsonValue,
+  SocketTypeId,
+  SubgraphNodeParams,
+} from "@shadr/shared";
+import {
+  getSocketTypeMetadata,
+  MAX_SUBGRAPH_DEPTH,
+  SOCKET_TYPE_PRIMITIVES,
+  SUBGRAPH_NODE_TYPE,
+} from "@shadr/shared";
 import { clientOnly } from "@solidjs/start";
 import { Either } from "effect";
 import {
+  ArrowLeft,
+  ArrowRight,
   ChevronRight,
   CircleDot,
   EyeOff,
@@ -31,6 +50,7 @@ import {
 import CommandPalette, {
   type CommandPaletteEntry,
 } from "~/components/CommandPalette";
+import SubgraphParamOverrides from "~/components/SubgraphParamOverrides";
 import { downloadTextFile } from "~/editor/download";
 import {
   formatGraphImportError,
@@ -41,6 +61,7 @@ import {
   createRemoveFrameCommand,
   createRemoveNodeCommand,
   createRemoveWireCommand,
+  createUpdateNodeIoCommand,
   type GraphCommand,
 } from "~/editor/history";
 import { getNodeCatalogEntry, NODE_CATALOG } from "~/editor/node-catalog";
@@ -53,6 +74,10 @@ import {
 } from "~/editor/output-artifacts";
 import { coerceSettings, settingsToJson } from "~/editor/settings";
 import { createEditorStore } from "~/editor/store";
+import {
+  parseSubgraphParams,
+  serializeSubgraphParams,
+} from "~/editor/subgraph-io";
 import {
   coerceUiState,
   DEFAULT_UI_STATE,
@@ -83,6 +108,27 @@ const EditorCanvas = clientOnly(() => import("~/components/EditorCanvas"));
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max);
 
+type Point = Readonly<{ x: number; y: number }>;
+
+type GraphFocusSnapshot = Readonly<{
+  canvasCenter: Point;
+  selectedNodes: ReadonlyArray<NodeId>;
+  selectedFrames: ReadonlyArray<FrameId>;
+  selectedWires: ReadonlyArray<WireId>;
+}>;
+
+type GraphNavEntry = Readonly<{
+  breadcrumb: GraphBreadcrumb;
+  document: GraphDocumentV1;
+  focus: GraphFocusSnapshot;
+  parentNodeId?: NodeId;
+}>;
+
+type GraphNavHistory = Readonly<{
+  entries: ReadonlyArray<ReadonlyArray<GraphNavEntry>>;
+  index: number;
+}>;
+
 const formatExecError = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "_tag" in error) {
     const tagValue = (error as { _tag: string })._tag;
@@ -102,6 +148,13 @@ export default function EditorShell() {
   const [recentGraphIds, setRecentGraphIds] = createSignal<
     ReadonlyArray<GraphId>
   >(DEFAULT_UI_STATE.recentGraphIds);
+  const [navStack, setNavStack] = createSignal<ReadonlyArray<GraphNavEntry>>(
+    [],
+  );
+  const [navHistory, setNavHistory] = createSignal<GraphNavHistory>({
+    entries: [],
+    index: -1,
+  });
 
   type AutosaveStatus = "idle" | "saving" | "saved" | "error";
   const [autosaveStatus, setAutosaveStatus] =
@@ -130,6 +183,11 @@ export default function EditorShell() {
     }
     return [{ id: store.graph().graphId, label: "Main" }];
   });
+  const canNavigateBack = createMemo(() => navHistory().index > 0);
+  const canNavigateForward = createMemo(() => {
+    const history = navHistory();
+    return history.index >= 0 && history.index < history.entries.length - 1;
+  });
 
   const statusBase =
     "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.18em]";
@@ -148,7 +206,10 @@ export default function EditorShell() {
   const breadcrumbRoot =
     "pointer-events-auto flex items-center gap-1 rounded-full border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
   const breadcrumbItem =
-    "inline-flex items-center gap-1 rounded-full border border-transparent px-2 py-0.5 text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--app-text)]";
+    "inline-flex items-center gap-1 rounded-full border border-transparent px-2 py-0.5 text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--app-text)] transition";
+  const breadcrumbItemActive =
+    "hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-strong)]";
+  const breadcrumbItemDisabled = "cursor-default";
   const breadcrumbSeparator = "text-[color:var(--text-muted)]";
   const historyButtonBase =
     "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.55rem] uppercase tracking-[0.18em] transition";
@@ -192,6 +253,14 @@ export default function EditorShell() {
     "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-text)]";
   const sidePanelSuccess =
     "border-[color:var(--status-success-border)] bg-[color:var(--status-success-bg)] text-[color:var(--status-success-text)]";
+  const ioPanel =
+    "flex flex-col gap-2 rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] px-2.5 py-2 text-[0.7rem]";
+  const ioLabel =
+    "text-[0.55rem] uppercase tracking-[0.18em] text-[color:var(--text-muted)]";
+  const ioInput =
+    "w-full rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.75rem] text-[color:var(--text-strong)] focus:border-[color:var(--border-strong)] focus:outline-none";
+  const ioSelect =
+    "w-full rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.7rem] text-[color:var(--text-strong)] focus:border-[color:var(--border-strong)] focus:outline-none";
 
   const toastRegion = "fixed right-4 top-4 z-30 w-[min(280px,90vw)]";
   const toastList = "flex flex-col gap-2";
@@ -269,6 +338,373 @@ export default function EditorShell() {
     return ordered.slice(0, 5);
   };
 
+  const formatRootLabel = (graphId: GraphId): string =>
+    graphId === "main" ? "Main" : graphId;
+
+  const createFocusSnapshot = (): GraphFocusSnapshot => ({
+    canvasCenter: store.canvasCenter(),
+    selectedNodes: Array.from(store.selectedNodes()).sort((left, right) =>
+      left.localeCompare(right),
+    ),
+    selectedFrames: Array.from(store.selectedFrames()).sort((left, right) =>
+      left.localeCompare(right),
+    ),
+    selectedWires: Array.from(store.selectedWires()).sort((left, right) =>
+      left.localeCompare(right),
+    ),
+  });
+
+  const applyFocusSnapshot = (snapshot: GraphFocusSnapshot): void => {
+    store.setCanvasCenter(snapshot.canvasCenter);
+    const nodes = new Set(snapshot.selectedNodes);
+    const frames = new Set(snapshot.selectedFrames);
+    const wires = new Set(snapshot.selectedWires);
+    if (nodes.size > 0) {
+      store.setNodeSelection(nodes);
+      return;
+    }
+    if (frames.size > 0) {
+      store.setFrameSelection(frames);
+      return;
+    }
+    if (wires.size > 0) {
+      store.setWireSelection(wires);
+      return;
+    }
+    store.clearSelection();
+  };
+
+  const getGraphDocumentCenter = (document: GraphDocumentV1): Point => {
+    if (document.nodes.length === 0) {
+      return { x: 0, y: 0 };
+    }
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const node of document.nodes) {
+      minX = Math.min(minX, node.position.x);
+      minY = Math.min(minY, node.position.y);
+      maxX = Math.max(maxX, node.position.x);
+      maxY = Math.max(maxY, node.position.y);
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+      return { x: 0, y: 0 };
+    }
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  };
+
+  const getSubgraphDocumentDepth = (
+    document: GraphDocumentV1,
+    stack: Set<GraphId>,
+  ): number => {
+    if (stack.has(document.graphId)) {
+      return MAX_SUBGRAPH_DEPTH + 1;
+    }
+    stack.add(document.graphId);
+    let maxDepth = 0;
+    for (const node of document.nodes) {
+      if (node.type !== SUBGRAPH_NODE_TYPE) {
+        continue;
+      }
+      const params = parseSubgraphParams(node.params);
+      if (!params) {
+        continue;
+      }
+      const depth = 1 + getSubgraphDocumentDepth(params.graph, stack);
+      maxDepth = Math.max(maxDepth, depth);
+    }
+    stack.delete(document.graphId);
+    return maxDepth;
+  };
+
+  const getSelectionSubgraphDepth = (): number => {
+    let maxDepth = 0;
+    const graphSnapshot = store.graph();
+    for (const nodeId of store.selectedNodes()) {
+      const node = graphSnapshot.nodes.get(nodeId);
+      if (!node || node.type !== SUBGRAPH_NODE_TYPE) {
+        continue;
+      }
+      const params = parseSubgraphParams(node.params);
+      if (!params) {
+        continue;
+      }
+      const depth = 1 + getSubgraphDocumentDepth(params.graph, new Set());
+      maxDepth = Math.max(maxDepth, depth);
+    }
+    return maxDepth;
+  };
+
+  const canNestSubgraph = (): boolean => {
+    const currentDepth = navStack().length - 1;
+    const selectionDepth = getSelectionSubgraphDepth();
+    return currentDepth + 1 + selectionDepth <= MAX_SUBGRAPH_DEPTH;
+  };
+
+  const handleCollapseSubgraph = (): void => {
+    if (!canNestSubgraph()) {
+      notifyToast(
+        "Subgraph limit reached",
+        `Nested subgraphs are limited to ${MAX_SUBGRAPH_DEPTH} levels.`,
+      );
+      return;
+    }
+    store.collapseSelectionToSubgraph();
+  };
+
+  const getSubgraphDocumentForNode = (
+    document: GraphDocumentV1,
+    nodeId: NodeId,
+  ): GraphDocumentV1 | null => {
+    const node = document.nodes.find((entry) => entry.id === nodeId);
+    if (!node || node.type !== SUBGRAPH_NODE_TYPE) {
+      return null;
+    }
+    const params = parseSubgraphParams(node.params);
+    return params ? params.graph : null;
+  };
+
+  const updateSubgraphInstancesInDocument = (
+    document: GraphDocumentV1,
+    targetGraphId: GraphId,
+    nextSubgraphDocument: GraphDocumentV1,
+    stack: ReadonlySet<GraphId> = new Set(),
+  ): { document: GraphDocumentV1; updated: boolean } => {
+    if (stack.has(document.graphId)) {
+      return { document, updated: false };
+    }
+    const nextStack = new Set(stack);
+    nextStack.add(document.graphId);
+    let updated = false;
+    const nodes = document.nodes.map((node) => {
+      if (node.type !== SUBGRAPH_NODE_TYPE) {
+        return node;
+      }
+      const params = parseSubgraphParams(node.params);
+      if (!params) {
+        return node;
+      }
+      let nextGraph = params.graph;
+      let graphUpdated = false;
+      if (params.graph.graphId === targetGraphId) {
+        nextGraph = nextSubgraphDocument;
+        graphUpdated = true;
+      } else if (!nextStack.has(params.graph.graphId)) {
+        const nestedResult = updateSubgraphInstancesInDocument(
+          params.graph,
+          targetGraphId,
+          nextSubgraphDocument,
+          nextStack,
+        );
+        if (nestedResult.updated) {
+          nextGraph = nestedResult.document;
+          graphUpdated = true;
+        }
+      }
+      if (!graphUpdated) {
+        return node;
+      }
+      updated = true;
+      return {
+        ...node,
+        params: serializeSubgraphParams({
+          ...params,
+          graph: nextGraph,
+        }),
+      };
+    });
+    if (!updated) {
+      return { document, updated: false };
+    }
+    return { document: { ...document, nodes }, updated: true };
+  };
+
+  const rebuildNavStack = (
+    stack: ReadonlyArray<GraphNavEntry>,
+    rootDocument: GraphDocumentV1,
+  ): ReadonlyArray<GraphNavEntry> => {
+    if (stack.length === 0) {
+      return stack;
+    }
+    const nextStack: GraphNavEntry[] = [
+      { ...stack[0], document: rootDocument },
+    ];
+    for (let index = 1; index < stack.length; index += 1) {
+      const entry = stack[index];
+      const parent = nextStack[index - 1];
+      const parentNodeId = entry.parentNodeId;
+      const resolved =
+        parentNodeId !== undefined
+          ? getSubgraphDocumentForNode(parent.document, parentNodeId)
+          : null;
+      if (!resolved) {
+        notifyToast("Subgraph update failed", "Parent graph data missing.");
+        nextStack.push(entry);
+        continue;
+      }
+      nextStack.push({ ...entry, document: resolved });
+    }
+    return nextStack;
+  };
+
+  const commitNavigationStack = (): ReadonlyArray<GraphNavEntry> => {
+    const stack = navStack();
+    if (stack.length === 0) {
+      return stack;
+    }
+    const currentDocument = graphToDocumentV1(store.graph());
+    const currentFocus = createFocusSnapshot();
+    let nextStack = [
+      ...stack.slice(0, -1),
+      {
+        ...stack[stack.length - 1],
+        document: currentDocument,
+        focus: currentFocus,
+      },
+    ];
+    if (nextStack.length === 1) {
+      setNavStack(nextStack);
+      setNavHistory((current) => {
+        if (current.index < 0) {
+          return { entries: [nextStack], index: 0 };
+        }
+        const entries = [...current.entries];
+        entries[current.index] = nextStack;
+        return { entries, index: current.index };
+      });
+      return nextStack;
+    }
+    const rootEntry = nextStack[0];
+    const updateResult = updateSubgraphInstancesInDocument(
+      rootEntry.document,
+      currentDocument.graphId,
+      currentDocument,
+    );
+    if (updateResult.updated) {
+      nextStack = rebuildNavStack(nextStack, updateResult.document);
+    } else {
+      notifyToast("Subgraph update failed", "Parent graph data missing.");
+    }
+    setNavStack(nextStack);
+    setNavHistory((current) => {
+      if (current.index < 0) {
+        return { entries: [nextStack], index: 0 };
+      }
+      const entries = [...current.entries];
+      entries[current.index] = nextStack;
+      return { entries, index: current.index };
+    });
+    return nextStack;
+  };
+
+  const applyNavigationStack = (
+    stack: ReadonlyArray<GraphNavEntry>,
+    recordHistory: boolean,
+  ): void => {
+    if (stack.length === 0) {
+      return;
+    }
+    const current = stack[stack.length - 1];
+    const loaded = store.loadGraphDocument(current.document);
+    if (!loaded) {
+      notifyToast("Navigation failed", "Unable to load graph.");
+      return;
+    }
+    store.setGraphPath(stack.map((entry) => entry.breadcrumb));
+    applyFocusSnapshot(current.focus);
+    setNavStack(stack);
+    if (recordHistory) {
+      setNavHistory((currentHistory) => {
+        const base =
+          currentHistory.index >= 0
+            ? currentHistory.entries.slice(0, currentHistory.index + 1)
+            : [];
+        const entries = [...base, stack];
+        return { entries, index: entries.length - 1 };
+      });
+    }
+  };
+
+  const initializeNavigation = (): void => {
+    const document = graphToDocumentV1(store.graph());
+    const rootEntry: GraphNavEntry = {
+      breadcrumb: {
+        id: document.graphId,
+        label: formatRootLabel(document.graphId),
+      },
+      document,
+      focus: createFocusSnapshot(),
+    };
+    const stack = [rootEntry];
+    setNavStack(stack);
+    setNavHistory({ entries: [stack], index: 0 });
+    store.setGraphPath(stack.map((entry) => entry.breadcrumb));
+  };
+
+  const navigateHistory = (direction: "back" | "forward"): void => {
+    const historySnapshot = navHistory();
+    if (historySnapshot.index < 0) {
+      return;
+    }
+    commitNavigationStack();
+    const nextHistory = navHistory();
+    const delta = direction === "back" ? -1 : 1;
+    const nextIndex = nextHistory.index + delta;
+    if (nextIndex < 0 || nextIndex >= nextHistory.entries.length) {
+      return;
+    }
+    const targetStack = nextHistory.entries[nextIndex];
+    setNavHistory({ entries: nextHistory.entries, index: nextIndex });
+    applyNavigationStack(targetStack, false);
+  };
+
+  const navigateToBreadcrumb = (targetIndex: number): void => {
+    const stack = commitNavigationStack();
+    if (targetIndex < 0 || targetIndex >= stack.length - 1) {
+      return;
+    }
+    const nextStack = stack.slice(0, targetIndex + 1);
+    applyNavigationStack(nextStack, true);
+  };
+
+  const navigateToSubgraph = (nodeId: NodeId): void => {
+    if (navStack().length - 1 >= MAX_SUBGRAPH_DEPTH) {
+      notifyToast(
+        "Subgraph limit reached",
+        `Nested subgraphs are limited to ${MAX_SUBGRAPH_DEPTH} levels.`,
+      );
+      return;
+    }
+    const node = store.graph().nodes.get(nodeId);
+    if (!node || node.type !== SUBGRAPH_NODE_TYPE) {
+      return;
+    }
+    const params = parseSubgraphParams(node.params);
+    if (!params) {
+      notifyToast("Subgraph missing", "Unable to read subgraph data.");
+      return;
+    }
+    const stack = commitNavigationStack();
+    const suffix = node.id.startsWith("node-") ? node.id.slice(5) : node.id;
+    const entry: GraphNavEntry = {
+      breadcrumb: {
+        id: params.graph.graphId,
+        label: `Subgraph ${suffix}`,
+      },
+      document: params.graph,
+      focus: {
+        canvasCenter: getGraphDocumentCenter(params.graph),
+        selectedNodes: [],
+        selectedFrames: [],
+        selectedWires: [],
+      },
+      parentNodeId: node.id,
+    };
+    const nextStack = [...stack, entry];
+    applyNavigationStack(nextStack, true);
+  };
+
   const normalizeGraphPath = (
     path: ReadonlyArray<GraphBreadcrumb>,
     graphId: GraphId,
@@ -328,6 +764,7 @@ export default function EditorShell() {
             notifyToast("Storage error", "Starting with a new graph session.");
             const initialUiState = pendingUiState() ?? uiState;
             applyUiState(initialUiState);
+            initializeNavigation();
             setPendingUiState(null);
             setRecentGraphIds((current) =>
               mergeRecentGraphIds(store.graph().graphId, current),
@@ -345,6 +782,7 @@ export default function EditorShell() {
           }
           const initialUiState = pendingUiState() ?? uiState;
           applyUiState(initialUiState);
+          initializeNavigation();
           setPendingUiState(null);
           setRecentGraphIds((current) =>
             mergeRecentGraphIds(store.graph().graphId, current),
@@ -540,6 +978,87 @@ export default function EditorShell() {
     const node = selectedNode();
     return node ? (getNodeCatalogEntry(node.type) ?? null) : null;
   });
+  const selectedSubgraphNode = createMemo(() => {
+    const node = selectedNode();
+    return node?.type === SUBGRAPH_NODE_TYPE ? node : null;
+  });
+  const selectedSubgraphParams = createMemo(() => {
+    const node = selectedSubgraphNode();
+    if (!node) {
+      return null;
+    }
+    return parseSubgraphParams(node.params);
+  });
+  type SubgraphSocketRow = Readonly<{ socket: GraphSocket; index: number }>;
+  const subgraphInputRows = createMemo<SubgraphSocketRow[]>(() => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params) {
+      return [];
+    }
+    const graphSnapshot = store.graph();
+    const rows: SubgraphSocketRow[] = [];
+    node.inputs.forEach((socketId, index) => {
+      const socket = graphSnapshot.sockets.get(socketId);
+      if (socket) {
+        rows.push({ socket, index });
+      }
+    });
+    return rows;
+  });
+  const subgraphOutputRows = createMemo<SubgraphSocketRow[]>(() => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params) {
+      return [];
+    }
+    const graphSnapshot = store.graph();
+    const rows: SubgraphSocketRow[] = [];
+    node.outputs.forEach((socketId, index) => {
+      const socket = graphSnapshot.sockets.get(socketId);
+      if (socket) {
+        rows.push({ socket, index });
+      }
+    });
+    return rows;
+  });
+  type SubgraphOverrideNode = Readonly<{
+    node: GraphNode;
+    label: string;
+    schema: ParamSchemaDefinition;
+    overrides?: JsonObject;
+  }>;
+  const subgraphOverrideNodes = createMemo<SubgraphOverrideNode[]>(() => {
+    const params = selectedSubgraphParams();
+    if (!params) {
+      return [];
+    }
+    return params.graph.nodes.flatMap((node) => {
+      const entry = getNodeCatalogEntry(node.type);
+      if (!entry?.paramSchema) {
+        return [];
+      }
+      return [
+        {
+          node,
+          label: entry.label ?? node.type,
+          schema: entry.paramSchema,
+          overrides: params.overrides?.[node.id],
+        },
+      ];
+    });
+  });
+  const subgraphOverrideCount = createMemo(() => {
+    const params = selectedSubgraphParams();
+    if (!params?.overrides) {
+      return 0;
+    }
+    let count = 0;
+    for (const overrides of Object.values(params.overrides)) {
+      count += Object.keys(overrides).length;
+    }
+    return count;
+  });
   const selectedNodeLabel = createMemo(() => {
     const ids = selectedNodeIds();
     if (ids.length === 0) {
@@ -644,6 +1163,485 @@ export default function EditorShell() {
     return entry?.label ?? selectedOutputType() ?? "Output";
   });
 
+  const collectNodeSockets = (node: GraphNode): GraphSocket[] | null => {
+    const graphSnapshot = store.graph();
+    const sockets: GraphSocket[] = [];
+    for (const socketId of [...node.inputs, ...node.outputs]) {
+      const socket = graphSnapshot.sockets.get(socketId);
+      if (!socket) {
+        return null;
+      }
+      sockets.push(socket);
+    }
+    return sockets;
+  };
+
+  const getSocketTypeLabel = (typeId: SocketTypeId): string =>
+    getSocketTypeMetadata(typeId)?.label ?? typeId;
+
+  const buildSubgraphParamsForNode = (
+    node: GraphNode,
+    inputs: ReadonlyArray<GraphSocket>,
+    outputs: ReadonlyArray<GraphSocket>,
+  ) => {
+    const params = selectedSubgraphParams();
+    if (!params) {
+      return null;
+    }
+    const inputsByKey = new Map(
+      params.inputs.map((entry) => [entry.key, entry]),
+    );
+    const outputsByKey = new Map(
+      params.outputs.map((entry) => [entry.key, entry]),
+    );
+    const nextInputs = inputs.flatMap((socket) => {
+      const entry = inputsByKey.get(socket.name);
+      if (!entry) {
+        return [];
+      }
+      return [{ ...entry, key: socket.name }];
+    });
+    const nextOutputs = outputs.flatMap((socket) => {
+      const entry = outputsByKey.get(socket.name);
+      if (!entry) {
+        return [];
+      }
+      return [{ ...entry, key: socket.name }];
+    });
+    if (nextInputs.length !== inputs.length) {
+      return null;
+    }
+    if (nextOutputs.length !== outputs.length) {
+      return null;
+    }
+    return {
+      ...params,
+      inputs: nextInputs,
+      outputs: nextOutputs,
+    };
+  };
+
+  const buildSubgraphInstanceSocketMap = (
+    params: SubgraphNodeParams,
+    sockets: ReadonlyArray<GraphSocket>,
+  ): {
+    inputMap: Map<NodeId, GraphSocket>;
+    outputMap: Map<SocketId, GraphSocket>;
+  } | null => {
+    const inputMap = new Map<NodeId, GraphSocket>();
+    const outputMap = new Map<SocketId, GraphSocket>();
+    for (const entry of params.inputs) {
+      const socket = sockets.find(
+        (item) => item.direction === "input" && item.name === entry.key,
+      );
+      if (!socket) {
+        return null;
+      }
+      inputMap.set(entry.nodeId, socket);
+    }
+    for (const entry of params.outputs) {
+      const socket = sockets.find(
+        (item) => item.direction === "output" && item.name === entry.key,
+      );
+      if (!socket) {
+        return null;
+      }
+      outputMap.set(entry.socketId, socket);
+    }
+    return { inputMap, outputMap };
+  };
+
+  const buildSubgraphInstanceCommand = (
+    instanceNode: GraphNode,
+    instanceSockets: ReadonlyArray<GraphSocket>,
+    instanceParams: SubgraphNodeParams,
+    definitionParams: SubgraphNodeParams,
+    definitionSockets: ReadonlyArray<GraphSocket>,
+  ): GraphCommand | null => {
+    const socketMaps = buildSubgraphInstanceSocketMap(
+      instanceParams,
+      instanceSockets,
+    );
+    if (!socketMaps) {
+      return null;
+    }
+    const definitionInputs = new Map<string, GraphSocket>();
+    const definitionOutputs = new Map<string, GraphSocket>();
+    for (const socket of definitionSockets) {
+      if (socket.direction === "input") {
+        definitionInputs.set(socket.name, socket);
+      } else {
+        definitionOutputs.set(socket.name, socket);
+      }
+    }
+    const nextSocketsById = new Map<SocketId, GraphSocket>();
+    const nextInputIds: SocketId[] = [];
+    const nextOutputIds: SocketId[] = [];
+
+    for (const entry of definitionParams.inputs) {
+      const instanceSocket = socketMaps.inputMap.get(entry.nodeId);
+      const definitionSocket = definitionInputs.get(entry.key);
+      if (!instanceSocket || !definitionSocket) {
+        return null;
+      }
+      nextInputIds.push(instanceSocket.id);
+      nextSocketsById.set(instanceSocket.id, {
+        ...instanceSocket,
+        name: entry.key,
+        dataType: definitionSocket.dataType,
+        required: definitionSocket.required,
+        defaultValue: definitionSocket.defaultValue,
+        minConnections: definitionSocket.minConnections,
+        maxConnections: definitionSocket.maxConnections,
+      });
+    }
+
+    for (const entry of definitionParams.outputs) {
+      const instanceSocket = socketMaps.outputMap.get(entry.socketId);
+      const definitionSocket = definitionOutputs.get(entry.key);
+      if (!instanceSocket || !definitionSocket) {
+        return null;
+      }
+      nextOutputIds.push(instanceSocket.id);
+      nextSocketsById.set(instanceSocket.id, {
+        ...instanceSocket,
+        name: entry.key,
+        dataType: definitionSocket.dataType,
+        required: definitionSocket.required,
+        defaultValue: definitionSocket.defaultValue,
+        minConnections: definitionSocket.minConnections,
+        maxConnections: definitionSocket.maxConnections,
+      });
+    }
+
+    const nextSockets = instanceSockets.map(
+      (socket) => nextSocketsById.get(socket.id) ?? socket,
+    );
+    const nextParams: SubgraphNodeParams = {
+      ...definitionParams,
+      ...(instanceParams.overrides
+        ? { overrides: instanceParams.overrides }
+        : {}),
+    };
+    const nextNode: GraphNode = {
+      ...instanceNode,
+      inputs: nextInputIds,
+      outputs: nextOutputIds,
+      params: serializeSubgraphParams(nextParams),
+    };
+
+    return createUpdateNodeIoCommand(
+      { node: instanceNode, sockets: instanceSockets },
+      { node: nextNode, sockets: nextSockets },
+    );
+  };
+
+  const commitSubgraphIoUpdate = (
+    afterNode: GraphNode,
+    afterSockets: ReadonlyArray<GraphSocket>,
+    nextParamsOverride?: ReturnType<typeof parseSubgraphParams> | null,
+  ): void => {
+    const inputs = afterNode.inputs.flatMap((socketId) =>
+      afterSockets.filter(
+        (socket) => socket.direction === "input" && socket.id === socketId,
+      ),
+    );
+    const outputs = afterNode.outputs.flatMap((socketId) =>
+      afterSockets.filter(
+        (socket) => socket.direction === "output" && socket.id === socketId,
+      ),
+    );
+    const nextParams =
+      nextParamsOverride ??
+      buildSubgraphParamsForNode(afterNode, inputs, outputs);
+    if (!nextParams) {
+      notifyToast("Subgraph update failed", "Inputs or outputs went missing.");
+      return;
+    }
+    const graphSnapshot = store.graph();
+    const definitionGraphId = nextParams.graph.graphId;
+    const commands: GraphCommand[] = [];
+    for (const node of graphSnapshot.nodes.values()) {
+      if (node.type !== SUBGRAPH_NODE_TYPE) {
+        continue;
+      }
+      const params = parseSubgraphParams(node.params);
+      if (!params || params.graph.graphId !== definitionGraphId) {
+        continue;
+      }
+      const sockets = collectNodeSockets(node);
+      if (!sockets) {
+        continue;
+      }
+      const command = buildSubgraphInstanceCommand(
+        node,
+        sockets,
+        params,
+        nextParams,
+        afterSockets,
+      );
+      if (command) {
+        commands.push(command);
+      }
+    }
+    if (commands.length === 0) {
+      notifyToast(
+        "Subgraph update failed",
+        "Unable to sync subgraph instances.",
+      );
+      return;
+    }
+    store.beginHistoryBatch("update-subgraph-io");
+    let changed = false;
+    for (const command of commands) {
+      if (store.applyGraphCommandTransient(command)) {
+        store.recordGraphCommand(command);
+        changed = true;
+      }
+    }
+    store.commitHistoryBatch();
+    if (changed) {
+      store.refreshActiveOutput();
+    }
+  };
+
+  const setSubgraphParamOverride = (
+    targetNodeId: NodeId,
+    fieldId: string,
+    value: JsonValue,
+  ): void => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params) {
+      return;
+    }
+    const overrides: Record<string, JsonObject> = {
+      ...(params.overrides ?? {}),
+    };
+    const nodeOverrides: Record<string, JsonValue> = {
+      ...(overrides[targetNodeId] ?? {}),
+      [fieldId]: value,
+    };
+    overrides[targetNodeId] = nodeOverrides;
+    const nextOverrides = Object.keys(overrides).length > 0 ? overrides : null;
+    store.updateNodeParam(node.id, "overrides", nextOverrides ?? null);
+  };
+
+  const resetSubgraphParamOverride = (
+    targetNodeId: NodeId,
+    fieldId: string,
+  ): void => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params?.overrides) {
+      return;
+    }
+    const overrides: Record<string, JsonObject> = { ...params.overrides };
+    const nodeOverrides = overrides[targetNodeId];
+    if (!nodeOverrides || !(fieldId in nodeOverrides)) {
+      return;
+    }
+    const nextNodeOverrides: Record<string, JsonValue> = {
+      ...nodeOverrides,
+    };
+    delete nextNodeOverrides[fieldId];
+    if (Object.keys(nextNodeOverrides).length > 0) {
+      overrides[targetNodeId] = nextNodeOverrides;
+    } else {
+      delete overrides[targetNodeId];
+    }
+    const nextOverrides = Object.keys(overrides).length > 0 ? overrides : null;
+    store.updateNodeParam(node.id, "overrides", nextOverrides ?? null);
+  };
+
+  const sanitizeSocketName = (value: string): string => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : "socket";
+  };
+
+  const updateSubgraphSocketName = (
+    node: GraphNode,
+    socketId: string,
+    nextName: string,
+  ): void => {
+    const params = selectedSubgraphParams();
+    const sockets = collectNodeSockets(node);
+    if (!sockets || !params) {
+      return;
+    }
+    const socket = sockets.find((entry) => entry.id === socketId);
+    if (!socket) {
+      return;
+    }
+    const name = sanitizeSocketName(nextName);
+    if (name === socket.name) {
+      return;
+    }
+    const duplicates = sockets.some(
+      (entry) =>
+        entry.id !== socket.id &&
+        entry.direction === socket.direction &&
+        entry.name === name,
+    );
+    if (duplicates) {
+      notifyToast("Rename blocked", "Socket names must be unique.");
+      return;
+    }
+    const nextSockets = sockets.map((entry) =>
+      entry.id === socket.id ? { ...entry, name } : entry,
+    );
+    const nextParams =
+      socket.direction === "input"
+        ? {
+            ...params,
+            inputs: params.inputs.map((entry) =>
+              entry.key === socket.name ? { ...entry, key: name } : entry,
+            ),
+          }
+        : {
+            ...params,
+            outputs: params.outputs.map((entry) =>
+              entry.key === socket.name ? { ...entry, key: name } : entry,
+            ),
+          };
+    commitSubgraphIoUpdate({ ...node }, nextSockets, nextParams);
+  };
+
+  const updateSubgraphSocketType = (
+    node: GraphNode,
+    socketId: string,
+    nextType: SocketTypeId,
+  ): void => {
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      return;
+    }
+    const socket = sockets.find((entry) => entry.id === socketId);
+    if (!socket || socket.dataType === nextType) {
+      return;
+    }
+    const nextSockets = sockets.map((entry) =>
+      entry.id === socket.id ? { ...entry, dataType: nextType } : entry,
+    );
+    commitSubgraphIoUpdate({ ...node }, nextSockets);
+  };
+
+  const updateSubgraphSocketRequired = (
+    node: GraphNode,
+    socketId: string,
+    required: boolean,
+  ): void => {
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      return;
+    }
+    const socket = sockets.find((entry) => entry.id === socketId);
+    if (!socket || socket.required === required) {
+      return;
+    }
+    const nextSockets = sockets.map((entry) =>
+      entry.id === socket.id ? { ...entry, required } : entry,
+    );
+    commitSubgraphIoUpdate({ ...node }, nextSockets);
+  };
+
+  const updateSubgraphSocketDefault = (
+    node: GraphNode,
+    socketId: string,
+    value: JsonValue | undefined,
+  ): void => {
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      return;
+    }
+    const socket = sockets.find((entry) => entry.id === socketId);
+    if (!socket) {
+      return;
+    }
+    const nextSockets = sockets.map((entry) =>
+      entry.id === socket.id ? { ...entry, defaultValue: value } : entry,
+    );
+    commitSubgraphIoUpdate({ ...node }, nextSockets);
+  };
+
+  const updateSubgraphSocketOrder = (
+    node: GraphNode,
+    direction: "input" | "output",
+    fromIndex: number,
+    toIndex: number,
+  ): void => {
+    const list = direction === "input" ? node.inputs : node.outputs;
+    if (fromIndex === toIndex) {
+      return;
+    }
+    const nextList = [...list];
+    const [moved] = nextList.splice(fromIndex, 1);
+    if (!moved) {
+      return;
+    }
+    nextList.splice(toIndex, 0, moved);
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      return;
+    }
+    const nextNode =
+      direction === "input"
+        ? { ...node, inputs: nextList }
+        : { ...node, outputs: nextList };
+    commitSubgraphIoUpdate(nextNode, sockets);
+  };
+
+  const parseDefaultValue = (
+    typeId: SocketTypeId,
+    raw: string,
+  ): JsonValue | undefined => {
+    if (raw.trim() === "") {
+      return undefined;
+    }
+    if (typeId === "float") {
+      const value = Number.parseFloat(raw);
+      return Number.isFinite(value) ? value : undefined;
+    }
+    if (typeId === "int") {
+      const value = Number.parseInt(raw, 10);
+      return Number.isFinite(value) ? value : undefined;
+    }
+    if (typeId === "bool") {
+      return raw.trim().toLowerCase() === "true";
+    }
+    try {
+      return JSON.parse(raw) as JsonValue;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const formatDefaultValue = (value: JsonValue | undefined): string => {
+    if (value === undefined || value === null) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    return JSON.stringify(value);
+  };
+
+  const applyDefaultInput = (
+    node: GraphNode,
+    socket: GraphSocket,
+    raw: string,
+  ): void => {
+    const nextValue = parseDefaultValue(socket.dataType, raw);
+    if (nextValue === undefined && raw.trim().length > 0) {
+      notifyToast("Invalid default", "Use a compatible value.");
+      return;
+    }
+    updateSubgraphSocketDefault(node, socket.id, nextValue);
+  };
+
   let lastOutputError: string | null = null;
 
   const requestOutputNow = (): void => {
@@ -708,6 +1706,7 @@ export default function EditorShell() {
         notifyToast("Import failed", "Graph document was invalid.");
         return;
       }
+      initializeNavigation();
       notifyToast(
         "Graph imported",
         `${result.document.nodes.length} nodes loaded.`,
@@ -887,6 +1886,15 @@ export default function EditorShell() {
         keywords: ["collapse", "node"],
         onSelect: () => toggleCollapseSelection(),
       },
+      {
+        id: "command:collapse-subgraph",
+        label: "Collapse to subgraph",
+        description: "Wrap selected nodes as a subgraph",
+        kind: "command",
+        enabled: hasNodeSelection,
+        keywords: ["subgraph", "collapse", "group"],
+        onSelect: () => handleCollapseSubgraph(),
+      },
     ];
 
     const controlEntries: CommandPaletteEntry[] = [
@@ -952,7 +1960,12 @@ export default function EditorShell() {
   return (
     <main class="relative h-screen w-screen overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--app-text)]">
       <div class="absolute inset-0">
-        <EditorCanvas store={store} onViewportEmpty={notifyViewportEmpty} />
+        <EditorCanvas
+          store={store}
+          onViewportEmpty={notifyViewportEmpty}
+          onDiveIntoSubgraph={navigateToSubgraph}
+          onCollapseSelectionToSubgraph={handleCollapseSubgraph}
+        />
       </div>
 
       <div class={overlayRoot}>
@@ -961,16 +1974,57 @@ export default function EditorShell() {
             <Sparkles class="h-4 w-4 text-[color:var(--status-info-text)]" />
             <span class="sr-only">Shadr</span>
           </div>
+          <button
+            class={`${historyButtonBase} ${
+              canNavigateBack() ? historyButtonActive : historyButtonDisabled
+            }`}
+            disabled={!canNavigateBack()}
+            onClick={() => navigateHistory("back")}
+            aria-label="Back"
+          >
+            <ArrowLeft class="h-3 w-3" />
+            <span class="sr-only">Back</span>
+          </button>
+          <button
+            class={`${historyButtonBase} ${
+              canNavigateForward() ? historyButtonActive : historyButtonDisabled
+            }`}
+            disabled={!canNavigateForward()}
+            onClick={() => navigateHistory("forward")}
+            aria-label="Forward"
+          >
+            <ArrowRight class="h-3 w-3" />
+            <span class="sr-only">Forward</span>
+          </button>
           <div class={breadcrumbRoot} aria-label="Graph path">
             <For each={graphPath()}>
-              {(entry, index) => (
-                <div class="flex items-center gap-1">
-                  <span class={breadcrumbItem}>{entry.label}</span>
-                  {index() < graphPath().length - 1 ? (
-                    <ChevronRight class={`h-3 w-3 ${breadcrumbSeparator}`} />
-                  ) : null}
-                </div>
-              )}
+              {(entry, index) => {
+                const isCurrent = () => index() === graphPath().length - 1;
+                return (
+                  <div class="flex items-center gap-1">
+                    <button
+                      type="button"
+                      class={`${breadcrumbItem} ${
+                        isCurrent()
+                          ? breadcrumbItemDisabled
+                          : breadcrumbItemActive
+                      }`}
+                      disabled={isCurrent()}
+                      aria-current={isCurrent() ? "page" : undefined}
+                      onClick={() => {
+                        if (!isCurrent()) {
+                          navigateToBreadcrumb(index());
+                        }
+                      }}
+                    >
+                      {entry.label}
+                    </button>
+                    {index() < graphPath().length - 1 ? (
+                      <ChevronRight class={`h-3 w-3 ${breadcrumbSeparator}`} />
+                    ) : null}
+                  </div>
+                );
+              }}
             </For>
           </div>
           <button
@@ -1297,6 +2351,309 @@ export default function EditorShell() {
                           Download
                         </button>
                       </div>
+                    </div>
+                  ) : null}
+
+                  {selectedSubgraphNode() ? (
+                    <div class="flex flex-col gap-2">
+                      <div class="flex items-center gap-2">
+                        <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                        <span class={sidePanelTitle}>Subgraph I/O</span>
+                      </div>
+                      {!selectedSubgraphParams() ? (
+                        <div class={`${sidePanelRow} ${sidePanelDanger}`}>
+                          Subgraph params missing
+                        </div>
+                      ) : (
+                        <>
+                          <div class="flex items-center justify-between">
+                            <span class={sidePanelTitle}>Inputs</span>
+                            <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                              {subgraphInputRows().length}
+                            </span>
+                          </div>
+                          <For each={subgraphInputRows()}>
+                            {(row) => (
+                              <div class={ioPanel}>
+                                <div class="flex items-center justify-between gap-2">
+                                  <input
+                                    class={ioInput}
+                                    value={row.socket.name}
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketName(
+                                        node,
+                                        row.socket.id,
+                                        event.currentTarget.value,
+                                      );
+                                    }}
+                                  />
+                                  <div class="flex items-center gap-1">
+                                    <button
+                                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                                      disabled={row.index === 0}
+                                      onClick={() => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketOrder(
+                                          node,
+                                          "input",
+                                          row.index,
+                                          row.index - 1,
+                                        );
+                                      }}
+                                    >
+                                      Up
+                                    </button>
+                                    <button
+                                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                                      disabled={
+                                        row.index ===
+                                        subgraphInputRows().length - 1
+                                      }
+                                      onClick={() => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketOrder(
+                                          node,
+                                          "input",
+                                          row.index,
+                                          row.index + 1,
+                                        );
+                                      }}
+                                    >
+                                      Down
+                                    </button>
+                                  </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2">
+                                  <div class="flex flex-col gap-1">
+                                    <span class={ioLabel}>Type</span>
+                                    <select
+                                      class={ioSelect}
+                                      value={row.socket.dataType}
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketType(
+                                          node,
+                                          row.socket.id,
+                                          event.currentTarget
+                                            .value as SocketTypeId,
+                                        );
+                                      }}
+                                    >
+                                      <For each={SOCKET_TYPE_PRIMITIVES}>
+                                        {(typeId) => (
+                                          <option value={typeId}>
+                                            {getSocketTypeLabel(typeId)}
+                                          </option>
+                                        )}
+                                      </For>
+                                    </select>
+                                  </div>
+                                  <div class="flex flex-col gap-1">
+                                    <span class={ioLabel}>Required</span>
+                                    <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={row.socket.required}
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketRequired(
+                                            node,
+                                            row.socket.id,
+                                            event.currentTarget.checked,
+                                          );
+                                        }}
+                                      />
+                                      Required
+                                    </label>
+                                  </div>
+                                  <div class="col-span-2 flex flex-col gap-1">
+                                    <span class={ioLabel}>Default</span>
+                                    {row.socket.dataType === "bool" ? (
+                                      <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                        <input
+                                          type="checkbox"
+                                          checked={
+                                            row.socket.defaultValue === true
+                                          }
+                                          onChange={(event) => {
+                                            const node = selectedSubgraphNode();
+                                            if (!node) {
+                                              return;
+                                            }
+                                            updateSubgraphSocketDefault(
+                                              node,
+                                              row.socket.id,
+                                              event.currentTarget.checked,
+                                            );
+                                          }}
+                                        />
+                                        True
+                                      </label>
+                                    ) : (
+                                      <input
+                                        class={ioInput}
+                                        value={formatDefaultValue(
+                                          row.socket.defaultValue,
+                                        )}
+                                        placeholder="(none)"
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          applyDefaultInput(
+                                            node,
+                                            row.socket,
+                                            event.currentTarget.value,
+                                          );
+                                        }}
+                                      />
+                                    )}
+                                    <button
+                                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                                      disabled={
+                                        row.socket.defaultValue === undefined
+                                      }
+                                      onClick={() => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketDefault(
+                                          node,
+                                          row.socket.id,
+                                          undefined,
+                                        );
+                                      }}
+                                    >
+                                      Clear default
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </For>
+
+                          <div class="flex items-center justify-between">
+                            <span class={sidePanelTitle}>Outputs</span>
+                            <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                              {subgraphOutputRows().length}
+                            </span>
+                          </div>
+                          <For each={subgraphOutputRows()}>
+                            {(row) => (
+                              <div class={ioPanel}>
+                                <div class="flex items-center justify-between gap-2">
+                                  <input
+                                    class={ioInput}
+                                    value={row.socket.name}
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketName(
+                                        node,
+                                        row.socket.id,
+                                        event.currentTarget.value,
+                                      );
+                                    }}
+                                  />
+                                  <div class="flex items-center gap-1">
+                                    <button
+                                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                                      disabled={row.index === 0}
+                                      onClick={() => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketOrder(
+                                          node,
+                                          "output",
+                                          row.index,
+                                          row.index - 1,
+                                        );
+                                      }}
+                                    >
+                                      Up
+                                    </button>
+                                    <button
+                                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                                      disabled={
+                                        row.index ===
+                                        subgraphOutputRows().length - 1
+                                      }
+                                      onClick={() => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketOrder(
+                                          node,
+                                          "output",
+                                          row.index,
+                                          row.index + 1,
+                                        );
+                                      }}
+                                    >
+                                      Down
+                                    </button>
+                                  </div>
+                                </div>
+                                <div class="flex flex-col gap-1">
+                                  <span class={ioLabel}>Type</span>
+                                  <div class={ioInput}>
+                                    {getSocketTypeLabel(row.socket.dataType)}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </For>
+
+                          <div class="flex items-center justify-between">
+                            <span class={sidePanelTitle}>
+                              Instance Overrides
+                            </span>
+                            <span
+                              class={`${sidePanelChip} ${
+                                subgraphOverrideCount() > 0
+                                  ? sidePanelInfo
+                                  : sidePanelMuted
+                              }`}
+                            >
+                              {subgraphOverrideCount()} overrides
+                            </span>
+                          </div>
+                          {subgraphOverrideNodes().length === 0 ? (
+                            <div class={`${sidePanelRow} ${sidePanelMuted}`}>
+                              No overrideable params
+                            </div>
+                          ) : (
+                            <SubgraphParamOverrides
+                              nodes={subgraphOverrideNodes()}
+                              onOverrideChange={setSubgraphParamOverride}
+                              onOverrideReset={resetSubgraphParamOverride}
+                            />
+                          )}
+                        </>
+                      )}
                     </div>
                   ) : null}
                 </div>

@@ -1,12 +1,16 @@
 import type {
   Graph,
   GraphError,
+  GraphId,
   GraphSocketDirection,
   NodeId,
   SocketId,
   WireId,
 } from "@shadr/graph-core";
-import { executionSubgraphByOutputSockets } from "@shadr/graph-core";
+import {
+  executionSubgraphByOutputSockets,
+  graphFromDocumentV1,
+} from "@shadr/graph-core";
 import type {
   NodeDefinition,
   NodeInputValues,
@@ -17,7 +21,20 @@ import type {
   Vec3,
   Vec4,
 } from "@shadr/plugin-system";
-import type { JsonObject, JsonValue } from "@shadr/shared";
+import type {
+  JsonObject,
+  JsonValue,
+  SubgraphNodeParams,
+  SubgraphParamOverrides,
+} from "@shadr/shared";
+import {
+  MAX_SUBGRAPH_DEPTH,
+  MAX_SUBGRAPH_NODE_COUNT,
+  MAX_SUBGRAPH_TOTAL_NODES,
+  SUBGRAPH_INPUT_NODE_PREFIX,
+  SUBGRAPH_INPUT_SOCKET_KEY,
+  SUBGRAPH_NODE_TYPE,
+} from "@shadr/shared";
 import { Effect, Either } from "effect";
 
 export type ExecEngineError =
@@ -102,6 +119,12 @@ export type ExecEvaluationStats = Readonly<{
 export type ExecEvaluationResult = Readonly<{
   value: JsonValue | null;
   stats: ExecEvaluationStats;
+}>;
+
+type SubgraphEvalContext = Readonly<{
+  depth: number;
+  graphIdStack: ReadonlyArray<GraphId>;
+  remainingNodeBudget: number;
 }>;
 
 export const createExecState = (): ExecState => ({
@@ -197,6 +220,127 @@ const createNullOutputs = (
   return outputs;
 };
 
+const isJsonObject = (value: JsonValue | undefined): value is JsonObject =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const isString = (value: JsonValue | undefined): value is string =>
+  typeof value === "string";
+
+const readSubgraphOverrides = (
+  value: JsonValue | undefined,
+): SubgraphParamOverrides | undefined | null => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!isJsonObject(value)) {
+    return null;
+  }
+  const entries = Object.entries(value).flatMap(([nodeId, params]) => {
+    if (!isJsonObject(params)) {
+      return [];
+    }
+    return [[nodeId, params] as const];
+  });
+  if (entries.length !== Object.keys(value).length) {
+    return null;
+  }
+  return Object.fromEntries(entries);
+};
+
+const readSubgraphParams = (params: JsonObject): SubgraphNodeParams | null => {
+  const graphValue = params["graph"];
+  if (!isJsonObject(graphValue)) {
+    return null;
+  }
+  const graphRecord = graphValue as JsonObject;
+  const schemaVersion = graphRecord["schemaVersion"];
+  const graphId = graphRecord["graphId"];
+  const nodes = graphRecord["nodes"];
+  const sockets = graphRecord["sockets"];
+  const wires = graphRecord["wires"];
+  if (
+    typeof schemaVersion !== "number" ||
+    !isString(graphId) ||
+    !Array.isArray(nodes) ||
+    !Array.isArray(sockets) ||
+    !Array.isArray(wires)
+  ) {
+    return null;
+  }
+  const inputsValue = params["inputs"];
+  const outputsValue = params["outputs"];
+  if (!Array.isArray(inputsValue) || !Array.isArray(outputsValue)) {
+    return null;
+  }
+  const inputs = inputsValue.flatMap((entry) => {
+    if (!isJsonObject(entry)) {
+      return [];
+    }
+    const key = entry["key"];
+    const nodeId = entry["nodeId"];
+    if (!isString(key) || !isString(nodeId)) {
+      return [];
+    }
+    return [{ key, nodeId: nodeId as NodeId }];
+  });
+  const outputs = outputsValue.flatMap((entry) => {
+    if (!isJsonObject(entry)) {
+      return [];
+    }
+    const key = entry["key"];
+    const socketId = entry["socketId"];
+    if (!isString(key) || !isString(socketId)) {
+      return [];
+    }
+    return [{ key, socketId: socketId as SocketId }];
+  });
+  if (inputs.length !== inputsValue.length) {
+    return null;
+  }
+  if (outputs.length !== outputsValue.length) {
+    return null;
+  }
+  const overrides = readSubgraphOverrides(params["overrides"]);
+  if (overrides === null) {
+    return null;
+  }
+  return {
+    graph: graphValue as SubgraphNodeParams["graph"],
+    inputs,
+    outputs,
+    ...(overrides ? { overrides } : {}),
+  };
+};
+
+const applySubgraphOverrides = (
+  graph: Graph,
+  overrides?: SubgraphParamOverrides,
+): Graph => {
+  if (!overrides || Object.keys(overrides).length === 0) {
+    return graph;
+  }
+  let updated = false;
+  const nodes = new Map(graph.nodes);
+  for (const [nodeId, params] of Object.entries(overrides)) {
+    const node = nodes.get(nodeId as NodeId);
+    if (!node) {
+      continue;
+    }
+    nodes.set(nodeId as NodeId, {
+      ...node,
+      params: { ...node.params, ...params },
+    });
+    updated = true;
+  }
+  if (!updated) {
+    return graph;
+  }
+  return {
+    ...graph,
+    nodes,
+  };
+};
+
 export const getNodeErrors = (
   state: ExecState,
   nodeId: NodeId,
@@ -208,12 +352,18 @@ const evaluateSocketInternal = (
   resolveNodeDefinition: NodeDefinitionResolver,
   state?: ExecState,
   instrumentation?: ExecInstrumentation,
+  subgraphContext?: SubgraphEvalContext,
 ): Effect.Effect<JsonValue | null, ExecError> =>
   Effect.flatMap(
     executionSubgraphByOutputSockets(graph, [socketId]),
     (subgraph) =>
       Effect.gen(function* () {
         const execState = state ?? createExecState();
+        const evalContext: SubgraphEvalContext = subgraphContext ?? {
+          depth: 0,
+          graphIdStack: [graph.graphId],
+          remainingNodeBudget: MAX_SUBGRAPH_TOTAL_NODES,
+        };
         const inputWireIndex = new Map<SocketId, WireId[]>();
         for (const wireId of subgraph.wires) {
           const wire = graph.wires.get(wireId);
@@ -311,6 +461,42 @@ const evaluateSocketInternal = (
             return names;
           });
 
+        const collectSocketNames: (
+          ...args: [NodeId, ReadonlyArray<SocketId>, GraphSocketDirection]
+        ) => Effect.Effect<ReadonlyArray<string>, ExecError> =
+          Effect.fnUntraced(function* (
+            nodeId: NodeId,
+            socketIds: ReadonlyArray<SocketId>,
+            direction: GraphSocketDirection,
+          ) {
+            const names: string[] = [];
+            const seen = new Set<string>();
+            for (const socketId of socketIds) {
+              const socket = graph.sockets.get(socketId);
+              if (!socket) {
+                return yield* fail({ _tag: "MissingSocket", socketId });
+              }
+              if (socket.direction !== direction) {
+                return yield* fail({
+                  _tag: "InvalidSocketDirection",
+                  socketId: socket.id,
+                  expected: direction,
+                });
+              }
+              if (seen.has(socket.name)) {
+                return yield* fail({
+                  _tag: "DuplicateSocketKey",
+                  nodeId,
+                  socketName: socket.name,
+                  direction,
+                });
+              }
+              seen.add(socket.name);
+              names.push(socket.name);
+            }
+            return names;
+          });
+
         const evaluateNode = (
           nodeId: NodeId,
         ): Effect.Effect<NodeOutputValues, ExecError> =>
@@ -339,6 +525,363 @@ const evaluateSocketInternal = (
               }
               if (!subgraph.nodes.has(nodeId)) {
                 return yield* fail({ _tag: "MissingNode", nodeId });
+              }
+
+              if (node.type === SUBGRAPH_NODE_TYPE) {
+                const inputNames = yield* collectSocketNames(
+                  nodeId,
+                  node.inputs,
+                  "input",
+                );
+                const outputNames = yield* collectSocketNames(
+                  nodeId,
+                  node.outputs,
+                  "output",
+                );
+                const inputs: Record<string, JsonValue | null> = {};
+                const missingRequired: NodeRuntimeError[] = [];
+                for (const [index, socketId] of node.inputs.entries()) {
+                  const socket = graph.sockets.get(socketId);
+                  if (!socket) {
+                    return yield* fail({ _tag: "MissingSocket", socketId });
+                  }
+                  const name = inputNames[index];
+                  if (!name) {
+                    return yield* fail({
+                      _tag: "UnknownSocketKey",
+                      nodeId,
+                      socketName: socket.name,
+                      direction: "input",
+                      nodeType: SUBGRAPH_NODE_TYPE,
+                    });
+                  }
+                  const wireIds = inputWireIndex.get(socketId) ?? [];
+                  if (wireIds.length > 1) {
+                    return yield* fail({
+                      _tag: "MultipleInputWires",
+                      nodeId,
+                      socketId,
+                      wireIds: [...wireIds].sort((left, right) =>
+                        left.localeCompare(right),
+                      ),
+                    });
+                  }
+                  if (wireIds.length === 0) {
+                    if (socket.defaultValue !== undefined) {
+                      inputs[name] = socket.defaultValue;
+                      continue;
+                    }
+                    if (socket.required) {
+                      missingRequired.push({
+                        _tag: "MissingRequiredInput",
+                        nodeId,
+                        socketId,
+                        socketName: name,
+                      });
+                    }
+                    inputs[name] = null;
+                    continue;
+                  }
+                  const wireId = wireIds[0]!;
+                  const wire = graph.wires.get(wireId);
+                  if (!wire) {
+                    return yield* fail({ _tag: "MissingWire", wireId });
+                  }
+                  const fromSocket = graph.sockets.get(wire.fromSocketId);
+                  if (!fromSocket) {
+                    return yield* fail({
+                      _tag: "MissingSocket",
+                      socketId: wire.fromSocketId,
+                    });
+                  }
+                  if (fromSocket.direction !== "output") {
+                    return yield* fail({
+                      _tag: "InvalidSocketDirection",
+                      socketId: fromSocket.id,
+                      expected: "output",
+                    });
+                  }
+                  if (!subgraph.nodes.has(fromSocket.nodeId)) {
+                    return yield* fail({
+                      _tag: "MissingNode",
+                      nodeId: fromSocket.nodeId,
+                    });
+                  }
+                  const value = yield* evaluateOutputSocket(fromSocket.id);
+                  inputs[name] = value;
+                }
+
+                if (missingRequired.length > 0) {
+                  const nullOutputs = createNullOutputs(outputNames);
+                  recordNodeTiming(instrumentation, {
+                    nodeId,
+                    nodeType: node.type,
+                    durationMs: 0,
+                    cacheHit: false,
+                  });
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.nodeErrors.set(nodeId, missingRequired);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+
+                const nullOutputs = createNullOutputs(outputNames);
+                const computeStart = nowMs();
+                const params = readSubgraphParams(node.params);
+                if (!params) {
+                  recordNodeTiming(instrumentation, {
+                    nodeId,
+                    nodeType: node.type,
+                    durationMs: Math.max(0, nowMs() - computeStart),
+                    cacheHit: false,
+                  });
+                  execState.nodeErrors.set(nodeId, [
+                    {
+                      _tag: "NodeComputeFailed",
+                      nodeId,
+                      nodeType: node.type,
+                      cause: new Error("Invalid subgraph params"),
+                    },
+                  ]);
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+
+                if (evalContext.depth >= MAX_SUBGRAPH_DEPTH) {
+                  recordNodeTiming(instrumentation, {
+                    nodeId,
+                    nodeType: node.type,
+                    durationMs: Math.max(0, nowMs() - computeStart),
+                    cacheHit: false,
+                  });
+                  execState.nodeErrors.set(nodeId, [
+                    {
+                      _tag: "NodeComputeFailed",
+                      nodeId,
+                      nodeType: node.type,
+                      cause: new Error(
+                        `Subgraph depth exceeds ${MAX_SUBGRAPH_DEPTH} levels.`,
+                      ),
+                    },
+                  ]);
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+
+                if (evalContext.graphIdStack.includes(params.graph.graphId)) {
+                  recordNodeTiming(instrumentation, {
+                    nodeId,
+                    nodeType: node.type,
+                    durationMs: Math.max(0, nowMs() - computeStart),
+                    cacheHit: false,
+                  });
+                  execState.nodeErrors.set(nodeId, [
+                    {
+                      _tag: "NodeComputeFailed",
+                      nodeId,
+                      nodeType: node.type,
+                      cause: new Error(
+                        `Recursive subgraph reference detected for ${params.graph.graphId}.`,
+                      ),
+                    },
+                  ]);
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+
+                if (params.graph.nodes.length > MAX_SUBGRAPH_NODE_COUNT) {
+                  recordNodeTiming(instrumentation, {
+                    nodeId,
+                    nodeType: node.type,
+                    durationMs: Math.max(0, nowMs() - computeStart),
+                    cacheHit: false,
+                  });
+                  execState.nodeErrors.set(nodeId, [
+                    {
+                      _tag: "NodeComputeFailed",
+                      nodeId,
+                      nodeType: node.type,
+                      cause: new Error(
+                        `Subgraph exceeds ${MAX_SUBGRAPH_NODE_COUNT} nodes.`,
+                      ),
+                    },
+                  ]);
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+
+                if (
+                  params.graph.nodes.length > evalContext.remainingNodeBudget
+                ) {
+                  recordNodeTiming(instrumentation, {
+                    nodeId,
+                    nodeType: node.type,
+                    durationMs: Math.max(0, nowMs() - computeStart),
+                    cacheHit: false,
+                  });
+                  execState.nodeErrors.set(nodeId, [
+                    {
+                      _tag: "NodeComputeFailed",
+                      nodeId,
+                      nodeType: node.type,
+                      cause: new Error(
+                        `Subgraph budget exceeded (${MAX_SUBGRAPH_TOTAL_NODES} nodes total).`,
+                      ),
+                    },
+                  ]);
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+
+                const graphResult = yield* Effect.either(
+                  graphFromDocumentV1(params.graph),
+                );
+                if (Either.isLeft(graphResult)) {
+                  recordNodeTiming(instrumentation, {
+                    nodeId,
+                    nodeType: node.type,
+                    durationMs: Math.max(0, nowMs() - computeStart),
+                    cacheHit: false,
+                  });
+                  execState.nodeErrors.set(nodeId, [
+                    {
+                      _tag: "NodeComputeFailed",
+                      nodeId,
+                      nodeType: node.type,
+                      cause: graphResult.left,
+                    },
+                  ]);
+                  outputCache.set(nodeId, nullOutputs);
+                  execState.dirty.delete(nodeId);
+                  return nullOutputs;
+                }
+
+                const subgraphGraph = applySubgraphOverrides(
+                  graphResult.right,
+                  params.overrides,
+                );
+
+                const inputValuesByNodeId = new Map<NodeId, JsonValue | null>();
+                for (const entry of params.inputs) {
+                  inputValuesByNodeId.set(
+                    entry.nodeId,
+                    inputs[entry.key] ?? null,
+                  );
+                }
+
+                const resolveSubgraphNodeDefinition: NodeDefinitionResolver = (
+                  nodeType: string,
+                ): NodeDefinition | undefined => {
+                  if (nodeType.startsWith(SUBGRAPH_INPUT_NODE_PREFIX)) {
+                    const dataType = nodeType.slice(
+                      SUBGRAPH_INPUT_NODE_PREFIX.length,
+                    );
+                    const outputType = dataType.length > 0 ? dataType : "float";
+                    return {
+                      typeId: nodeType,
+                      label: "Subgraph Input",
+                      description: "Feeds values from the parent graph.",
+                      inputs: [],
+                      outputs: [
+                        {
+                          key: SUBGRAPH_INPUT_SOCKET_KEY,
+                          label: "Value",
+                          direction: "output",
+                          dataType: outputType,
+                        },
+                      ],
+                      compute: (_inputs, _params, context) => ({
+                        [SUBGRAPH_INPUT_SOCKET_KEY]:
+                          inputValuesByNodeId.get(context.nodeId) ?? null,
+                      }),
+                    };
+                  }
+                  return resolveNodeDefinition(nodeType);
+                };
+
+                const innerState = createExecState();
+                const nextContext: SubgraphEvalContext = {
+                  depth: evalContext.depth + 1,
+                  graphIdStack: [
+                    ...evalContext.graphIdStack,
+                    params.graph.graphId,
+                  ],
+                  remainingNodeBudget:
+                    evalContext.remainingNodeBudget - params.graph.nodes.length,
+                };
+                const outputValues: Record<string, JsonValue | null> = {
+                  ...nullOutputs,
+                };
+                const outputKeySet = new Set(outputNames);
+                for (const entry of params.outputs) {
+                  if (!outputKeySet.has(entry.key)) {
+                    recordNodeTiming(instrumentation, {
+                      nodeId,
+                      nodeType: node.type,
+                      durationMs: Math.max(0, nowMs() - computeStart),
+                      cacheHit: false,
+                    });
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: new Error(
+                          `Unknown subgraph output key: ${entry.key}`,
+                        ),
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+                  const result = yield* Effect.either(
+                    evaluateSocketInternal(
+                      subgraphGraph,
+                      entry.socketId,
+                      resolveSubgraphNodeDefinition,
+                      innerState,
+                      undefined,
+                      nextContext,
+                    ),
+                  );
+                  if (Either.isLeft(result)) {
+                    recordNodeTiming(instrumentation, {
+                      nodeId,
+                      nodeType: node.type,
+                      durationMs: Math.max(0, nowMs() - computeStart),
+                      cacheHit: false,
+                    });
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: result.left,
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+                  outputValues[entry.key] = result.right;
+                }
+
+                recordNodeTiming(instrumentation, {
+                  nodeId,
+                  nodeType: node.type,
+                  durationMs: Math.max(0, nowMs() - computeStart),
+                  cacheHit: false,
+                });
+                execState.nodeErrors.delete(nodeId);
+                outputCache.set(nodeId, outputValues);
+                execState.dirty.delete(nodeId);
+                return outputValues;
               }
 
               const definition = resolveNodeDefinition(node.type);
