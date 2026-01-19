@@ -1,5 +1,7 @@
 import type {
+  FrameId,
   GraphDocumentV1,
+  GraphFrameV1,
   GraphId,
   GraphNodeV1,
   GraphSocketDirectionV1,
@@ -18,11 +20,12 @@ import {
 } from "@shadr/shared";
 import { Effect } from "effect";
 
-export type { GraphId, NodeId, SocketId, WireId } from "@shadr/shared";
+export type { FrameId, GraphId, NodeId, SocketId, WireId } from "@shadr/shared";
 
 export type GraphNode = GraphNodeV1;
 export type GraphSocket = GraphSocketV1;
 export type GraphWire = GraphWireV1;
+export type GraphFrame = GraphFrameV1;
 export type GraphSocketDirection = GraphSocketDirectionV1;
 
 export type Graph = Readonly<{
@@ -30,14 +33,17 @@ export type Graph = Readonly<{
   nodes: ReadonlyMap<NodeId, GraphNode>;
   sockets: ReadonlyMap<SocketId, GraphSocket>;
   wires: ReadonlyMap<WireId, GraphWire>;
+  frames: ReadonlyMap<FrameId, GraphFrame>;
   outgoing: ReadonlyMap<NodeId, ReadonlySet<NodeId>>;
   incoming: ReadonlyMap<NodeId, ReadonlySet<NodeId>>;
 }>;
 
 export type GraphError =
   | { _tag: "DuplicateNode"; nodeId: NodeId }
+  | { _tag: "DuplicateFrame"; frameId: FrameId }
   | { _tag: "DuplicateSocket"; socketId: SocketId }
   | { _tag: "DuplicateWire"; wireId: WireId }
+  | { _tag: "MissingFrame"; frameId: FrameId }
   | { _tag: "MissingWire"; wireId: WireId }
   | { _tag: "MissingNode"; nodeId: NodeId }
   | { _tag: "MissingSocket"; socketId: SocketId }
@@ -175,6 +181,7 @@ export const createGraph = (graphId: GraphId): Graph => ({
   nodes: new Map<NodeId, GraphNode>(),
   sockets: new Map<SocketId, GraphSocket>(),
   wires: new Map<WireId, GraphWire>(),
+  frames: new Map<FrameId, GraphFrame>(),
   outgoing: new Map<NodeId, Set<NodeId>>(),
   incoming: new Map<NodeId, Set<NodeId>>(),
 });
@@ -247,6 +254,7 @@ export const addNode = (
     nodes,
     sockets: socketsMap,
     wires,
+    frames: cloneMap(graph.frames),
     outgoing,
     incoming,
   });
@@ -386,6 +394,7 @@ export const addWire = (graph: Graph, wire: GraphWire): GraphEffect<Graph> => {
     nodes: cloneMap(graph.nodes),
     sockets: cloneMap(graph.sockets),
     wires,
+    frames: cloneMap(graph.frames),
     outgoing,
     incoming,
   });
@@ -451,6 +460,7 @@ export const removeWire = (
     nodes: cloneMap(graph.nodes),
     sockets: cloneMap(graph.sockets),
     wires,
+    frames: cloneMap(graph.frames),
     outgoing,
     incoming,
   });
@@ -501,6 +511,7 @@ export const removeNode = (
     nodes,
     sockets,
     wires,
+    frames: cloneMap(graph.frames),
     outgoing,
     incoming,
   });
@@ -524,6 +535,7 @@ export const moveNode = (
     nodes,
     sockets: cloneMap(graph.sockets),
     wires: cloneMap(graph.wires),
+    frames: cloneMap(graph.frames),
     outgoing: cloneSetMap(graph.outgoing),
     incoming: cloneSetMap(graph.incoming),
   });
@@ -532,6 +544,11 @@ export const moveNode = (
 export type NodePositionUpdate = Readonly<{
   nodeId: NodeId;
   position: GraphNode["position"];
+}>;
+
+export type FramePositionUpdate = Readonly<{
+  frameId: FrameId;
+  position: GraphFrame["position"];
 }>;
 
 export const moveNodes = (
@@ -558,6 +575,75 @@ export const moveNodes = (
     nodes,
     sockets: cloneMap(graph.sockets),
     wires: cloneMap(graph.wires),
+    frames: cloneMap(graph.frames),
+    outgoing: cloneSetMap(graph.outgoing),
+    incoming: cloneSetMap(graph.incoming),
+  });
+};
+
+export const addFrame = (
+  graph: Graph,
+  frame: GraphFrame,
+): GraphEffect<Graph> => {
+  if (graph.frames.has(frame.id)) {
+    return fail({ _tag: "DuplicateFrame", frameId: frame.id });
+  }
+  const frames = cloneMap(graph.frames);
+  frames.set(frame.id, frame);
+  return succeed({
+    graphId: graph.graphId,
+    nodes: cloneMap(graph.nodes),
+    sockets: cloneMap(graph.sockets),
+    wires: cloneMap(graph.wires),
+    frames,
+    outgoing: cloneSetMap(graph.outgoing),
+    incoming: cloneSetMap(graph.incoming),
+  });
+};
+
+export const removeFrame = (
+  graph: Graph,
+  frameId: FrameId,
+): GraphEffect<Graph> => {
+  if (!graph.frames.has(frameId)) {
+    return fail({ _tag: "MissingFrame", frameId });
+  }
+  const frames = cloneMap(graph.frames);
+  frames.delete(frameId);
+  return succeed({
+    graphId: graph.graphId,
+    nodes: cloneMap(graph.nodes),
+    sockets: cloneMap(graph.sockets),
+    wires: cloneMap(graph.wires),
+    frames,
+    outgoing: cloneSetMap(graph.outgoing),
+    incoming: cloneSetMap(graph.incoming),
+  });
+};
+
+export const moveFrames = (
+  graph: Graph,
+  updates: ReadonlyArray<FramePositionUpdate>,
+): GraphEffect<Graph> => {
+  for (const update of updates) {
+    if (!graph.frames.has(update.frameId)) {
+      return fail({ _tag: "MissingFrame", frameId: update.frameId });
+    }
+  }
+  const frames = cloneMap(graph.frames);
+  for (const update of updates) {
+    const frame = frames.get(update.frameId);
+    if (!frame) {
+      return fail({ _tag: "MissingFrame", frameId: update.frameId });
+    }
+    frames.set(update.frameId, { ...frame, position: update.position });
+  }
+  return succeed({
+    graphId: graph.graphId,
+    nodes: cloneMap(graph.nodes),
+    sockets: cloneMap(graph.sockets),
+    wires: cloneMap(graph.wires),
+    frames,
     outgoing: cloneSetMap(graph.outgoing),
     incoming: cloneSetMap(graph.incoming),
   });
@@ -585,6 +671,7 @@ export const updateParam = (
     nodes,
     sockets: cloneMap(graph.sockets),
     wires: cloneMap(graph.wires),
+    frames: cloneMap(graph.frames),
     outgoing: cloneSetMap(graph.outgoing),
     incoming: cloneSetMap(graph.incoming),
   });
@@ -1186,6 +1273,9 @@ export const graphToDocumentV1 = (
   nodes: Array.from(graph.nodes.values()),
   sockets: Array.from(graph.sockets.values()),
   wires: Array.from(graph.wires.values()),
+  ...(graph.frames.size > 0
+    ? { frames: Array.from(graph.frames.values()) }
+    : {}),
   ...(metadata ? { metadata } : {}),
 });
 
@@ -1209,6 +1299,11 @@ export const graphFromDocumentV1 = (
     }
 
     let graph = createGraph(document.graphId);
+    if (document.frames) {
+      for (const frame of document.frames) {
+        graph = yield* addFrame(graph, frame);
+      }
+    }
     for (const node of document.nodes) {
       const sockets = socketsByNode.get(node.id) ?? [];
       graph = yield* addNode(graph, node, sockets);

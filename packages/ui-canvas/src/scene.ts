@@ -1,5 +1,7 @@
 import type {
+  FrameId,
   Graph,
+  GraphFrame,
   GraphNode,
   GraphWire,
   NodeId,
@@ -15,6 +17,7 @@ import {
   type ViewportSizeOptions,
   type WorldBounds,
 } from "./camera.js";
+import { FrameView } from "./frame-view.js";
 import { createSceneLayers, type SceneLayers } from "./layers.js";
 import {
   defaultNodeLayout,
@@ -40,6 +43,7 @@ export type FrameOptions = Readonly<{
 
 export type CanvasSelection = Readonly<{
   selectedNodes?: ReadonlySet<NodeId>;
+  selectedFrames?: ReadonlySet<FrameId>;
   selectedWires?: ReadonlySet<WireId>;
 }>;
 
@@ -52,6 +56,17 @@ export type CanvasNodeState = Readonly<{
 
 export type CanvasWireState = Readonly<{
   hoveredWireId?: WireId | null;
+}>;
+
+export type CanvasFrameState = Readonly<{
+  hoveredFrameId?: FrameId | null;
+}>;
+
+export type WireFlowOptions = Readonly<{
+  enabled?: boolean;
+  minZoom?: number;
+  maxWires?: number;
+  speed?: number;
 }>;
 
 export type HitTestConfig = Readonly<{
@@ -78,6 +93,10 @@ export type HitTestResult =
       nodeId: NodeId;
     }>
   | Readonly<{
+      kind: "frame";
+      frameId: FrameId;
+    }>
+  | Readonly<{
       kind: "none";
     }>;
 
@@ -87,11 +106,31 @@ const DEFAULT_HIT_TEST_CONFIG: Required<HitTestConfig> = {
   wireDistance: 6,
 };
 const EMPTY_NODE_SET: ReadonlySet<NodeId> = new Set();
+const EMPTY_FRAME_SET: ReadonlySet<FrameId> = new Set();
 const EMPTY_WIRE_SET: ReadonlySet<WireId> = new Set();
+const DEFAULT_WIRE_FLOW: Required<WireFlowOptions> = {
+  enabled: true,
+  minZoom: 1.15,
+  maxWires: 320,
+  speed: 0.35,
+};
+
+const setsMatch = <T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean => {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
+};
 
 export class CanvasScene {
   readonly root: PIXI.Container;
   readonly layers: SceneLayers;
+  private readonly frameViews = new Map<FrameId, FrameView>();
   private readonly nodeViews = new Map<NodeId, NodeView>();
   private readonly wireView: WireBatchView;
   private readonly visibleWires = new Set<WireId>();
@@ -100,6 +139,8 @@ export class CanvasScene {
   private graph: Graph | null = null;
   private readonly hitTestConfig: Required<HitTestConfig>;
   private theme: CanvasTheme;
+  private lastSelectedNodes = new Set<NodeId>();
+  private lastOrderedNodes = new Set<NodeId>();
 
   constructor(options: CanvasSceneOptions = {}) {
     this.layers = createSceneLayers();
@@ -112,6 +153,7 @@ export class CanvasScene {
     this.layers.wires.addChild(this.wireView.normalGraphics);
     this.layers.wires.addChild(this.wireView.selectedGraphics);
     this.layers.wires.addChild(this.wireView.hoveredGraphics);
+    this.layers.wires.addChild(this.wireView.flowGraphics);
     this.applyCameraTransform();
   }
 
@@ -191,17 +233,42 @@ export class CanvasScene {
     selection: CanvasSelection = {},
     nodeState: CanvasNodeState = {},
     wireState: CanvasWireState = {},
+    frameState: CanvasFrameState = {},
   ): void {
     this.graph = graph;
     const worldBounds = this.camera.getWorldBounds();
     const selectedNodes = selection.selectedNodes ?? EMPTY_NODE_SET;
+    const selectedFrames = selection.selectedFrames ?? EMPTY_FRAME_SET;
     const selectedWires = selection.selectedWires ?? EMPTY_WIRE_SET;
     const hoveredNodeId = nodeState.hoveredNodeId ?? null;
     const hoveredWireId = wireState.hoveredWireId ?? null;
+    const hoveredFrameId = frameState.hoveredFrameId ?? null;
     const bypassedNodes = nodeState.bypassedNodes ?? EMPTY_NODE_SET;
     const errorNodes = nodeState.errorNodes ?? EMPTY_NODE_SET;
     const collapsedNodes = nodeState.collapsedNodes ?? EMPTY_NODE_SET;
+    const seenFrames = new Set<FrameId>();
     const seenNodes = new Set<NodeId>();
+    for (const frame of graph.frames.values()) {
+      seenFrames.add(frame.id);
+      let view = this.frameViews.get(frame.id);
+      if (!view) {
+        view = new FrameView(frame, this.theme);
+        this.frameViews.set(frame.id, view);
+        this.layers.frames.addChild(view.container);
+      }
+      view.update(
+        frame,
+        {
+          selected: selectedFrames.has(frame.id),
+          hovered: hoveredFrameId === frame.id,
+        },
+        this.theme,
+      );
+      view.container.visible = intersectsBounds(
+        worldBounds,
+        getFrameBounds(frame),
+      );
+    }
     for (const node of graph.nodes.values()) {
       seenNodes.add(node.id);
       let view = this.nodeViews.get(node.id);
@@ -210,11 +277,12 @@ export class CanvasScene {
         this.nodeViews.set(node.id, view);
         this.layers.nodes.addChild(view.container);
       }
+      const isSelected = selectedNodes.has(node.id);
       view.update(
         node,
         this.layout,
         {
-          selected: selectedNodes.has(node.id),
+          selected: isSelected,
           hovered: hoveredNodeId === node.id,
           bypassed: bypassedNodes.has(node.id),
           hasError: errorNodes.has(node.id),
@@ -226,6 +294,19 @@ export class CanvasScene {
         worldBounds,
         getNodeBounds(node, this.layout),
       );
+    }
+    this.updateNodeOrder(graph, selectedNodes);
+
+    const framesToRemove: FrameId[] = [];
+    for (const [frameId, view] of this.frameViews.entries()) {
+      if (!seenFrames.has(frameId)) {
+        this.layers.frames.removeChild(view.container);
+        view.destroy();
+        framesToRemove.push(frameId);
+      }
+    }
+    for (const frameId of framesToRemove) {
+      this.frameViews.delete(frameId);
     }
 
     const nodesToRemove: NodeId[] = [];
@@ -262,6 +343,74 @@ export class CanvasScene {
     this.wireView.end();
   }
 
+  updateWireFlow(timeMs: number, options: WireFlowOptions = {}): void {
+    const graph = this.graph;
+    if (!graph) {
+      this.wireView.setFlowVisible(false);
+      return;
+    }
+    const config = { ...DEFAULT_WIRE_FLOW, ...options };
+    const zoom = this.camera.getZoom();
+    if (
+      !config.enabled ||
+      zoom < config.minZoom ||
+      this.visibleWires.size === 0 ||
+      this.visibleWires.size > config.maxWires
+    ) {
+      this.wireView.setFlowVisible(false);
+      return;
+    }
+    this.wireView.setFlowVisible(true);
+    this.wireView.beginFlow();
+    const timeSeconds = timeMs / 1000;
+    for (const wire of graph.wires.values()) {
+      if (!this.visibleWires.has(wire.id)) {
+        continue;
+      }
+      const from = getSocketPosition(graph, wire.fromSocketId, this.layout);
+      const to = getSocketPosition(graph, wire.toSocketId, this.layout);
+      if (!from || !to) {
+        continue;
+      }
+      const color = getWireColor(graph, wire, this.theme.wire.defaultColor);
+      const progress = (timeSeconds * config.speed + hashWireId(wire.id)) % 1;
+      this.wireView.drawFlow(from, to, { color }, progress, zoom);
+    }
+    this.wireView.endFlow();
+  }
+
+  private updateNodeOrder(
+    graph: Graph,
+    selectedNodes: ReadonlySet<NodeId>,
+  ): void {
+    const nodeIds = new Set<NodeId>(graph.nodes.keys());
+    if (
+      setsMatch(selectedNodes, this.lastSelectedNodes) &&
+      setsMatch(nodeIds, this.lastOrderedNodes)
+    ) {
+      return;
+    }
+    const ordered: PIXI.Container[] = [];
+    const selected: PIXI.Container[] = [];
+    for (const node of graph.nodes.values()) {
+      const view = this.nodeViews.get(node.id);
+      if (!view) {
+        continue;
+      }
+      if (selectedNodes.has(node.id)) {
+        selected.push(view.container);
+      } else {
+        ordered.push(view.container);
+      }
+    }
+    const nodesLayer = this.layers.nodes;
+    const nextOrder = ordered.concat(selected);
+    nodesLayer.removeChildren();
+    nodesLayer.addChild(...nextOrder);
+    this.lastSelectedNodes = new Set(selectedNodes);
+    this.lastOrderedNodes = nodeIds;
+  }
+
   hitTest(screenPoint: Point, options?: ScreenPointOptions): HitTestResult {
     const graph = this.graph;
     if (!graph) {
@@ -279,6 +428,10 @@ export class CanvasScene {
     const nodeHit = this.hitTestNodes(graph, worldPoint);
     if (nodeHit) {
       return nodeHit;
+    }
+    const frameHit = this.hitTestFrames(graph, worldPoint);
+    if (frameHit) {
+      return frameHit;
     }
     return { kind: "none" };
   }
@@ -422,6 +575,23 @@ export class CanvasScene {
     }
     return { kind: "node", nodeId: hitNodeId };
   }
+
+  private hitTestFrames(graph: Graph, worldPoint: Point): HitTestResult | null {
+    let hitFrameId: FrameId | null = null;
+    for (const frame of graph.frames.values()) {
+      const frameView = this.frameViews.get(frame.id);
+      if (frameView && !frameView.container.visible) {
+        continue;
+      }
+      if (pointInBounds(worldPoint, getFrameBounds(frame))) {
+        hitFrameId = frame.id;
+      }
+    }
+    if (!hitFrameId) {
+      return null;
+    }
+    return { kind: "frame", frameId: hitFrameId };
+  }
 }
 
 const intersectsBounds = (a: WorldBounds, b: WorldBounds): boolean =>
@@ -436,6 +606,13 @@ const getNodeBounds = (node: GraphNode, layout: NodeLayout): WorldBounds => {
     maxY: node.position.y + height,
   };
 };
+
+const getFrameBounds = (frame: GraphFrame): WorldBounds => ({
+  minX: frame.position.x,
+  minY: frame.position.y,
+  maxX: frame.position.x + frame.size.width,
+  maxY: frame.position.y + frame.size.height,
+});
 
 const getBoundsForNodes = (
   graph: Graph,
@@ -561,4 +738,13 @@ const getWireColor = (
   const metadata = typeId ? getSocketTypeMetadata(typeId) : undefined;
   const parsed = metadata ? parseHexColor(metadata.color) : null;
   return parsed ?? fallback;
+};
+
+const hashWireId = (wireId: WireId): number => {
+  const value = String(wireId);
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) % 1000;
+  }
+  return hash / 1000;
 };

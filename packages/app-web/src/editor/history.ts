@@ -1,6 +1,9 @@
 import type {
+  FrameId,
+  FramePositionUpdate,
   Graph,
   GraphEffect,
+  GraphFrame,
   GraphNode,
   GraphSocket,
   GraphWire,
@@ -10,9 +13,12 @@ import type {
   WireId,
 } from "@shadr/graph-core";
 import {
+  addFrame,
   addNode,
   addWire,
+  moveFrames,
   moveNodes,
+  removeFrame,
   removeNode,
   removeWire,
   updateParam,
@@ -26,10 +32,18 @@ export type GraphCommand =
       sockets: ReadonlyArray<GraphSocket>;
     }>
   | Readonly<{
+      kind: "add-frame";
+      frame: GraphFrame;
+    }>
+  | Readonly<{
       kind: "remove-node";
       node: GraphNode;
       sockets: ReadonlyArray<GraphSocket>;
       wires: ReadonlyArray<GraphWire>;
+    }>
+  | Readonly<{
+      kind: "remove-frame";
+      frame: GraphFrame;
     }>
   | Readonly<{
       kind: "add-wire";
@@ -43,6 +57,11 @@ export type GraphCommand =
       kind: "move-nodes";
       before: ReadonlyArray<NodePositionUpdate>;
       after: ReadonlyArray<NodePositionUpdate>;
+    }>
+  | Readonly<{
+      kind: "move-frames";
+      before: ReadonlyArray<FramePositionUpdate>;
+      after: ReadonlyArray<FramePositionUpdate>;
     }>
   | Readonly<{
       kind: "update-param";
@@ -106,6 +125,14 @@ const positionsEqual = (
   left.position.x === right.position.x &&
   left.position.y === right.position.y;
 
+const framePositionsEqual = (
+  left: FramePositionUpdate,
+  right: FramePositionUpdate,
+): boolean =>
+  left.frameId === right.frameId &&
+  left.position.x === right.position.x &&
+  left.position.y === right.position.y;
+
 export const isNoopCommand = (command: GraphCommand): boolean => {
   if (command.kind === "update-param") {
     return isJsonValueEqual(command.before, command.after);
@@ -126,6 +153,22 @@ export const isNoopCommand = (command: GraphCommand): boolean => {
     }
     return true;
   }
+  if (command.kind === "move-frames") {
+    if (command.before.length !== command.after.length) {
+      return false;
+    }
+    const afterByFrame = new Map<FrameId, FramePositionUpdate>();
+    for (const update of command.after) {
+      afterByFrame.set(update.frameId, update);
+    }
+    for (const update of command.before) {
+      const next = afterByFrame.get(update.frameId);
+      if (!next || !framePositionsEqual(update, next)) {
+        return false;
+      }
+    }
+    return true;
+  }
   return false;
 };
 
@@ -136,14 +179,20 @@ export const applyCommandEffect = (
   switch (command.kind) {
     case "add-node":
       return addNode(graph, command.node, command.sockets);
+    case "add-frame":
+      return addFrame(graph, command.frame);
     case "remove-node":
       return removeNode(graph, command.node.id);
+    case "remove-frame":
+      return removeFrame(graph, command.frame.id);
     case "add-wire":
       return addWire(graph, command.wire);
     case "remove-wire":
       return removeWire(graph, command.wire.id);
     case "move-nodes":
       return moveNodes(graph, command.after);
+    case "move-frames":
+      return moveFrames(graph, command.after);
     case "update-param":
       return updateParam(graph, command.nodeId, command.key, command.after);
   }
@@ -162,11 +211,15 @@ export const getUndoCommands = (
           wires: [],
         },
       ];
+    case "add-frame":
+      return [{ kind: "remove-frame", frame: command.frame }];
     case "remove-node":
       return [
         { kind: "add-node", node: command.node, sockets: command.sockets },
         ...command.wires.map((wire) => ({ kind: "add-wire", wire })),
       ];
+    case "remove-frame":
+      return [{ kind: "add-frame", frame: command.frame }];
     case "add-wire":
       return [{ kind: "remove-wire", wire: command.wire }];
     case "remove-wire":
@@ -175,6 +228,14 @@ export const getUndoCommands = (
       return [
         {
           kind: "move-nodes",
+          before: command.after,
+          after: command.before,
+        },
+      ];
+    case "move-frames":
+      return [
+        {
+          kind: "move-frames",
           before: command.after,
           after: command.before,
         },
@@ -223,6 +284,17 @@ export const createRemoveNodeCommand = (
   };
 };
 
+export const createRemoveFrameCommand = (
+  graph: Graph,
+  frameId: FrameId,
+): GraphCommand | null => {
+  const frame = graph.frames.get(frameId);
+  if (!frame) {
+    return null;
+  }
+  return { kind: "remove-frame", frame };
+};
+
 export const createRemoveWireCommand = (
   graph: Graph,
   wireId: WireId,
@@ -239,6 +311,15 @@ export const createMoveNodesCommand = (
   after: ReadonlyArray<NodePositionUpdate>,
 ): GraphCommand => ({
   kind: "move-nodes",
+  before,
+  after,
+});
+
+export const createMoveFramesCommand = (
+  before: ReadonlyArray<FramePositionUpdate>,
+  after: ReadonlyArray<FramePositionUpdate>,
+): GraphCommand => ({
+  kind: "move-frames",
   before,
   after,
 });

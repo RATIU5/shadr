@@ -1,6 +1,7 @@
 import type {
   GraphDocument,
   GraphDocumentV1,
+  GraphFrameV1,
   GraphNodeV1,
   GraphSocketV1,
   GraphWireV1,
@@ -114,6 +115,27 @@ const isGraphWireV1 = (value: unknown): value is GraphWireV1 => {
   );
 };
 
+const isGraphFrameV1 = (value: unknown): value is GraphFrameV1 => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (!isString(value.id) || !isString(value.title)) {
+    return false;
+  }
+  const position = value.position;
+  const size = value.size;
+  if (!isRecord(position) || !isRecord(size)) {
+    return false;
+  }
+  if (!isNumber(position.x) || !isNumber(position.y)) {
+    return false;
+  }
+  if (!isNumber(size.width) || !isNumber(size.height)) {
+    return false;
+  }
+  return true;
+};
+
 const isGraphDocumentV1 = (value: unknown): value is GraphDocumentV1 => {
   if (!isRecord(value)) {
     return false;
@@ -131,6 +153,12 @@ const isGraphDocumentV1 = (value: unknown): value is GraphDocumentV1 => {
     return false;
   }
   if (!Array.isArray(value.wires) || !value.wires.every(isGraphWireV1)) {
+    return false;
+  }
+  if (
+    value.frames !== undefined &&
+    (!Array.isArray(value.frames) || !value.frames.every(isGraphFrameV1))
+  ) {
     return false;
   }
   if (value.metadata !== undefined && !isJsonObject(value.metadata)) {

@@ -149,6 +149,10 @@ If a command is missing or fails, **update this section** to reflect the real wo
   - UI components call Effects through adapters/helpers
   - Do not embed business logic directly in components
 
+- **Best Practices**:
+  - Favor simplicity over complexity
+  - Favor minimalism over noise
+
 ---
 
 ## Rendering Rules (Important)

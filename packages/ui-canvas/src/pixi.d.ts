@@ -18,6 +18,7 @@ declare module "pixi.js" {
     removeChildren(): Container[];
     x: number;
     y: number;
+    alpha: number;
     position: MutablePoint;
     scale: MutablePoint;
     visible: boolean;

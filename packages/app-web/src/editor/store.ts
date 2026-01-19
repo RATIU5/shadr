@@ -9,6 +9,7 @@ import {
   markDirtyForParamChange,
 } from "@shadr/exec-engine";
 import type {
+  FrameId,
   Graph,
   GraphEffect,
   GraphSocket,
@@ -42,6 +43,7 @@ import {
   type EditorSettings,
   snapPointToGrid,
 } from "~/editor/settings";
+import type { GraphBreadcrumb } from "~/editor/ui-state";
 import {
   evaluateSocketWithStatsEffect,
   markDirtyForWireChangeEffect,
@@ -57,12 +59,14 @@ const MAX_EXEC_HISTORY = 50;
 /* eslint-disable no-unused-vars */
 export type EditorStore = Readonly<{
   graph: Accessor<Graph>;
+  graphPath: Accessor<ReadonlyArray<GraphBreadcrumb>>;
   dirtyState: Accessor<DirtyState>;
   activeOutputSocketId: Accessor<SocketId | null>;
   outputValue: Accessor<JsonValue | null>;
   outputError: Accessor<ExecError | null>;
   execHistory: Accessor<ReadonlyArray<ExecDebugEntry>>;
   selectedNodes: Accessor<ReadonlySet<NodeId>>;
+  selectedFrames: Accessor<ReadonlySet<FrameId>>;
   selectedWires: Accessor<ReadonlySet<WireId>>;
   bypassedNodes: Accessor<ReadonlySet<NodeId>>;
   collapsedNodes: Accessor<ReadonlySet<NodeId>>;
@@ -80,6 +84,7 @@ export type EditorStore = Readonly<{
   clearExecHistory: () => void;
   clearSelection: () => void;
   setNodeSelection: (next: ReadonlySet<NodeId>) => void;
+  setFrameSelection: (next: ReadonlySet<FrameId>) => void;
   setWireSelection: (next: ReadonlySet<WireId>) => void;
   toggleBypassNodes: (nodeIds: ReadonlySet<NodeId>) => void;
   toggleCollapsedNodes: (nodeIds: ReadonlySet<NodeId>) => void;
@@ -90,6 +95,7 @@ export type EditorStore = Readonly<{
   setCommandPaletteOpen: (open: boolean) => void;
   setSettings: (next: EditorSettings) => void;
   updateSettings: (patch: Partial<EditorSettings>) => void;
+  setGraphPath: (path: ReadonlyArray<GraphBreadcrumb>) => void;
   addNodeAt: (nodeType: string, position?: Point) => NodeId | null;
   applyGraphCommand: (command: GraphCommand) => boolean;
   applyGraphCommandTransient: (command: GraphCommand) => boolean;
@@ -102,7 +108,11 @@ export type EditorStore = Readonly<{
 /* eslint-enable no-unused-vars */
 
 export const createEditorStore = (): EditorStore => {
-  const [graph, setGraph] = createSignal(createGraph(makeGraphId("main")));
+  const initialGraph = createGraph(makeGraphId("main"));
+  const [graph, setGraph] = createSignal(initialGraph);
+  const [graphPath, setGraphPath] = createSignal<
+    ReadonlyArray<GraphBreadcrumb>
+  >([{ id: initialGraph.graphId, label: "Main" }]);
   const [dirtyState, setDirtyState] = createSignal(createExecState(), {
     equals: false,
   });
@@ -116,6 +126,9 @@ export const createEditorStore = (): EditorStore => {
   const [selectedNodes, setSelectedNodes] = createSignal<ReadonlySet<NodeId>>(
     new Set(),
   );
+  const [selectedFrames, setSelectedFrames] = createSignal<
+    ReadonlySet<FrameId>
+  >(new Set());
   const [selectedWires, setSelectedWires] = createSignal<ReadonlySet<WireId>>(
     new Set(),
   );
@@ -159,12 +172,14 @@ export const createEditorStore = (): EditorStore => {
 
   const resetGraphState = (nextGraph: Graph): void => {
     setGraph(nextGraph);
+    setGraphPath([{ id: nextGraph.graphId, label: "Main" }]);
     setDirtyState(createExecState());
     setActiveOutputSocketId(null);
     setOutputValue(null);
     setOutputError(null);
     setExecHistory([]);
     setSelectedNodes(new Set());
+    setSelectedFrames(new Set());
     setSelectedWires(new Set());
     setBypassedNodes(new Set());
     setCollapsedNodes(new Set());
@@ -418,17 +433,26 @@ export const createEditorStore = (): EditorStore => {
 
   const clearSelection = (): void => {
     setSelectedNodes(new Set());
+    setSelectedFrames(new Set());
     setSelectedWires(new Set());
   };
 
   const setNodeSelection = (next: ReadonlySet<NodeId>): void => {
     setSelectedNodes(new Set(next));
+    setSelectedFrames(new Set());
+    setSelectedWires(new Set());
+  };
+
+  const setFrameSelection = (next: ReadonlySet<FrameId>): void => {
+    setSelectedFrames(new Set(next));
+    setSelectedNodes(new Set());
     setSelectedWires(new Set());
   };
 
   const setWireSelection = (next: ReadonlySet<WireId>): void => {
     setSelectedWires(new Set(next));
     setSelectedNodes(new Set());
+    setSelectedFrames(new Set());
   };
 
   const toggleBypassNodes = (nodeIds: ReadonlySet<NodeId>): void => {
@@ -621,12 +645,14 @@ export const createEditorStore = (): EditorStore => {
 
   return {
     graph,
+    graphPath,
     dirtyState,
     activeOutputSocketId,
     outputValue,
     outputError,
     execHistory,
     selectedNodes,
+    selectedFrames,
     selectedWires,
     bypassedNodes,
     collapsedNodes,
@@ -645,6 +671,7 @@ export const createEditorStore = (): EditorStore => {
     markDirtyForNodeChange,
     clearSelection,
     setNodeSelection,
+    setFrameSelection,
     setWireSelection,
     toggleBypassNodes,
     toggleCollapsedNodes,
@@ -657,6 +684,7 @@ export const createEditorStore = (): EditorStore => {
     updateSettings: (patch) => {
       setSettings((current) => ({ ...current, ...patch }));
     },
+    setGraphPath,
     addNodeAt,
     applyGraphCommand,
     applyGraphCommandTransient,

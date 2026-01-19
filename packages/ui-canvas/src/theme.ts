@@ -21,6 +21,14 @@ export type CanvasTheme = Readonly<{
   wire: Readonly<{
     defaultColor: number;
   }>;
+  frame: Readonly<{
+    fill: number;
+    stroke: number;
+    selectedStroke: number;
+    hoveredStroke: number;
+    titleText: number;
+    titleFill: number;
+  }>;
 }>;
 
 export const darkCanvasTheme: CanvasTheme = {
@@ -46,6 +54,14 @@ export const darkCanvasTheme: CanvasTheme = {
   wire: {
     defaultColor: 0x4d7cff,
   },
+  frame: {
+    fill: 0x1b1b1f,
+    stroke: 0x3c3c44,
+    selectedStroke: 0x67d0ff,
+    hoveredStroke: 0x7fb6ff,
+    titleText: 0xdce2f0,
+    titleFill: 0x232734,
+  },
 };
 
 export const lightCanvasTheme: CanvasTheme = {
@@ -70,5 +86,13 @@ export const lightCanvasTheme: CanvasTheme = {
   },
   wire: {
     defaultColor: 0x2563eb,
+  },
+  frame: {
+    fill: 0xf6f7fb,
+    stroke: 0xb6c0cf,
+    selectedStroke: 0x2563eb,
+    hoveredStroke: 0x3b82f6,
+    titleText: 0x1f2937,
+    titleFill: 0xe7edf6,
   },
 };

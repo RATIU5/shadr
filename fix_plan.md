@@ -13,25 +13,57 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 ## Critical
 
-- [ ] The selection square to select nodes will highlight the nodes as soon as the selection box touches the nodes, not after the size of selection box is defined and the mouse let go.
-- [ ] The context menu hides when the mouse moves. The context menu whould remain open until the overlay is clicked or when the context menu is clicked, not on mouse move
-- [ ] Nothing in view shows on page/app load when it shouldn't, even if nodes are in view
+- [ ] Implement full **subgraph system**: collapse selection into subgraph, generate internal graph document, and create a parent “Subgraph Node” wrapper with defined I/O. Subgraphs don't show outer graphs, helps with perf.
+- [ ] Implement **subgraph I/O authoring**: user-defined input/output sockets, renaming, reordering, type constraints, defaults, required flags
+- [ ] Implement **dive in/out navigation** for subgraphs with breadcrumbs, back/forward history, and focus restore
+- [ ] Implement **nested subgraphs** (up to 10 levels) with guardrails: recursion prevention, max depth enforcement, performance caps
+- [ ] Implement option to create subgraph, either from command menu or in context menu when nodes are selected
+- [ ] Implement **node instances** (reference semantics): multiple instances share the same source definition, updating source updates all instances deterministically (especially useful for collapsed subgraphs used in multiple places, edit the subgraph in one to edit all or edit per instance)
+- [ ] Implement **per-instance overrides** for params with clear diff UI and reset-to-default actions
+- [ ] Implement **async/background execution lane** (even if nodes remain sync): offload heavy graphs to a worker, keep UI responsive, and support cancelation + progress
+- [ ] Implement **execution flow visualization suite**: animated wires, execution order badges, per-node timing bars, and timeline view (must be toggleable for perf)
 
 ## High Priority
 
+- [ ] Dragging a connected wire from a socket, letting go of it over open canvas area will delete the wire, unless it's connected to a new socket (Like Blender)
+- [ ] Implement **network boxes/frames** fully: create, resize, drag, custom title/color/description, collapse/expand showing only exposed I/O
+- [ ] Implement **nested network boxes** with correct hit-testing, z-order interactions, and parent/child move semantics
+- [ ] Implement **promoted parameters**: expose internal node params externally from groups/subgraphs, including mapping UI + socket exposure controls
+- [ ] Implement **group/ungroup** with robust semantics: move/duplicate/copy-paste groups, preserve connections, and support “frame by group/category”
+- [ ] Implement **delete with wire reconnection options**: bridge compatible sockets, remove all, etc...
+- [ ] Implement **wire tap insertion**: click wire to open compatible node list and auto-insert with correct type mapping and reconnection
+- [ ] Implement **conversion node authoring tooling**: manage conversion registry, compatibility table, and test suite ensuring no accidental implicit casting
+- [ ] Implement **type compatibility matrix management** (code-only): define allowed connections rules beyond exact match (if desired), keep UI strict and simple
+
 ## Medium Priority
+
+- [ ] Implement **detached wire dragging** UX refinements: drag from either end, snap previews, auto-scroll at viewport edges while dragging
+- [ ] Implement **socket label positioning controls** (show/hide, custom positions) and improved socket metadata (units, ranges, formatting)
+- [ ] Implement **socket shapes by type** (circle/triangle/square) as an additional visual channel with accessibility-safe defaults
+- [ ] Implement **one-to-many vs one-to-one enforcement** per socket definition with clear inline UI feedback
+- [ ] Implement **validation warnings suite**: type mismatch attempts, circular dependency attempt history, unreachable outputs, redundant conversions
+- [ ] Implement improved **error handling UX**: severity-coded badges, expandable tooltips, stack/context display (debug-only mode), and error filtering
+- [ ] Implement toggleable **debug panel** that can print node outputs, watch sockets, and stream evaluation logs, streams useful events
+- [ ] Implement robust **DOM overlay layer management**: focus traps, pointer-event pass-through, accessibility for overlays, and consistent layering
 
 ## Low Priority
 
-- [ ] Add wire hover labels (type/value) with debounce; keep off by default for perf
-- [ ] Add wire animated “data flow” visualization (very easy to make expensive; only if perf budget allows)
-- [ ] Add network boxes/frames: basic rectangle + title; grouping behavior can wait
-- [ ] Add z-ordering controls (bring to front/back) if you end up needing it for overlapping nodes
-- [ ] Add icon pack integration (Lucide) for node types (purely cosmetic)
-- [ ] Add breadcrumb plumbing placeholders for future subgraphs (no real subgraphs in MVP)
+- [ ] Implement global settings dialog modal, add all settings in tabs inside the modal
+- [ ] Implement **behavior settings** expansion: autosave frequency controls, undo stack depth controls, and advanced pan/zoom curves
+- [ ] Implement **full keyboard navigation** across canvas: node-to-node traversal, socket navigation, wire navigation, and action palette parity
+- [ ] Implement **keyboard shortcut customization** UI: keybinding editor, conflict detection, profiles, and export/import
 
 ## Completed
 
+- [x] Dragging wire from input socket grabs wire, not deletes it, allowing user to re-position or move wire without creating a new one
+- [x] Add breadcrumb plumbing placeholders for future subgraphs (no real subgraphs yet)
+- [x] Add z-ordering controls (bring to front/back) if you end up needing it for overlapping nodes (automatic show selected node first) - ensure selected nodes render above overlaps for clarity
+- [x] Add network boxes/frames: basic rectangle + title; grouping behavior can wait
+- [x] Add wire animated “data flow” visualization when zoomed in only (very easy to make expensive; only if perf budget allows)
+- [x] Add wire hover labels (type/value) with debounce; keep off by default for perf
+- [x] Nothing in view shows on page/app load when it shouldn't, even if nodes are in view
+- [x] The context menu hides when the mouse moves. The context menu whould remain open until the overlay is clicked or when the context menu is clicked, not on mouse move
+- [x] The selection square to select nodes will highlight the nodes as soon as the selection box touches the nodes, not after the size of selection box is defined and the mouse let go.
 - [x] Move the number of selected Nodes text component (as well as the dirty component) to be in the bottom left. The bottom left corner will be only for status information. This content will be dynamic, so it can have "1 Selected" and "Dirty" and "Saved" in the same container
 - [x] Simplify the content in the side panel and control menu bar. Remove repeating or redundant information. It's obvious when a node has inputs or outputs in the canvas, not needed in the side panel too. Consider this for other areas and aspects of these components. Keep them simple.
 - [x] Show the bottom control menu at all times, just the contents change based on context. Keep the selection menu, but when no items are selected, the control bar has other options for importing, exporting, settings, etc...

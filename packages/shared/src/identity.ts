@@ -9,5 +9,8 @@ export const makeSocketId = Brand.nominal<SocketId>();
 export type WireId = Brand.Branded<string, "WireId">;
 export const makeWireId = Brand.nominal<WireId>();
 
+export type FrameId = Brand.Branded<string, "FrameId">;
+export const makeFrameId = Brand.nominal<FrameId>();
+
 export type GraphId = Brand.Branded<string, "GraphId">;
 export const makeGraphId = Brand.nominal<GraphId>();

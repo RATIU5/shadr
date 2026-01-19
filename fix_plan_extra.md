@@ -5,18 +5,14 @@ Features reference: `FEATURES.md`
 
 ## Critical
 
-- [ ] Implement full **subgraph system**: collapse selection into subgraph, generate internal graph document, and create a parent “Subgraph Node” wrapper with defined I/O
+- [ ] Implement full **subgraph system**: collapse selection into subgraph, generate internal graph document, and create a parent “Subgraph Node” wrapper with defined I/O. Subgraphs don't show outer graphs, helps with perf.
 - [ ] Implement **subgraph I/O authoring**: user-defined input/output sockets, renaming, reordering, type constraints, defaults, required flags
 - [ ] Implement **dive in/out navigation** for subgraphs with breadcrumbs, back/forward history, and focus restore
 - [ ] Implement **nested subgraphs** (up to 10 levels) with guardrails: recursion prevention, max depth enforcement, performance caps
-- [ ] Implement **node instances** (reference semantics): multiple instances share the same source definition, updating source updates all instances deterministically
+- [ ] Implement **node instances** (reference semantics): multiple instances share the same source definition, updating source updates all instances deterministically (especially useful for collapsed subgraphs used in multiple places, edit the subgraph in one to edit all or edit per instance)
 - [ ] Implement **per-instance overrides** for params with clear diff UI and reset-to-default actions
-- [ ] Implement **asset/library system** for subgraphs (“digital assets”): save/load, metadata, previews, dependency tracking, versioning, and upgrade workflows
-- [ ] Implement **HDA-style packaging**: bundle node packs + subgraphs + resources into a distributable internal artifact; include compatibility checks and migration hooks
 - [ ] Implement **async/background execution lane** (even if nodes remain sync): offload heavy graphs to a worker, keep UI responsive, and support cancelation + progress
 - [ ] Implement **execution flow visualization suite**: animated wires, execution order badges, per-node timing bars, and timeline view (must be toggleable for perf)
-- [ ] Implement comprehensive **state management modes**: mute, solo, lock, freeze (cache pinning) with correct dirty/invalidation semantics and UX clarity
-- [ ] Implement **graph-level compile pipeline**: explicit compile triggers, compile targets, incremental compile caching, and compile output artifact registry (image/code/etc)
 
 ## High Priority
 
@@ -24,12 +20,7 @@ Features reference: `FEATURES.md`
 - [ ] Implement **nested network boxes** with correct hit-testing, z-order interactions, and parent/child move semantics
 - [ ] Implement **promoted parameters**: expose internal node params externally from groups/subgraphs, including mapping UI + socket exposure controls
 - [ ] Implement **group/ungroup** with robust semantics: move/duplicate/copy-paste groups, preserve connections, and support “frame by group/category”
-- [ ] Implement **delete with wire reconnection options**: bridge compatible sockets, remove all, or prompt-based reconnection mapping
-- [ ] Implement **copy/paste cross-app compatibility**: canonical JSON format, stable schema docs, and import validation with migration support
-- [ ] Implement **export selection as template** and **template library**: save templates, browse/search, apply at cursor, resolve missing node types
-- [ ] Implement **import from file/URL** with safety constraints, schema versioning, node pack dependency resolution, and user-facing validation reports
-- [ ] Implement **favorites/recent nodes** and **custom node templates** in node library with sync to IndexedDB
-- [ ] Implement **situational-aware dynamic context menu**: options depend on hover target (wire/node/empty), selection set, and type constraints
+- [ ] Implement **delete with wire reconnection options**: bridge compatible sockets, remove all, etc...
 - [ ] Implement **wire tap insertion**: click wire to open compatible node list and auto-insert with correct type mapping and reconnection
 - [ ] Implement **conversion node authoring tooling**: manage conversion registry, compatibility table, and test suite ensuring no accidental implicit casting
 - [ ] Implement **type compatibility matrix management** (code-only): define allowed connections rules beyond exact match (if desired), keep UI strict

@@ -1,4 +1,4 @@
-import type { GraphId, NodeId, SocketId, WireId } from "./identity.js";
+import type { FrameId, GraphId, NodeId, SocketId, WireId } from "./identity.js";
 import type { SocketTypeId } from "./socket-types.js";
 
 export const GRAPH_DOCUMENT_V1_SCHEMA_VERSION = 1 as const;
@@ -42,12 +42,20 @@ export type GraphWireV1 = Readonly<{
   toSocketId: SocketId;
 }>;
 
+export type GraphFrameV1 = Readonly<{
+  id: FrameId;
+  title: string;
+  position: Readonly<{ x: number; y: number }>;
+  size: Readonly<{ width: number; height: number }>;
+}>;
+
 export type GraphDocumentV1 = Readonly<{
   schemaVersion: typeof GRAPH_DOCUMENT_V1_SCHEMA_VERSION;
   graphId: GraphId;
   nodes: ReadonlyArray<GraphNodeV1>;
   sockets: ReadonlyArray<GraphSocketV1>;
   wires: ReadonlyArray<GraphWireV1>;
+  frames?: ReadonlyArray<GraphFrameV1>;
   metadata?: JsonObject;
 }>;
 
@@ -93,6 +101,7 @@ export const normalizeGraphDocumentV1 = (
   })),
   sockets: sortById(document.sockets),
   wires: sortById(document.wires),
+  ...(document.frames ? { frames: sortById(document.frames) } : {}),
 });
 
 const sortJsonValue = (value: JsonValue): JsonValue => {

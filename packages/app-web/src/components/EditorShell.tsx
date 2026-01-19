@@ -1,9 +1,15 @@
 import * as Toast from "@kobalte/core/toast";
-import { graphToDocumentV1, type NodeId, type WireId } from "@shadr/graph-core";
+import {
+  type FrameId,
+  graphToDocumentV1,
+  type NodeId,
+  type WireId,
+} from "@shadr/graph-core";
 import type { GraphId } from "@shadr/shared";
 import { clientOnly } from "@solidjs/start";
 import { Either } from "effect";
 import {
+  ChevronRight,
   CircleDot,
   EyeOff,
   Minimize2,
@@ -17,6 +23,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  For,
   onCleanup,
   onMount,
 } from "solid-js";
@@ -31,6 +38,7 @@ import {
   parseGraphDocumentJson,
 } from "~/editor/graph-io";
 import {
+  createRemoveFrameCommand,
   createRemoveNodeCommand,
   createRemoveWireCommand,
   type GraphCommand,
@@ -49,6 +57,7 @@ import {
   coerceUiState,
   DEFAULT_UI_STATE,
   type EditorUiState,
+  type GraphBreadcrumb,
   uiStateToJson,
 } from "~/editor/ui-state";
 import {
@@ -105,11 +114,22 @@ export default function EditorShell() {
 
   const isDirtyGraph = createMemo(() => store.dirtyState().dirty.size > 0);
   const selectionCount = createMemo(
-    () => store.selectedNodes().size + store.selectedWires().size,
+    () =>
+      store.selectedNodes().size +
+      store.selectedFrames().size +
+      store.selectedWires().size,
   );
   const isEmptyGraph = createMemo(() => store.graph().nodes.size === 0);
   const gridVisible = createMemo(() => store.settings().gridVisible);
   const snapToGrid = createMemo(() => store.settings().snapToGrid);
+  const wireHoverLabels = createMemo(() => store.settings().wireHoverLabels);
+  const graphPath = createMemo<ReadonlyArray<GraphBreadcrumb>>(() => {
+    const path = store.graphPath();
+    if (path.length > 0) {
+      return path;
+    }
+    return [{ id: store.graph().graphId, label: "Main" }];
+  });
 
   const statusBase =
     "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.18em]";
@@ -125,6 +145,11 @@ export default function EditorShell() {
     "border-[color:var(--status-muted-border)] bg-[color:var(--status-muted-bg)] text-[color:var(--status-muted-text)]";
   const appBadge =
     "pointer-events-auto inline-flex items-center gap-2 rounded-full border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--app-text)]";
+  const breadcrumbRoot =
+    "pointer-events-auto flex items-center gap-1 rounded-full border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
+  const breadcrumbItem =
+    "inline-flex items-center gap-1 rounded-full border border-transparent px-2 py-0.5 text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--app-text)]";
+  const breadcrumbSeparator = "text-[color:var(--text-muted)]";
   const historyButtonBase =
     "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.55rem] uppercase tracking-[0.18em] transition";
   const historyButtonActive =
@@ -244,21 +269,39 @@ export default function EditorShell() {
     return ordered.slice(0, 5);
   };
 
+  const normalizeGraphPath = (
+    path: ReadonlyArray<GraphBreadcrumb>,
+    graphId: GraphId,
+  ): ReadonlyArray<GraphBreadcrumb> => {
+    if (path.length === 0 || path[0].id !== graphId) {
+      return [{ id: graphId, label: "Main" }];
+    }
+    return path;
+  };
+
   const applyUiState = (state: EditorUiState): void => {
     const graphSnapshot = store.graph();
     const validNodes = (ids: ReadonlyArray<NodeId>): NodeId[] =>
       ids.filter((id) => graphSnapshot.nodes.has(id));
+    const validFrames = (ids: ReadonlyArray<FrameId>): FrameId[] =>
+      ids.filter((id) => graphSnapshot.frames.has(id));
     const validWires = (ids: ReadonlyArray<WireId>): WireId[] =>
       ids.filter((id) => graphSnapshot.wires.has(id));
 
+    store.setGraphPath(
+      normalizeGraphPath(state.graphPath, graphSnapshot.graphId),
+    );
     store.setCanvasCenter(state.canvasCenter);
     store.setBypassedNodes(new Set(validNodes(state.bypassedNodes)));
     store.setCollapsedNodes(new Set(validNodes(state.collapsedNodes)));
 
     const selectedNodes = validNodes(state.selectedNodes);
+    const selectedFrames = validFrames(state.selectedFrames);
     const selectedWires = validWires(state.selectedWires);
     if (selectedNodes.length > 0) {
       store.setNodeSelection(new Set(selectedNodes));
+    } else if (selectedFrames.length > 0) {
+      store.setFrameSelection(new Set(selectedFrames));
     } else if (selectedWires.length > 0) {
       store.setWireSelection(new Set(selectedWires));
     } else {
@@ -422,8 +465,12 @@ export default function EditorShell() {
       const uiState: EditorUiState = {
         lastGraphId: graphSnapshot.graphId,
         recentGraphIds: mergedRecent,
+        graphPath: store.graphPath(),
         canvasCenter: store.canvasCenter(),
         selectedNodes: Array.from(store.selectedNodes()).sort((left, right) =>
+          left.localeCompare(right),
+        ),
+        selectedFrames: Array.from(store.selectedFrames()).sort((left, right) =>
           left.localeCompare(right),
         ),
         selectedWires: Array.from(store.selectedWires()).sort((left, right) =>
@@ -450,8 +497,10 @@ export default function EditorShell() {
 
   createEffect(() => {
     store.graph();
+    store.graphPath();
     store.canvasCenter();
     store.selectedNodes();
+    store.selectedFrames();
     store.selectedWires();
     store.bypassedNodes();
     store.collapsedNodes();
@@ -467,6 +516,11 @@ export default function EditorShell() {
   });
   const selectedNodeIds = createMemo(() =>
     Array.from(store.selectedNodes()).sort((left, right) =>
+      left.localeCompare(right),
+    ),
+  );
+  const selectedFrameIds = createMemo(() =>
+    Array.from(store.selectedFrames()).sort((left, right) =>
       left.localeCompare(right),
     ),
   );
@@ -502,21 +556,23 @@ export default function EditorShell() {
   });
   const selectionSummary = createMemo(() => {
     const nodeCount = selectedNodeIds().length;
+    const frameCount = selectedFrameIds().length;
     const wireCount = selectedWireIds().length;
-    if (nodeCount > 0 && wireCount > 0) {
-      return `${nodeCount} nodes, ${wireCount} wires`;
-    }
-    if (nodeCount > 1) {
-      return `${nodeCount} nodes`;
-    }
-    if (nodeCount === 1) {
+    if (nodeCount === 1 && frameCount === 0 && wireCount === 0) {
       return selectedNodeLabel() ?? "1 node";
     }
-    if (wireCount > 1) {
-      return `${wireCount} wires`;
+    const parts: string[] = [];
+    if (nodeCount > 0) {
+      parts.push(`${nodeCount} node${nodeCount === 1 ? "" : "s"}`);
     }
-    if (wireCount === 1) {
-      return "1 wire";
+    if (frameCount > 0) {
+      parts.push(`${frameCount} frame${frameCount === 1 ? "" : "s"}`);
+    }
+    if (wireCount > 0) {
+      parts.push(`${wireCount} wire${wireCount === 1 ? "" : "s"}`);
+    }
+    if (parts.length > 0) {
+      return parts.join(", ");
     }
     return "No selection";
   });
@@ -734,6 +790,9 @@ export default function EditorShell() {
     const nodeCommands = selectedNodeIds()
       .map((nodeId) => createRemoveNodeCommand(graphSnapshot, nodeId))
       .filter((command): command is NonNullable<typeof command> => !!command);
+    const frameCommands = selectedFrameIds()
+      .map((frameId) => createRemoveFrameCommand(graphSnapshot, frameId))
+      .filter((command): command is NonNullable<typeof command> => !!command);
     const removedWireIds = new Set<WireId>();
     for (const command of nodeCommands) {
       if (command.kind !== "remove-node") {
@@ -747,7 +806,7 @@ export default function EditorShell() {
       .filter((wireId) => !removedWireIds.has(wireId))
       .map((wireId) => createRemoveWireCommand(graphSnapshot, wireId))
       .filter((command): command is NonNullable<typeof command> => !!command);
-    const commands = [...nodeCommands, ...wireCommands];
+    const commands = [...nodeCommands, ...frameCommands, ...wireCommands];
     if (applyCommands("delete-selection", commands)) {
       store.clearSelection();
     }
@@ -795,7 +854,7 @@ export default function EditorShell() {
       {
         id: "command:delete-selection",
         label: "Delete selection",
-        description: "Remove selected nodes or wires",
+        description: "Remove selected nodes, frames, or wires",
         kind: "command",
         enabled: hasSelection,
         keywords: ["remove", "delete"],
@@ -855,6 +914,18 @@ export default function EditorShell() {
             snapToGrid: !store.settings().snapToGrid,
           }),
       },
+      {
+        id: "control:wire-hover-labels",
+        label: "Wire hover labels",
+        description: "Show wire type/value labels on hover",
+        kind: "control",
+        stateLabel: settingsSnapshot.wireHoverLabels ? "On" : "Off",
+        keywords: ["wire", "hover", "label", "value"],
+        onSelect: () =>
+          store.updateSettings({
+            wireHoverLabels: !store.settings().wireHoverLabels,
+          }),
+      },
     ];
 
     const nodeEntries: CommandPaletteEntry[] = NODE_CATALOG.map((entry) => {
@@ -889,6 +960,18 @@ export default function EditorShell() {
           <div class={appBadge}>
             <Sparkles class="h-4 w-4 text-[color:var(--status-info-text)]" />
             <span class="sr-only">Shadr</span>
+          </div>
+          <div class={breadcrumbRoot} aria-label="Graph path">
+            <For each={graphPath()}>
+              {(entry, index) => (
+                <div class="flex items-center gap-1">
+                  <span class={breadcrumbItem}>{entry.label}</span>
+                  {index() < graphPath().length - 1 ? (
+                    <ChevronRight class={`h-3 w-3 ${breadcrumbSeparator}`} />
+                  ) : null}
+                </div>
+              )}
+            </For>
           </div>
           <button
             class={`${historyButtonBase} ${
@@ -1062,6 +1145,18 @@ export default function EditorShell() {
                   >
                     Snap {snapToGrid() ? "On" : "Off"}
                   </button>
+                  <button
+                    class={`${controlMenuButton} ${
+                      wireHoverLabels() ? controlMenuInfo : controlMenuMuted
+                    }`}
+                    onClick={() =>
+                      store.updateSettings({
+                        wireHoverLabels: !store.settings().wireHoverLabels,
+                      })
+                    }
+                  >
+                    Wire Labels {wireHoverLabels() ? "On" : "Off"}
+                  </button>
                 </div>
               </>
             )}
@@ -1095,6 +1190,11 @@ export default function EditorShell() {
                 {selectedNodeIds().length > 0 ? (
                   <span class={`${sidePanelChip} ${sidePanelInfo}`}>
                     {selectedNodeIds().length} nodes
+                  </span>
+                ) : null}
+                {selectedFrameIds().length > 0 ? (
+                  <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                    {selectedFrameIds().length} frames
                   </span>
                 ) : null}
                 {selectedWireIds().length > 0 ? (

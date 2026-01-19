@@ -92,6 +92,30 @@ const isStringArray = (value: unknown): value is ReadonlyArray<string> =>
 const isJsonObject = (value: unknown): value is JsonObject =>
   isRecord(value) && !Array.isArray(value);
 
+const isGraphFrameV1 = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (!isString(record["id"]) || !isString(record["title"])) {
+    return false;
+  }
+  const position = record["position"];
+  const size = record["size"];
+  if (!isRecord(position) || !isRecord(size)) {
+    return false;
+  }
+  const posRecord = position as Record<string, unknown>;
+  const sizeRecord = size as Record<string, unknown>;
+  if (!isNumber(posRecord["x"]) || !isNumber(posRecord["y"])) {
+    return false;
+  }
+  if (!isNumber(sizeRecord["width"]) || !isNumber(sizeRecord["height"])) {
+    return false;
+  }
+  return true;
+};
+
 const isGraphDocumentV1 = (value: unknown): value is GraphDocumentV1 => {
   if (!isRecord(value)) {
     return false;
@@ -106,10 +130,17 @@ const isGraphDocumentV1 = (value: unknown): value is GraphDocumentV1 => {
   const nodes = record["nodes"];
   const sockets = record["sockets"];
   const wires = record["wires"];
+  const frames = record["frames"];
   if (!Array.isArray(nodes) || !Array.isArray(sockets)) {
     return false;
   }
   if (!Array.isArray(wires)) {
+    return false;
+  }
+  if (
+    frames !== undefined &&
+    (!Array.isArray(frames) || !frames.every(isGraphFrameV1))
+  ) {
     return false;
   }
   for (const node of nodes) {
