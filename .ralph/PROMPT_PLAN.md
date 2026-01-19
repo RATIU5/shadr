@@ -2,7 +2,7 @@
 
 ## 0. Orientation
 
-0a. Study `AGENT.md` for build/run commands and previous learnings.
+0a. Study `AGENTS.md` for build/run commands and previous learnings.
 0b. Study `specs/architecture.md` for current project structure.
 0c. Study existing `fix_plan.md` to understand previous state.
 

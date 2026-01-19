@@ -91,7 +91,7 @@ Progress persists in **files and git**, not LLM context.
 
 | File                    | Purpose                                      |
 | ----------------------- | -------------------------------------------- |
-| `AGENT.md`              | Build/run commands + learnings + guardrails  |
+| `AGENTS.md`             | Build/run commands + learnings + guardrails  |
 | `fix_plan.md`           | Prioritized task list                        |
 | `specs/architecture.md` | Project structure (update on major changes!) |
 
@@ -100,8 +100,8 @@ Progress persists in **files and git**, not LLM context.
 1. **Always set --max**: `.ralph/ralph.sh --max 20` prevents runaway loops
 2. **One task per iteration**: Prompts enforce single-task focus
 3. **Search before assuming**: Critical to avoid duplicate implementations
-4. **Tune with guardrails**: When Ralph fails repeatedly, add "signs" to `AGENT.md`
-5. **Keep docs updated**: Ralph updates `fix_plan.md`, `AGENT.md`, and `specs/architecture.md`
+4. **Tune with guardrails**: When Ralph fails repeatedly, add "signs" to `AGENTS.md`
+5. **Keep docs updated**: Ralph updates `fix_plan.md`, `AGENTS.md`, and `specs/architecture.md`
 
 ## Resources
 

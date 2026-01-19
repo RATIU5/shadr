@@ -162,7 +162,7 @@ while true; do
         if [[ ${no_change_count} -ge ${MAX_NO_CHANGE} ]]; then
             echo ""
             echo "Stopping: No progress for ${MAX_NO_CHANGE} consecutive iterations"
-            echo "Check fix_plan.md and AGENT.md for issues"
+            echo "Check fix_plan.md and AGENTS.md for issues"
             break
         fi
     else
