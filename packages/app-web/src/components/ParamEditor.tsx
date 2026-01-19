@@ -76,17 +76,18 @@ const VECTOR_LABELS = ["X", "Y", "Z", "W"];
 
 export default function ParamEditor(props: ParamEditorProps) {
   const paramField = "flex flex-col gap-2";
-  const paramLabel = "text-[0.7rem] uppercase tracking-[0.1em] text-[#9aa8c7]";
+  const paramLabel =
+    "text-[0.7rem] uppercase tracking-[0.1em] text-[color:var(--text-muted)]";
   const paramInputBase =
-    "w-full rounded-lg border border-[rgba(120,150,190,0.35)] bg-[rgba(9,12,20,0.9)] px-[0.6rem] py-[0.45rem] text-[0.85rem] text-[#e4ebff]";
+    "w-full rounded-lg border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.85rem] text-[color:var(--text-soft)]";
   const paramSwitchRow =
-    "flex items-center justify-between gap-2 rounded-lg border border-[rgba(120,150,190,0.3)] bg-[rgba(9,12,20,0.85)] px-[0.6rem] py-[0.4rem]";
-  const paramSwitchText = "text-[0.8rem] text-[#dbe6ff]";
+    "flex items-center justify-between gap-2 rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.4rem]";
+  const paramSwitchText = "text-[0.8rem] text-[color:var(--text-soft)]";
   const paramVector =
     "grid grid-cols-[repeat(auto-fit,minmax(70px,1fr))] gap-2";
   const paramVectorItem = "grid gap-1";
   const paramVectorLabel =
-    "text-[0.65rem] uppercase tracking-[0.14em] text-[rgba(154,168,199,0.9)]";
+    "text-[0.65rem] uppercase tracking-[0.14em] text-[color:var(--text-muted)]";
 
   const renderNumberField = (
     field: Extract<ParamFieldDefinition, { kind: "float" | "int" }>,
@@ -132,8 +133,8 @@ export default function ParamEditor(props: ParamEditorProps) {
             onChange={(next) => props.onParamChange(field.id, next)}
           >
             <Switch.Input />
-            <Switch.Control class="absolute inset-0 rounded-full border border-[rgba(120,150,190,0.35)] bg-[rgba(10,14,24,0.9)] transition-colors duration-200 data-[checked]:border-[rgba(91,228,255,0.6)] data-[checked]:bg-[rgba(91,228,255,0.25)]">
-              <Switch.Thumb class="absolute left-[3px] top-[3px] h-[18px] w-[18px] rounded-full bg-[#dbe6ff] transition-transform duration-200 data-[checked]:translate-x-[20px] data-[checked]:bg-white" />
+            <Switch.Control class="absolute inset-0 rounded-full border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-soft)] transition-colors duration-200 data-[checked]:border-[color:var(--status-info-border)] data-[checked]:bg-[color:var(--status-info-bg)]">
+              <Switch.Thumb class="absolute left-[3px] top-[3px] h-[18px] w-[18px] rounded-full bg-[color:var(--text-soft)] transition-transform duration-200 data-[checked]:translate-x-[20px] data-[checked]:bg-[color:var(--text-strong)]" />
             </Switch.Control>
           </Switch.Root>
         </div>

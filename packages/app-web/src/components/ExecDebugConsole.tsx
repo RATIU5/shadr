@@ -22,31 +22,33 @@ type ExecDebugConsoleProps = Readonly<{
 
 export default function ExecDebugConsole(props: ExecDebugConsoleProps) {
   const consoleTag =
-    "rounded-full border border-[rgba(255,200,120,0.4)] bg-[rgba(255,200,120,0.12)] px-[0.55rem] py-[0.2rem] text-[0.7rem] uppercase tracking-[0.08em] text-[#ffe6c7]";
+    "rounded-full border border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] px-[0.55rem] py-[0.2rem] text-[0.7rem] uppercase tracking-[0.08em] text-[color:var(--status-warn-text)]";
   const consoleList = "flex max-h-[220px] flex-col gap-2 overflow-auto pr-1";
   const consoleRow =
-    "flex flex-col gap-2 rounded-xl border border-[rgba(120,150,190,0.2)] bg-[rgba(9,13,21,0.9)] px-[0.75rem] py-[0.6rem] text-[#dce6fb]";
+    "flex flex-col gap-2 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel)] px-[0.75rem] py-[0.6rem] text-[color:var(--text-soft)]";
   const consoleRowError =
-    "border-[rgba(255,122,122,0.5)] bg-[rgba(60,15,20,0.55)]";
+    "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)]";
   const consoleMeta =
-    "text-[0.7rem] uppercase tracking-[0.08em] text-[#9aa8c7]";
+    "text-[0.7rem] uppercase tracking-[0.08em] text-[color:var(--text-muted)]";
   const consoleBadge =
-    "rounded-full border border-[rgba(120,150,190,0.35)] px-[0.45rem] py-[0.15rem] text-[0.65rem] uppercase tracking-[0.08em]";
-  const consoleBadgeOk = "border-[rgba(91,228,255,0.5)] text-[#dffbff]";
-  const consoleBadgeError = "border-[rgba(255,122,122,0.6)] text-[#ffb9b9]";
+    "rounded-full border border-[color:var(--border-muted)] px-[0.45rem] py-[0.15rem] text-[0.65rem] uppercase tracking-[0.08em]";
+  const consoleBadgeOk =
+    "border-[color:var(--status-info-border)] text-[color:var(--status-info-text)]";
+  const consoleBadgeError =
+    "border-[color:var(--status-danger-border)] text-[color:var(--status-danger-text)]";
   const consoleEmpty =
-    "rounded-xl border border-dashed border-[rgba(120,150,190,0.35)] bg-[rgba(10,13,22,0.6)] p-3 text-[0.85rem] text-[#9aa8c7]";
+    "rounded-xl border border-dashed border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] p-3 text-[0.85rem] text-[color:var(--text-muted)]";
   const clearButton =
-    "rounded-full border border-[rgba(120,150,190,0.35)] bg-transparent px-[0.6rem] py-[0.2rem] text-[0.65rem] uppercase tracking-[0.1em] text-[#d8e2f7]";
+    "rounded-full border border-[color:var(--border-muted)] bg-transparent px-[0.6rem] py-[0.2rem] text-[0.65rem] uppercase tracking-[0.1em] text-[color:var(--text-soft)]";
 
   return (
     <div class="flex flex-col gap-3">
       <div class="flex items-center justify-between gap-2">
         <div>
-          <h3 class="text-[0.85rem] uppercase tracking-[0.08em] text-[#9aa8c7]">
+          <h3 class="text-[0.85rem] uppercase tracking-[0.08em] text-[color:var(--text-muted)]">
             Exec Debug Console
           </h3>
-          <p class="mt-1 text-[0.8rem] text-[#9aa8c7]">
+          <p class="mt-1 text-[0.8rem] text-[color:var(--text-muted)]">
             Dev-only evaluation log.
           </p>
         </div>
@@ -92,7 +94,7 @@ export default function ExecDebugConsole(props: ExecDebugConsoleProps) {
                 </span>
               </div>
               {entry.status === "success" && entry.nodeErrors.length > 0 ? (
-                <div class="text-[0.75rem] text-[#ffb9b9]">
+                <div class="text-[0.75rem] text-[color:var(--status-danger-text)]">
                   {entry.nodeErrors
                     .map(
                       (error) =>

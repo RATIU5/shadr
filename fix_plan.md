@@ -9,25 +9,17 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 > Keep ALL CODE simple, readable, and maintainable. Don't be smart or overengineer. Favor simplicity over complexity. When working with UI/UX, focus on simplicity and situational-aware UI updates.
 
+> Break up large tasks or add context to tasks by adding new tasks to this list. Don't modify existing tasks.
+
 ## Critical
 
-- [ ] Read current UI overlay/canvas code to understand existing structure and then delete/reset the UI layer to restart cleanly, while keeping Solid.js reactivity, Kobalte UI components, Lucide icons, and TailwindCSS-only styling; keep text minimal, show only when essential, use color to indicate state (valid/invalid/warning/info/primary), keep UI minimal and dynamic. **YOU MUST DELETE THE CURRENT UI AND RESTART WITH THESE THINGS IN MIND**
-- [ ] Rebuild the base layout: full-screen canvas plus minimal overlay containers, using Solid.js signals/stores, Kobalte primitives, Lucide icons, and Tailwind; text only when needed, state colors only, no extra UI, keep minimal always.
-- [ ] Implement the bottom Figma-like control menu that changes per selected node and resets on deselect, with max-height + internal scroll (if needed); Solid.js/Kobalte/Lucide/Tailwind only, minimal text, state colors.
-- [ ] Add a context-driven side panel that is hidden by default and appears only when a node or other canvas element is selected; max-height + scroll; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only.
-- [ ] Add a minimal context menu over the canvas (right-click/long-press), context-aware; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only.
-- [ ] Add a Raycast-style command palette with fuzzy search for commands/nodes/controls; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only.
-- [ ] Implement undo/redo UI affordance + keyboard shortcuts and hook to history; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only.
-- [ ] Implement IndexedDB persistence for all editor state (graph, settings, UI layout, recent/last doc), including autosave feedback; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only.
-- [ ] Add essential minimal status/notifications (errors, autosave, compile/result), touch/mouse/keyboard parity, and light/dark themes tied to system settings; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only.
+- [ ] The selection square to select nodes will highlight the nodes as soon as the selection box touches the nodes, not after the size of selection box is defined and the mouse let go.
+- [ ] The context menu hides when the mouse moves. The context menu whould remain open until the overlay is clicked or when the context menu is clicked, not on mouse move
+- [ ] Nothing in view shows on page/app load when it shouldn't, even if nodes are in view
 
 ## High Priority
 
-_None._
-
 ## Medium Priority
-
-- [ ] Add import/export graph from file (JSON) with schema version + migration hook
 
 ## Low Priority
 
@@ -39,6 +31,22 @@ _None._
 - [ ] Add breadcrumb plumbing placeholders for future subgraphs (no real subgraphs in MVP)
 
 ## Completed
+
+- [x] Move the number of selected Nodes text component (as well as the dirty component) to be in the bottom left. The bottom left corner will be only for status information. This content will be dynamic, so it can have "1 Selected" and "Dirty" and "Saved" in the same container
+- [x] Simplify the content in the side panel and control menu bar. Remove repeating or redundant information. It's obvious when a node has inputs or outputs in the canvas, not needed in the side panel too. Consider this for other areas and aspects of these components. Keep them simple.
+- [x] Show the bottom control menu at all times, just the contents change based on context. Keep the selection menu, but when no items are selected, the control bar has other options for importing, exporting, settings, etc...
+- [x] Add import/export graph from file (JSON) with schema version + migration hook
+- [x] Add essential minimal status/notifications (errors, autosave, compile/result), touch/mouse/keyboard parity, and light/dark themes tied to system settings; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only.
+- [x] Implement IndexedDB persistence for all editor state (graph, settings, UI layout, recent/last doc), including autosave feedback; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only. Use Effect when you see fit.
+- [x] Implement undo/redo UI affordance + keyboard shortcuts and hook to history; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only. Use Effect when you see fit.
+- [x] Uncaught (in promise) SyntaxError: The requested module '/\_build/@fs/Users/john.memmott/Developer/shadr/packages/ui-canvas/src/index.ts' does not provide an export named 'getSocketPosition' (at EditorCanvas.tsx:23:3) needs to be fixed
+- [x] Add a Raycast-style command palette with fuzzy search for commands/nodes/controls; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only. Use Effect when you see fit.
+- [x] Add a minimal context menu over the canvas (right-click/long-press), context-aware; minimal text; Solid.js/Kobalte/Lucide/Tailwind only.
+- [x] Render the canvas with the pixijs scene (grid + nodes) in the SolidJS UI in a component (it doesn't render now)
+- [x] Add a context-driven side panel that is hidden by default and appears only when a node or other canvas element is selected; max-height + scroll; minimal text; state colors; Solid.js/Kobalte/Lucide/Tailwind only. Use Effect when you see fit.
+- [x] Implement the bottom Figma-like control menu that changes per selected node and resets on deselect, with max-height + internal scroll (if needed); Solid.js/Kobalte/Lucide/Tailwind only, minimal text, state colors.
+- [x] Rebuild the base layout: full-screen canvas plus minimal overlay containers, using Solid.js signals/stores, Kobalte primitives, Lucide icons, and Tailwind; text only when needed, state colors only, no extra UI, keep minimal always.
+- [x] Read current UI overlay/canvas code to understand existing structure and then delete/reset the UI layer to restart cleanly, while keeping Solid.js reactivity, Kobalte UI components, Lucide icons, and TailwindCSS-only styling; keep text minimal, show only when essential, use color to indicate state (valid/invalid/warning/info/primary), keep UI minimal and dynamic. **YOU MUST DELETE THE CURRENT UI AND RESTART WITH THESE THINGS IN MIND**
 
 - [x] Add “graph diagnostics” view (dev-only): counts, memory estimates, perf stats
 - [x] Add execution debug console: a panel that logs evaluations, cache hits, and node errors (dev-only)

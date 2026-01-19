@@ -3,25 +3,8 @@ import * as PIXI from "pixi.js";
 
 import type { NodeLayout } from "./layout.js";
 import { getNodeHeaderToggleBounds, getNodeSize } from "./layout.js";
-
-const NODE_FILL = 0x1b1b1f;
-const NODE_BYPASSED_FILL = 0x15151a;
-const NODE_STROKE = 0x3c3c44;
-const NODE_BYPASSED_STROKE = 0x565661;
-const NODE_SELECTED_STROKE = 0x67d0ff;
-const NODE_HOVER_STROKE = 0x7fb6ff;
-const NODE_ERROR_STROKE = 0xff6a6a;
-const SOCKET_FILL = 0x101014;
-const SOCKET_STROKE = 0x7b7b86;
-const SOCKET_BYPASSED_FILL = 0x0d0d12;
-const SOCKET_BYPASSED_STROKE = 0x585862;
+import type { CanvasTheme } from "./theme.js";
 const SOCKET_RADIUS = 4;
-const HEADER_FILL = 0x232734;
-const HEADER_BYPASSED_FILL = 0x1a1f2b;
-const HEADER_TEXT = 0xdce2f0;
-const HEADER_TEXT_MUTED = 0xa5adbf;
-const BADGE_ERROR = 0xff6a6a;
-const BADGE_BYPASS = 0x7a7f90;
 const BADGE_RADIUS = 3;
 
 export type NodeVisualState = Readonly<{
@@ -50,10 +33,11 @@ export class NodeView {
   private readonly titleText: PIXI.Text;
   private readonly toggleText: PIXI.Text;
   private layout: NodeLayout;
+  private theme: CanvasTheme;
   private state: NodeVisualState = DEFAULT_VISUAL_STATE;
   private lastTitle: string | null = null;
 
-  constructor(node: GraphNode, layout: NodeLayout) {
+  constructor(node: GraphNode, layout: NodeLayout, theme: CanvasTheme) {
     this.id = node.id;
     this.container = new PIXI.Container();
     this.body = new PIXI.Graphics();
@@ -65,7 +49,7 @@ export class NodeView {
       style: {
         fontFamily: "Space Grotesk, ui-sans-serif, system-ui, sans-serif",
         fontSize: 11,
-        fill: HEADER_TEXT,
+        fill: theme.node.headerText,
       },
     });
     this.titleText.anchor.set(0, 0.5);
@@ -74,7 +58,7 @@ export class NodeView {
       style: {
         fontFamily: "Space Grotesk, ui-sans-serif, system-ui, sans-serif",
         fontSize: 10,
-        fill: HEADER_TEXT,
+        fill: theme.node.headerText,
       },
     });
     this.toggleText.anchor.set(0.5);
@@ -85,16 +69,19 @@ export class NodeView {
     this.container.addChild(this.titleText);
     this.container.addChild(this.toggleText);
     this.layout = layout;
-    this.update(node, layout);
+    this.theme = theme;
+    this.update(node, layout, DEFAULT_VISUAL_STATE, theme);
   }
 
   update(
     node: GraphNode,
     layout: NodeLayout,
     state: NodeVisualState = DEFAULT_VISUAL_STATE,
+    theme: CanvasTheme = this.theme,
   ): void {
     this.layout = layout;
     this.state = state;
+    this.theme = theme;
     this.container.x = node.position.x;
     this.container.y = node.position.y;
     this.drawBody(node);
@@ -110,6 +97,7 @@ export class NodeView {
     const { width, height } = getNodeSize(node, this.layout);
     const { fillColor, strokeColor, strokeWidth } = resolveBodyStyle(
       this.state,
+      this.theme,
     );
     this.body.clear();
     if (this.layout.isRerouteNode?.(node)) {
@@ -138,10 +126,12 @@ export class NodeView {
       return;
     }
     this.sockets.clear();
-    const socketFill = this.state.bypassed ? SOCKET_BYPASSED_FILL : SOCKET_FILL;
+    const socketFill = this.state.bypassed
+      ? this.theme.node.socketBypassedFill
+      : this.theme.node.socketFill;
     const socketStroke = this.state.bypassed
-      ? SOCKET_BYPASSED_STROKE
-      : SOCKET_STROKE;
+      ? this.theme.node.socketBypassedStroke
+      : this.theme.node.socketStroke;
     const { width } = getNodeSize(node, this.layout);
     const startY =
       this.layout.headerHeight +
@@ -182,8 +172,12 @@ export class NodeView {
     this.toggleText.visible = true;
     const { width } = getNodeSize(node, this.layout);
     const headerHeight = this.layout.headerHeight;
-    const headerFill = this.state.bypassed ? HEADER_BYPASSED_FILL : HEADER_FILL;
-    const textColor = this.state.bypassed ? HEADER_TEXT_MUTED : HEADER_TEXT;
+    const headerFill = this.state.bypassed
+      ? this.theme.node.headerBypassedFill
+      : this.theme.node.headerFill;
+    const textColor = this.state.bypassed
+      ? this.theme.node.headerTextMuted
+      : this.theme.node.headerText;
     this.header.clear();
     this.header.rect(0, 0, width, headerHeight);
     this.header.fill(headerFill);
@@ -210,18 +204,19 @@ export class NodeView {
     const badgeY = headerHeight / 2;
     if (this.state.hasError) {
       this.headerIcons.circle(badgeX, badgeY, BADGE_RADIUS);
-      this.headerIcons.fill(BADGE_ERROR);
+      this.headerIcons.fill(this.theme.node.badgeError);
       badgeX -= BADGE_RADIUS * 2 + 4;
     }
     if (this.state.bypassed) {
       this.headerIcons.circle(badgeX, badgeY, BADGE_RADIUS);
-      this.headerIcons.fill(BADGE_BYPASS);
+      this.headerIcons.fill(this.theme.node.badgeBypass);
     }
   }
 }
 
 const resolveBodyStyle = (
   state: NodeVisualState,
+  theme: CanvasTheme,
 ): {
   fillColor: number;
   strokeColor: number;
@@ -229,35 +224,35 @@ const resolveBodyStyle = (
 } => {
   if (state.hasError) {
     return {
-      fillColor: state.bypassed ? NODE_BYPASSED_FILL : NODE_FILL,
-      strokeColor: NODE_ERROR_STROKE,
+      fillColor: state.bypassed ? theme.node.bypassedFill : theme.node.fill,
+      strokeColor: theme.node.errorStroke,
       strokeWidth: 3,
     };
   }
   if (state.selected) {
     return {
-      fillColor: state.bypassed ? NODE_BYPASSED_FILL : NODE_FILL,
-      strokeColor: NODE_SELECTED_STROKE,
+      fillColor: state.bypassed ? theme.node.bypassedFill : theme.node.fill,
+      strokeColor: theme.node.selectedStroke,
       strokeWidth: 3,
     };
   }
   if (state.hovered) {
     return {
-      fillColor: state.bypassed ? NODE_BYPASSED_FILL : NODE_FILL,
-      strokeColor: NODE_HOVER_STROKE,
+      fillColor: state.bypassed ? theme.node.bypassedFill : theme.node.fill,
+      strokeColor: theme.node.hoveredStroke,
       strokeWidth: 2,
     };
   }
   if (state.bypassed) {
     return {
-      fillColor: NODE_BYPASSED_FILL,
-      strokeColor: NODE_BYPASSED_STROKE,
+      fillColor: theme.node.bypassedFill,
+      strokeColor: theme.node.bypassedStroke,
       strokeWidth: 2,
     };
   }
   return {
-    fillColor: NODE_FILL,
-    strokeColor: NODE_STROKE,
+    fillColor: theme.node.fill,
+    strokeColor: theme.node.stroke,
     strokeWidth: 2,
   };
 };

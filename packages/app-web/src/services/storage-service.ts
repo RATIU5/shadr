@@ -3,8 +3,10 @@ import type { StorageError } from "@shadr/storage-idb";
 import {
   loadGraphDocument as loadGraphDocumentStorage,
   loadSettings as loadSettingsStorage,
+  loadUiState as loadUiStateStorage,
   saveGraphDocument as saveGraphDocumentStorage,
   saveSettings as saveSettingsStorage,
+  saveUiState as saveUiStateStorage,
 } from "@shadr/storage-idb";
 import { Context, Effect, Layer } from "effect";
 
@@ -18,6 +20,8 @@ export type StorageServiceApi = Readonly<{
   ) => Effect.Effect<void, StorageError>;
   loadSettings: () => Effect.Effect<JsonObject | null, StorageError>;
   saveSettings: (_settings: JsonObject) => Effect.Effect<void, StorageError>;
+  loadUiState: () => Effect.Effect<JsonObject | null, StorageError>;
+  saveUiState: (_uiState: JsonObject) => Effect.Effect<void, StorageError>;
 }>;
 /* eslint-enable no-unused-vars */
 
@@ -31,6 +35,8 @@ export const StorageServiceLive = Layer.succeed(StorageService, {
   saveGraphDocument: saveGraphDocumentStorage,
   loadSettings: loadSettingsStorage,
   saveSettings: saveSettingsStorage,
+  loadUiState: loadUiStateStorage,
+  saveUiState: saveUiStateStorage,
 });
 
 export const loadGraphDocument = (
@@ -56,3 +62,11 @@ export const saveSettings = (
   settings: JsonObject,
 ): Effect.Effect<void, StorageError> =>
   Effect.flatMap(StorageService, (service) => service.saveSettings(settings));
+
+export const loadUiState = (): Effect.Effect<JsonObject | null, StorageError> =>
+  Effect.flatMap(StorageService, (service) => service.loadUiState());
+
+export const saveUiState = (
+  uiState: JsonObject,
+): Effect.Effect<void, StorageError> =>
+  Effect.flatMap(StorageService, (service) => service.saveUiState(uiState));

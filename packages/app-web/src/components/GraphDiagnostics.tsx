@@ -49,15 +49,17 @@ const formatTimestamp = (timestamp: number): string =>
 
 export default function GraphDiagnostics(props: GraphDiagnosticsProps) {
   const card =
-    "rounded-xl border border-[rgba(120,150,190,0.2)] bg-[rgba(9,13,21,0.9)] px-[0.75rem] py-[0.7rem]";
-  const cardTitle = "text-[0.7rem] uppercase tracking-[0.08em] text-[#9aa8c7]";
+    "rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel)] px-[0.75rem] py-[0.7rem]";
+  const cardTitle =
+    "text-[0.7rem] uppercase tracking-[0.08em] text-[color:var(--text-muted)]";
   const itemRow = "flex items-center justify-between gap-2";
-  const itemLabel = "text-[0.8rem] text-[#9aa8c7]";
-  const itemValue = "text-[0.85rem] font-semibold text-[#dce6fb]";
+  const itemLabel = "text-[0.8rem] text-[color:var(--text-muted)]";
+  const itemValue =
+    "text-[0.85rem] font-semibold text-[color:var(--text-soft)]";
   const emptyState =
-    "rounded-xl border border-dashed border-[rgba(120,150,190,0.35)] bg-[rgba(10,13,22,0.6)] p-3 text-[0.85rem] text-[#9aa8c7]";
+    "rounded-xl border border-dashed border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] p-3 text-[0.85rem] text-[color:var(--text-muted)]";
   const devTag =
-    "rounded-full border border-[rgba(255,200,120,0.4)] bg-[rgba(255,200,120,0.12)] px-[0.55rem] py-[0.2rem] text-[0.7rem] uppercase tracking-[0.08em] text-[#ffe6c7]";
+    "rounded-full border border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] px-[0.55rem] py-[0.2rem] text-[0.7rem] uppercase tracking-[0.08em] text-[color:var(--status-warn-text)]";
 
   const counts = createMemo(() => {
     let inputSockets = 0;
@@ -150,10 +152,10 @@ export default function GraphDiagnostics(props: GraphDiagnosticsProps) {
     <div class="flex flex-col gap-3">
       <div class="flex items-center justify-between gap-2">
         <div>
-          <h3 class="text-[0.85rem] uppercase tracking-[0.08em] text-[#9aa8c7]">
+          <h3 class="text-[0.85rem] uppercase tracking-[0.08em] text-[color:var(--text-muted)]">
             Graph Diagnostics
           </h3>
-          <p class="mt-1 text-[0.8rem] text-[#9aa8c7]">
+          <p class="mt-1 text-[0.8rem] text-[color:var(--text-muted)]">
             Dev-only snapshot of graph and execution state.
           </p>
         </div>

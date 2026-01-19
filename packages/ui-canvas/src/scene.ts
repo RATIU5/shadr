@@ -23,6 +23,7 @@ import {
   type NodeLayout,
 } from "./layout.js";
 import { NodeView } from "./node-view.js";
+import { type CanvasTheme, darkCanvasTheme } from "./theme.js";
 import type { Point, Size } from "./types.js";
 import { getBezierPoint, getWireControlPoints } from "./wire-geometry.js";
 import { WireBatchView } from "./wire-view.js";
@@ -30,6 +31,7 @@ import { WireBatchView } from "./wire-view.js";
 export type CanvasSceneOptions = Readonly<{
   layout?: NodeLayout;
   hitTest?: HitTestConfig;
+  theme?: CanvasTheme;
 }>;
 
 export type FrameOptions = Readonly<{
@@ -80,7 +82,6 @@ export type HitTestResult =
     }>;
 
 const WIRE_CULL_PADDING = 24;
-const DEFAULT_WIRE_COLOR = 0x4d7cff;
 const DEFAULT_HIT_TEST_CONFIG: Required<HitTestConfig> = {
   socketRadius: 10,
   wireDistance: 6,
@@ -98,14 +99,16 @@ export class CanvasScene {
   private readonly camera: Camera2D;
   private graph: Graph | null = null;
   private readonly hitTestConfig: Required<HitTestConfig>;
+  private theme: CanvasTheme;
 
   constructor(options: CanvasSceneOptions = {}) {
     this.layers = createSceneLayers();
     this.root = this.layers.root;
     this.layout = options.layout ?? defaultNodeLayout;
     this.hitTestConfig = { ...DEFAULT_HIT_TEST_CONFIG, ...options.hitTest };
+    this.theme = options.theme ?? darkCanvasTheme;
     this.camera = new Camera2D();
-    this.wireView = new WireBatchView();
+    this.wireView = new WireBatchView(this.theme.wire.defaultColor);
     this.layers.wires.addChild(this.wireView.normalGraphics);
     this.layers.wires.addChild(this.wireView.selectedGraphics);
     this.layers.wires.addChild(this.wireView.hoveredGraphics);
@@ -118,6 +121,11 @@ export class CanvasScene {
 
   setLayout(layout: NodeLayout): void {
     this.layout = layout;
+  }
+
+  setTheme(theme: CanvasTheme): void {
+    this.theme = theme;
+    this.wireView.setDefaultColor(theme.wire.defaultColor);
   }
 
   setViewportSize(size: Size, options?: ViewportSizeOptions): void {
@@ -198,17 +206,22 @@ export class CanvasScene {
       seenNodes.add(node.id);
       let view = this.nodeViews.get(node.id);
       if (!view) {
-        view = new NodeView(node, this.layout);
+        view = new NodeView(node, this.layout, this.theme);
         this.nodeViews.set(node.id, view);
         this.layers.nodes.addChild(view.container);
       }
-      view.update(node, this.layout, {
-        selected: selectedNodes.has(node.id),
-        hovered: hoveredNodeId === node.id,
-        bypassed: bypassedNodes.has(node.id),
-        hasError: errorNodes.has(node.id),
-        collapsed: collapsedNodes.has(node.id),
-      });
+      view.update(
+        node,
+        this.layout,
+        {
+          selected: selectedNodes.has(node.id),
+          hovered: hoveredNodeId === node.id,
+          bypassed: bypassedNodes.has(node.id),
+          hasError: errorNodes.has(node.id),
+          collapsed: collapsedNodes.has(node.id),
+        },
+        this.theme,
+      );
       view.container.visible = intersectsBounds(
         worldBounds,
         getNodeBounds(node, this.layout),
@@ -241,7 +254,7 @@ export class CanvasScene {
       }
       this.visibleWires.add(wire.id);
       this.wireView.drawWire(from, to, {
-        color: getWireColor(graph, wire),
+        color: getWireColor(graph, wire, this.theme.wire.defaultColor),
         selected: selectedWires.has(wire.id),
         hovered: hoveredWireId === wire.id,
       });
@@ -537,11 +550,15 @@ const parseHexColor = (color: string): number | null => {
   return Number.isNaN(value) ? null : value;
 };
 
-const getWireColor = (graph: Graph, wire: GraphWire): number => {
+const getWireColor = (
+  graph: Graph,
+  wire: GraphWire,
+  fallback: number,
+): number => {
   const fromSocket = graph.sockets.get(wire.fromSocketId);
   const toSocket = graph.sockets.get(wire.toSocketId);
   const typeId = fromSocket?.dataType ?? toSocket?.dataType;
   const metadata = typeId ? getSocketTypeMetadata(typeId) : undefined;
   const parsed = metadata ? parseHexColor(metadata.color) : null;
-  return parsed ?? DEFAULT_WIRE_COLOR;
+  return parsed ?? fallback;
 };

@@ -222,6 +222,8 @@ If you see patterns suggesting otherwise, **they are wrong** and should be corre
 - Kobalte primitives should be imported from their subpaths (e.g. `@kobalte/core/number-field`) to avoid SSR "Comp is not a function" errors from namespace exports.
 - Subpath Kobalte modules should be imported as namespaces (e.g. `import * as NumberField from "@kobalte/core/number-field"`) to access `Root`/`Input` without SSR runtime errors.
 - `app-web` runs Effectful work through `runAppEffect*` helpers and service Layers (`GraphService`, `ExecService`, `StorageService`, `UiEventService`) instead of calling Effect runners directly in components.
+- Selection-driven control surfaces should batch history mutations so undo/redo stays consistent while keeping the overlay UI hidden when nothing is selected.
+- Pixi-based canvas components should be loaded with `clientOnly` to avoid SSR evaluation and ensure the canvas mounts on the client.
 
 ---
 

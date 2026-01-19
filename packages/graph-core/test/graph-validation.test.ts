@@ -271,12 +271,9 @@ describe("validateGraph", () => {
 describe("collectGraphWarnings", () => {
   it("warns on missing required inputs without defaults", () => {
     let graph = createGraph(makeGraphId("graph"));
-    const nodeA = createTestNode(
-      "A",
-      undefined,
-      undefined,
-      { input: { required: true } },
-    );
+    const nodeA = createTestNode("A", undefined, undefined, {
+      input: { required: true },
+    });
     const nodeB = createTestNode("B");
 
     graph = expectOk(addNode(graph, nodeA.node, nodeA.sockets));
@@ -302,12 +299,9 @@ describe("collectGraphWarnings", () => {
 
   it("does not warn when required input has a default", () => {
     let graph = createGraph(makeGraphId("graph"));
-    const nodeA = createTestNode(
-      "A",
-      undefined,
-      undefined,
-      { input: { required: true, defaultValue: 0 } },
-    );
+    const nodeA = createTestNode("A", undefined, undefined, {
+      input: { required: true, defaultValue: 0 },
+    });
     const nodeB = createTestNode("B");
 
     graph = expectOk(addNode(graph, nodeA.node, nodeA.sockets));

@@ -3,7 +3,6 @@ import * as PIXI from "pixi.js";
 import type { Point } from "./types.js";
 import { getWireControlPoints } from "./wire-geometry.js";
 
-const DEFAULT_WIRE_COLOR = 0x4d7cff;
 const WIRE_WIDTH = 2;
 const WIRE_SELECTED_WIDTH = 3;
 const WIRE_HOVER_WIDTH = 3;
@@ -36,11 +35,13 @@ export class WireBatchView {
   readonly normalGraphics: PIXI.Graphics;
   readonly selectedGraphics: PIXI.Graphics;
   readonly hoveredGraphics: PIXI.Graphics;
+  private defaultColor: number;
 
-  constructor() {
+  constructor(defaultColor: number) {
     this.normalGraphics = new PIXI.Graphics();
     this.selectedGraphics = new PIXI.Graphics();
     this.hoveredGraphics = new PIXI.Graphics();
+    this.defaultColor = defaultColor;
   }
 
   begin(): void {
@@ -50,7 +51,7 @@ export class WireBatchView {
   }
 
   drawWire(from: Point, to: Point, options: WireDrawOptions = {}): void {
-    const color = options.color ?? DEFAULT_WIRE_COLOR;
+    const color = options.color ?? this.defaultColor;
     const selected = options.selected ?? false;
     const hovered = options.hovered ?? false;
     const graphics = hovered
@@ -75,6 +76,10 @@ export class WireBatchView {
   }
 
   end(): void {}
+
+  setDefaultColor(color: number): void {
+    this.defaultColor = color;
+  }
 
   setVisible(visible: boolean): void {
     this.normalGraphics.visible = visible;

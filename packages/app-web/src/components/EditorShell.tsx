@@ -1,44 +1,56 @@
-import * as Dialog from "@kobalte/core/dialog";
 import * as Toast from "@kobalte/core/toast";
-import { isDirty } from "@shadr/exec-engine";
-import type { GraphSocket, SocketId, WireId } from "@shadr/graph-core";
-import { graphToDocumentV1 } from "@shadr/graph-core";
-import type { JsonValue } from "@shadr/shared";
+import { graphToDocumentV1, type NodeId, type WireId } from "@shadr/graph-core";
+import type { GraphId } from "@shadr/shared";
+import { clientOnly } from "@solidjs/start";
 import { Either } from "effect";
+import {
+  CircleDot,
+  EyeOff,
+  Minimize2,
+  Redo2,
+  Sparkles,
+  Trash2,
+  Undo2,
+  X,
+} from "lucide-solid";
 import {
   createEffect,
   createMemo,
   createSignal,
-  For,
   onCleanup,
   onMount,
 } from "solid-js";
 
-import EditorCanvas from "~/components/EditorCanvas";
-import ExecDebugConsole from "~/components/ExecDebugConsole";
-import GraphDiagnostics from "~/components/GraphDiagnostics";
-import ParamEditor from "~/components/ParamEditor";
+import CommandPalette, {
+  type CommandPaletteEntry,
+} from "~/components/CommandPalette";
+import { downloadTextFile } from "~/editor/download";
 import {
-  getNodeCatalogEntry,
-  NODE_CATALOG,
-  NODE_DRAG_TYPE,
-} from "~/editor/node-catalog";
-import type { OutputArtifact } from "~/editor/output-artifacts";
+  formatGraphImportError,
+  graphDocumentToJson,
+  parseGraphDocumentJson,
+} from "~/editor/graph-io";
+import {
+  createRemoveNodeCommand,
+  createRemoveWireCommand,
+  type GraphCommand,
+} from "~/editor/history";
+import { getNodeCatalogEntry, NODE_CATALOG } from "~/editor/node-catalog";
 import {
   compileOutputArtifact,
   downloadOutputArtifact,
   isOutputNodeType,
+  type OutputArtifact,
+  type OutputNodeType,
 } from "~/editor/output-artifacts";
-import {
-  coerceSettings,
-  type EditorSettings,
-  MAX_PAN_SENSITIVITY,
-  MAX_ZOOM_SENSITIVITY,
-  MIN_PAN_SENSITIVITY,
-  MIN_ZOOM_SENSITIVITY,
-  settingsToJson,
-} from "~/editor/settings";
+import { coerceSettings, settingsToJson } from "~/editor/settings";
 import { createEditorStore } from "~/editor/store";
+import {
+  coerceUiState,
+  DEFAULT_UI_STATE,
+  type EditorUiState,
+  uiStateToJson,
+} from "~/editor/ui-state";
 import {
   createAppLayer,
   runAppEffect,
@@ -47,417 +59,123 @@ import {
 import {
   loadGraphDocument as loadGraphDocumentEffect,
   loadSettings as loadSettingsEffect,
+  loadUiState as loadUiStateEffect,
   saveGraphDocument as saveGraphDocumentEffect,
   saveSettings as saveSettingsEffect,
+  saveUiState as saveUiStateEffect,
 } from "~/services/storage-service";
 import {
   createUiEventServiceLayer,
   notifyUi,
 } from "~/services/ui-event-service";
 
-const formatPreviewValue = (value: unknown): string => {
-  if (value === null) {
-    return "null";
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  if (typeof value === "string") {
-    return `"${value}"`;
-  }
-  return JSON.stringify(value);
-};
-
-const formatExecError = (error: unknown): string => {
-  if (typeof error === "object" && error !== null && "_tag" in error) {
-    const tagValue = (error as { _tag: string })._tag;
-    return typeof tagValue === "string" ? tagValue : "UnknownError";
-  }
-  return "UnknownError";
-};
-
-const scoreFuzzyToken = (source: string, token: string): number => {
-  let score = 0;
-  let index = 0;
-  let streak = 0;
-  for (const char of token) {
-    const found = source.indexOf(char, index);
-    if (found === -1) {
-      return -1;
-    }
-    if (found === index) {
-      streak += 1;
-      score += 3 + streak;
-    } else {
-      streak = 0;
-      score += 1;
-    }
-    index = found + 1;
-  }
-  return score;
-};
-
-const scoreFuzzy = (source: string, query: string): number => {
-  const tokens = query.split(/\s+/u).filter((token) => token.length > 0);
-  if (tokens.length === 0) {
-    return 0;
-  }
-  const lowered = source.toLowerCase();
-  let total = 0;
-  for (const token of tokens) {
-    const tokenScore = scoreFuzzyToken(lowered, token);
-    if (tokenScore < 0) {
-      return -1;
-    }
-    total += tokenScore;
-  }
-  return total;
-};
+const EditorCanvas = clientOnly(() => import("~/components/EditorCanvas"));
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max);
 
-type OutputPanelState =
-  | Readonly<{ status: "idle"; message: string }>
-  | Readonly<{ status: "error"; message: string }>
-  | Readonly<{ status: "ready"; artifact: OutputArtifact }>;
+const formatExecError = (error: unknown): string => {
+  if (typeof error === "object" && error !== null && "_tag" in error) {
+    const tagValue = (error as { _tag: string })._tag;
+    return typeof tagValue === "string" ? tagValue : "ExecutionError";
+  }
+  return "ExecutionError";
+};
 
 export default function EditorShell() {
   const toaster = Toast.toaster;
   const store = createEditorStore();
-  const isDev = import.meta.env.DEV;
   const [isLoaded, setIsLoaded] = createSignal(false);
   const [settingsLoaded, setSettingsLoaded] = createSignal(false);
-  const [libraryQuery, setLibraryQuery] = createSignal("");
-  const [quickAddOpen, setQuickAddOpen] = createSignal(false);
-  const [quickAddQuery, setQuickAddQuery] = createSignal("");
-  let quickAddInput: HTMLInputElement | undefined;
+  const [uiStateLoaded, setUiStateLoaded] = createSignal(false);
+  const [pendingUiState, setPendingUiState] =
+    createSignal<EditorUiState | null>(null);
+  const [recentGraphIds, setRecentGraphIds] = createSignal<
+    ReadonlyArray<GraphId>
+  >(DEFAULT_UI_STATE.recentGraphIds);
 
-  const selectedNode = createMemo(() => {
-    const graph = store.graph();
-    const iterator = store.selectedNodes().values();
-    const first = iterator.next().value;
-    if (!first) {
-      return null;
-    }
-    return graph.nodes.get(first) ?? null;
-  });
+  type AutosaveStatus = "idle" | "saving" | "saved" | "error";
+  const [autosaveStatus, setAutosaveStatus] =
+    createSignal<AutosaveStatus>("idle");
+  type OutputStatus = "idle" | "running" | "ready" | "error";
+  const [outputStatus, setOutputStatus] = createSignal<OutputStatus>("idle");
+  const [outputArtifact, setOutputArtifact] =
+    createSignal<OutputArtifact | null>(null);
+  const [outputMessage, setOutputMessage] = createSignal<string | null>(null);
 
-  const selectedEntry = createMemo(() => {
-    const node = selectedNode();
-    if (!node) {
-      return null;
-    }
-    return getNodeCatalogEntry(node.type) ?? null;
-  });
+  const isDirtyGraph = createMemo(() => store.dirtyState().dirty.size > 0);
+  const selectionCount = createMemo(
+    () => store.selectedNodes().size + store.selectedWires().size,
+  );
+  const isEmptyGraph = createMemo(() => store.graph().nodes.size === 0);
+  const gridVisible = createMemo(() => store.settings().gridVisible);
+  const snapToGrid = createMemo(() => store.settings().snapToGrid);
 
-  const selectedOutputNode = createMemo(() => {
-    const node = selectedNode();
-    if (!node || !isOutputNodeType(node.type)) {
-      return null;
-    }
-    return node;
-  });
+  const statusBase =
+    "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.18em]";
+  const statusWarn =
+    "border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] text-[color:var(--status-warn-text)]";
+  const statusInfo =
+    "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]";
+  const statusSuccess =
+    "border-[color:var(--status-success-border)] bg-[color:var(--status-success-bg)] text-[color:var(--status-success-text)]";
+  const statusDanger =
+    "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-text)]";
+  const statusMuted =
+    "border-[color:var(--status-muted-border)] bg-[color:var(--status-muted-bg)] text-[color:var(--status-muted-text)]";
+  const appBadge =
+    "pointer-events-auto inline-flex items-center gap-2 rounded-full border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--app-text)]";
+  const historyButtonBase =
+    "pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.55rem] uppercase tracking-[0.18em] transition";
+  const historyButtonActive =
+    "border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] text-[color:var(--app-text)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-strong)]";
+  const historyButtonDisabled =
+    "cursor-not-allowed border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-soft)] text-[color:var(--text-muted)]";
+  const overlayRoot = "pointer-events-none absolute inset-0";
+  const controlMenuRoot =
+    "pointer-events-auto flex w-[min(92vw,720px)] flex-col gap-2 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] px-3 py-2 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[35vh] overflow-y-auto";
+  const controlMenuTitle =
+    "text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
+  const controlMenuValue = "text-[0.8rem] text-[color:var(--text-strong)]";
+  const controlMenuButton =
+    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.2em] transition disabled:cursor-not-allowed disabled:opacity-50";
+  const controlMenuMuted =
+    "border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] text-[color:var(--app-text)] hover:border-[color:var(--border-strong)]";
+  const controlMenuInfo =
+    "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)] hover:border-[color:var(--status-info-border)]";
+  const controlMenuWarn =
+    "border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] text-[color:var(--status-warn-text)] hover:border-[color:var(--status-warn-border)]";
+  const controlMenuDanger =
+    "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-text)] hover:border-[color:var(--status-danger-border)]";
 
-  const inspectorRows = createMemo(() => {
-    const node = selectedNode();
-    if (!node) {
-      return [
-        { label: "Node", value: "None selected" },
-        { label: "Inputs", value: "0" },
-        { label: "Outputs", value: "0" },
-        { label: "Status", value: "Idle" },
-      ];
-    }
-    const status = isDirty(store.dirtyState(), node.id) ? "Dirty" : "Clean";
-    return [
-      { label: "Node", value: selectedEntry()?.label ?? node.type },
-      { label: "Inputs", value: String(node.inputs.length) },
-      { label: "Outputs", value: String(node.outputs.length) },
-      { label: "Status", value: status },
-    ];
-  });
+  const sidePanelRoot =
+    "pointer-events-auto flex w-[min(92vw,320px)] flex-col gap-3 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-3 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[70vh] overflow-y-auto";
+  const sidePanelTitle =
+    "text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
+  const sidePanelValue = "text-[0.85rem] text-[color:var(--text-strong)]";
+  const sidePanelChip =
+    "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em]";
+  const sidePanelRow =
+    "flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1 text-[0.7rem]";
+  const sidePanelMuted =
+    "border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] text-[color:var(--text-soft)]";
+  const sidePanelInfo =
+    "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]";
+  const sidePanelWarn =
+    "border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] text-[color:var(--status-warn-text)]";
+  const sidePanelDanger =
+    "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-text)]";
+  const sidePanelSuccess =
+    "border-[color:var(--status-success-border)] bg-[color:var(--status-success-bg)] text-[color:var(--status-success-text)]";
 
-  const inspectorSockets = createMemo(() => {
-    const node = selectedNode();
-    if (!node) {
-      return [];
-    }
-    const graph = store.graph();
-    const state = store.dirtyState();
-
-    const getCachedOutputValue = (
-      socket: GraphSocket,
-    ): JsonValue | null | undefined => {
-      const outputs = state.outputCache.get(socket.nodeId);
-      if (
-        !outputs ||
-        !Object.prototype.hasOwnProperty.call(outputs, socket.name)
-      ) {
-        return undefined;
-      }
-      return outputs[socket.name] ?? null;
-    };
-
-    const findInputWire = (socketId: SocketId): WireId | null => {
-      for (const wire of graph.wires.values()) {
-        if (wire.toSocketId === socketId) {
-          return wire.id;
-        }
-      }
-      return null;
-    };
-
-    const getSocketValueLabel = (socket: GraphSocket): string => {
-      if (socket.direction === "output") {
-        const cached = getCachedOutputValue(socket);
-        return cached === undefined
-          ? "No cached value"
-          : formatPreviewValue(cached);
-      }
-      const wireId = findInputWire(socket.id);
-      if (!wireId) {
-        return "Unconnected";
-      }
-      const wire = graph.wires.get(wireId);
-      const fromSocket = wire ? graph.sockets.get(wire.fromSocketId) : null;
-      if (!fromSocket) {
-        return "Unconnected";
-      }
-      const cached = getCachedOutputValue(fromSocket);
-      return cached === undefined
-        ? "No cached value"
-        : formatPreviewValue(cached);
-    };
-
-    const sockets: GraphSocket[] = [];
-    for (const socketId of [...node.inputs, ...node.outputs]) {
-      const socket = graph.sockets.get(socketId);
-      if (socket) {
-        sockets.push(socket);
-      }
-    }
-    return sockets.map((socket) => ({
-      id: socket.id,
-      name: socket.name,
-      direction: socket.direction,
-      dataType: socket.dataType,
-      valueLabel: getSocketValueLabel(socket),
-    }));
-  });
-
-  const outputPanelState = createMemo<OutputPanelState>(() => {
-    const node = selectedOutputNode();
-    if (!node) {
-      return {
-        status: "idle",
-        message: "Select an output node to compile an artifact.",
-      };
-    }
-    const outputSocketId = node.outputs[0];
-    if (!outputSocketId) {
-      return { status: "idle", message: "Output node has no output socket." };
-    }
-    if (store.activeOutputSocketId() !== outputSocketId) {
-      return { status: "idle", message: "Compile to generate output." };
-    }
-    const error = store.outputError();
-    if (error) {
-      return { status: "error", message: `Error: ${formatExecError(error)}` };
-    }
-    const result = compileOutputArtifact(node.type, store.outputValue());
-    if (result.error) {
-      return { status: "error", message: result.error };
-    }
-    if (!result.artifact) {
-      return { status: "idle", message: "No output value yet." };
-    }
-    return { status: "ready", artifact: result.artifact };
-  });
-
-  const selectQuickAddEntry = (nodeType: string): void => {
-    const pointer = store.pointerPosition();
-    const worldPoint = pointer?.world ?? store.canvasCenter();
-    store.addNodeAt(nodeType, worldPoint);
-    setQuickAddOpen(false);
-    setQuickAddQuery("");
-  };
-
-  const isEditableTarget = (target: EventTarget | null): boolean =>
-    target instanceof HTMLElement &&
-    (target.isContentEditable ||
-      target.tagName === "INPUT" ||
-      target.tagName === "TEXTAREA" ||
-      target.tagName === "SELECT");
-
-  createEffect(() => {
-    if (!quickAddOpen() || typeof window === "undefined") {
-      return;
-    }
-    setQuickAddQuery("");
-    window.requestAnimationFrame(() => {
-      quickAddInput?.focus();
-    });
-  });
-
-  const filteredCatalog = createMemo(() => {
-    const query = libraryQuery().trim().toLowerCase();
-    if (!query) {
-      return NODE_CATALOG;
-    }
-    const ranked = NODE_CATALOG.map((entry) => ({
-      entry,
-      score: scoreFuzzy(
-        `${entry.label} ${entry.type} ${entry.description}`,
-        query,
-      ),
-    }))
-      .filter((result) => result.score >= 0)
-      .sort((a, b) => {
-        if (a.score !== b.score) {
-          return b.score - a.score;
-        }
-        return a.entry.label.localeCompare(b.entry.label);
-      });
-    return ranked.map((result) => result.entry);
-  });
-
-  const filteredQuickAdd = createMemo(() => {
-    const query = quickAddQuery().trim().toLowerCase();
-    if (!query) {
-      return NODE_CATALOG;
-    }
-    const ranked = NODE_CATALOG.map((entry) => ({
-      entry,
-      score: scoreFuzzy(
-        `${entry.label} ${entry.type} ${entry.description}`,
-        query,
-      ),
-    }))
-      .filter((result) => result.score >= 0)
-      .sort((a, b) => {
-        if (a.score !== b.score) {
-          return b.score - a.score;
-        }
-        return a.entry.label.localeCompare(b.entry.label);
-      });
-    return ranked.map((result) => result.entry);
-  });
-
-  const quickAddPosition = createMemo(() => {
-    const pointer = store.pointerPosition();
-    if (!pointer) {
-      return {
-        left: "50%",
-        top: "30%",
-        transform: "translate(-50%, 0)",
-      };
-    }
-    const x = Math.round(pointer.screen.x);
-    const y = Math.round(pointer.screen.y);
-    return {
-      left: `clamp(16px, ${x}px, calc(100vw - 360px))`,
-      top: `clamp(16px, ${y}px, calc(100vh - 280px))`,
-      transform: "translate(12px, 12px)",
-    };
-  });
-
-  const updateSetting = <Key extends keyof EditorSettings>(
-    key: Key,
-    value: EditorSettings[Key],
-  ): void => {
-    store.updateSettings({ [key]: value } as Partial<EditorSettings>);
-  };
-
-  const updateNumericSetting = (
-    key: "zoomSensitivity" | "panSensitivity",
-    min: number,
-    max: number,
-  ) => {
-    return (event: InputEvent): void => {
-      const next = Number(event.currentTarget.value);
-      if (!Number.isFinite(next)) {
-        return;
-      }
-      updateSetting(key, clamp(next, min, max));
-    };
-  };
-
-  const ghostButtonBase =
-    "cursor-pointer rounded-full border border-[rgba(130,160,200,0.35)] bg-[rgba(12,16,28,0.7)] px-[0.85rem] py-[0.4rem] text-[0.75rem] uppercase tracking-[0.08em] text-[#d5def2] transition disabled:cursor-not-allowed disabled:opacity-50";
-  const ghostButtonPrimary = `${ghostButtonBase} border-[rgba(91,228,255,0.6)] text-[#e6fbff] shadow-[0_0_12px_rgba(91,228,255,0.18)]`;
-  const statusPillBase =
-    "rounded-full border border-[rgba(130,160,200,0.35)] bg-[rgba(12,16,28,0.9)] px-[0.65rem] py-[0.3rem] text-[0.75rem] uppercase tracking-[0.08em] text-[#cdd7ef]";
-  const statusPillOk = `${statusPillBase} border-[rgba(91,228,255,0.5)] text-[#e4fbff] shadow-[0_0_16px_rgba(91,228,255,0.2)]`;
-  const panelBase =
-    "flex min-h-0 flex-col gap-[0.85rem] rounded-[1rem] border border-[rgba(120,150,190,0.24)] bg-[rgba(10,14,24,0.88)] p-4 shadow-[inset_0_0_24px_rgba(91,228,255,0.05)]";
-  const panelTag =
-    "self-start rounded-full border border-[rgba(91,228,255,0.3)] bg-[rgba(91,228,255,0.12)] px-[0.6rem] py-[0.25rem] text-[0.7rem] uppercase tracking-[0.08em] text-[#d9f8ff]";
-  const panelInput =
-    "w-full rounded-xl border border-[rgba(120,150,190,0.3)] bg-[rgba(10,13,22,0.9)] px-[0.75rem] py-[0.55rem] text-[0.9rem] text-[#d9e3fb] placeholder:text-[rgba(154,168,199,0.7)]";
-  const panelItem =
-    "flex items-center justify-between rounded-xl border border-[rgba(120,150,190,0.2)] bg-[rgba(9,13,21,0.9)] px-[0.75rem] py-[0.6rem] text-left text-[#dce6fb]";
-  const panelItemMeta =
-    "text-[0.7rem] uppercase tracking-[0.08em] text-[#9aa8c7]";
-  const panelRow =
-    "flex items-center justify-between border-b border-[rgba(120,150,190,0.15)] px-[0.2rem] py-[0.45rem] text-[0.85rem] last:border-b-0";
-  const panelRowLabel = "text-[#9aa8c7]";
-  const panelRowValue = "font-semibold";
-  const panelPlaceholder =
-    "mt-auto rounded-xl border border-dashed border-[rgba(120,150,190,0.35)] bg-[rgba(10,13,22,0.6)] p-3 text-[0.85rem] text-[#9aa8c7]";
-  const panelSection =
-    "mt-auto flex flex-col gap-[0.65rem] border-t border-[rgba(120,150,190,0.2)] pt-2";
-  const panelSocketList = "flex flex-col gap-2";
-  const panelSocketRow =
-    "flex items-start justify-between gap-3 rounded-xl border border-[rgba(120,150,190,0.2)] bg-[rgba(9,13,21,0.9)] px-[0.75rem] py-[0.6rem]";
-  const panelSocketMeta =
-    "text-[0.7rem] uppercase tracking-[0.08em] text-[#9aa8c7]";
-  const panelSocketValue =
-    "text-right text-[0.8rem] font-semibold text-[#dce6fb]";
-  const panelSocketEmpty =
-    "rounded-xl border border-dashed border-[rgba(120,150,190,0.35)] bg-[rgba(10,13,22,0.6)] p-3 text-[0.85rem] text-[#9aa8c7]";
-  const panelPreviewBase =
-    "flex min-h-[2.2rem] items-center rounded-xl border border-[rgba(120,150,190,0.25)] bg-[rgba(9,13,21,0.85)] px-[0.75rem] py-[0.6rem] text-[0.85rem] text-[#dce6fb]";
-  const panelPreviewError =
-    "border-[rgba(255,107,107,0.55)] bg-[rgba(60,15,20,0.6)] text-[#ff9b9b]";
-  const panelPreviewBody = "flex flex-1 flex-col gap-3";
-  const panelPreviewText =
-    "whitespace-pre-wrap break-words font-mono text-[0.82rem] text-[#dce6fb]";
-  const panelPreviewImage =
-    "w-full rounded-xl border border-[rgba(120,150,190,0.25)] bg-[rgba(4,6,12,0.6)] object-contain";
-  const panelSettingRow = "flex items-center justify-between gap-3";
-  const panelSettingLabel = "text-[0.85rem] text-[#d5def2]";
-  const panelSettingValue = "w-12 text-right text-[0.75rem] text-[#9aa8c7]";
-  const panelRange =
-    "h-2 w-full appearance-none rounded-full bg-[rgba(120,150,190,0.18)]";
-  const panelRangeThumb = "accent-[#7bf1ff] focus:accent-[#7bf1ff]";
-  const panelCheckbox = "h-4 w-4 accent-[#7bf1ff] focus:accent-[#7bf1ff]";
-  const toastRegion = "fixed right-6 top-6 z-30 w-[min(320px,90vw)]";
-  const toastList = "flex flex-col gap-3";
+  const toastRegion = "fixed right-4 top-4 z-30 w-[min(280px,90vw)]";
+  const toastList = "flex flex-col gap-2";
   const toastRoot =
-    "flex items-start justify-between gap-3 rounded-[0.9rem] border border-[rgba(91,228,255,0.35)] bg-[rgba(10,14,24,0.96)] px-[0.9rem] py-[0.8rem] shadow-[0_16px_36px_rgba(3,6,15,0.55)]";
-  const toastTitle = "text-[0.9rem] font-semibold";
-  const toastDescription = "mt-1 text-[0.8rem] text-[#9aa8c7]";
+    "flex items-start justify-between gap-3 rounded-[0.9rem] border border-[color:var(--status-info-border)] bg-[color:var(--surface-panel-strong)] px-3 py-2 text-[0.85rem] text-[color:var(--app-text)] shadow-[var(--shadow-toast)]";
+  const toastTitle = "text-[0.8rem] font-semibold uppercase tracking-[0.14em]";
+  const toastDescription = "mt-1 text-[0.8rem] text-[color:var(--text-muted)]";
   const toastClose =
-    "cursor-pointer rounded-full border border-[rgba(120,150,190,0.35)] bg-transparent px-[0.6rem] py-[0.2rem] text-[0.65rem] uppercase tracking-[0.1em] text-[#d8e2f7]";
-  const quickAddOverlay =
-    "fixed inset-0 z-40 bg-[rgba(4,6,12,0.35)] backdrop-blur-[2px]";
-  const quickAddPanel =
-    "fixed z-50 w-[min(360px,90vw)] rounded-[1rem] border border-[rgba(120,150,190,0.45)] bg-[rgba(8,12,20,0.98)] p-4 shadow-[0_20px_40px_rgba(3,6,15,0.55)]";
-  const quickAddTitle =
-    "text-[0.85rem] uppercase tracking-[0.12em] text-[#a8b6d8]";
-  const quickAddKbd =
-    "rounded-full border border-[rgba(120,150,190,0.35)] bg-[rgba(9,13,21,0.7)] px-[0.5rem] py-[0.15rem] text-[0.65rem] uppercase tracking-[0.1em] text-[#9aa8c7]";
-  const quickAddInputField =
-    "mt-3 w-full rounded-xl border border-[rgba(120,150,190,0.3)] bg-[rgba(7,10,18,0.95)] px-[0.75rem] py-[0.55rem] text-[0.95rem] text-[#d9e3fb] placeholder:text-[rgba(154,168,199,0.7)]";
-  const quickAddList =
-    "mt-3 flex max-h-[260px] flex-col gap-2 overflow-auto pr-1";
-  const quickAddItem =
-    "flex w-full items-start justify-between gap-3 rounded-xl border border-[rgba(120,150,190,0.2)] bg-[rgba(9,13,21,0.85)] px-[0.75rem] py-[0.6rem] text-left text-[#e2ecff] transition hover:border-[rgba(91,228,255,0.5)] hover:text-[#f5fbff]";
-  const quickAddItemMeta =
-    "text-[0.7rem] uppercase tracking-[0.08em] text-[#9aa8c7]";
-  const quickAddEmpty =
-    "rounded-xl border border-dashed border-[rgba(120,150,190,0.35)] bg-[rgba(10,13,22,0.6)] p-3 text-[0.85rem] text-[#9aa8c7]";
+    "rounded-full border border-[color:var(--border-muted)] px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)]";
 
   const showToast = (title: string, description?: string): number =>
     toaster.show((props) => (
@@ -493,40 +211,106 @@ export default function EditorShell() {
     notifyToast("Nothing in view", "Press F to frame all nodes.");
   };
 
-  createEffect(() => {
-    const node = selectedOutputNode();
-    if (!node) {
-      return;
+  let importInput: HTMLInputElement | undefined;
+  let autosaveStatusTimer: number | null = null;
+  let uiStateSaveTimer: number | null = null;
+
+  const setAutosaveStatusWithTimeout = (
+    status: AutosaveStatus,
+    timeoutMs?: number,
+  ): void => {
+    setAutosaveStatus(status);
+    if (autosaveStatusTimer !== null) {
+      window.clearTimeout(autosaveStatusTimer);
     }
-    const outputSocketId = node.outputs[0];
-    if (outputSocketId && store.activeOutputSocketId() !== outputSocketId) {
-      store.requestOutput(outputSocketId);
+    if (timeoutMs !== undefined) {
+      autosaveStatusTimer = window.setTimeout(() => {
+        autosaveStatusTimer = null;
+        setAutosaveStatus("idle");
+      }, timeoutMs);
     }
-  });
+  };
+
+  const mergeRecentGraphIds = (
+    graphId: GraphId,
+    current: ReadonlyArray<GraphId>,
+  ): ReadonlyArray<GraphId> => {
+    const ordered: GraphId[] = [graphId];
+    for (const entry of current) {
+      if (entry !== graphId) {
+        ordered.push(entry);
+      }
+    }
+    return ordered.slice(0, 5);
+  };
+
+  const applyUiState = (state: EditorUiState): void => {
+    const graphSnapshot = store.graph();
+    const validNodes = (ids: ReadonlyArray<NodeId>): NodeId[] =>
+      ids.filter((id) => graphSnapshot.nodes.has(id));
+    const validWires = (ids: ReadonlyArray<WireId>): WireId[] =>
+      ids.filter((id) => graphSnapshot.wires.has(id));
+
+    store.setCanvasCenter(state.canvasCenter);
+    store.setBypassedNodes(new Set(validNodes(state.bypassedNodes)));
+    store.setCollapsedNodes(new Set(validNodes(state.collapsedNodes)));
+
+    const selectedNodes = validNodes(state.selectedNodes);
+    const selectedWires = validWires(state.selectedWires);
+    if (selectedNodes.length > 0) {
+      store.setNodeSelection(new Set(selectedNodes));
+    } else if (selectedWires.length > 0) {
+      store.setWireSelection(new Set(selectedWires));
+    } else {
+      store.clearSelection();
+    }
+  };
 
   onMount(() => {
-    const graphId = store.graph().graphId;
-    void runAppEffectEither(loadGraphDocumentEffect(graphId), appLayer).then(
-      (result) => {
-        if (Either.isLeft(result)) {
-          console.warn("Failed to load graph document", result.left);
-          notifyToast("Storage error", "Starting with a new graph session.");
-          setIsLoaded(true);
-          return;
-        }
-        const document = result.right;
-        if (document) {
-          const loaded = store.loadGraphDocument(document);
-          if (!loaded) {
-            notifyToast(
-              "Load failed",
-              "Stored graph was invalid and was discarded.",
+    void runAppEffectEither(loadUiStateEffect(), appLayer).then((uiResult) => {
+      let uiState = DEFAULT_UI_STATE;
+      if (Either.isLeft(uiResult)) {
+        console.warn("Failed to load UI state", uiResult.left);
+        notifyToast("Storage error", "UI layout reset.");
+      } else {
+        uiState = coerceUiState(uiResult.right);
+      }
+      setPendingUiState(uiState);
+      setRecentGraphIds(uiState.recentGraphIds);
+      const graphId = uiState.lastGraphId ?? store.graph().graphId;
+      void runAppEffectEither(loadGraphDocumentEffect(graphId), appLayer).then(
+        (result) => {
+          if (Either.isLeft(result)) {
+            console.warn("Failed to load graph document", result.left);
+            notifyToast("Storage error", "Starting with a new graph session.");
+            const initialUiState = pendingUiState() ?? uiState;
+            applyUiState(initialUiState);
+            setPendingUiState(null);
+            setRecentGraphIds((current) =>
+              mergeRecentGraphIds(store.graph().graphId, current),
             );
+            setIsLoaded(true);
+            setUiStateLoaded(true);
+            return;
           }
-        }
-        setIsLoaded(true);
-      },
-    );
+          const document = result.right;
+          if (document) {
+            const loaded = store.loadGraphDocument(document);
+            if (!loaded) {
+              notifyToast("Load failed", "Stored graph was invalid.");
+            }
+          }
+          const initialUiState = pendingUiState() ?? uiState;
+          applyUiState(initialUiState);
+          setPendingUiState(null);
+          setRecentGraphIds((current) =>
+            mergeRecentGraphIds(store.graph().graphId, current),
+          );
+          setIsLoaded(true);
+          setUiStateLoaded(true);
+        },
+      );
+    });
 
     let autosaveTimer: number | null = null;
     const scheduleAutosave = (): void => {
@@ -539,16 +323,17 @@ export default function EditorShell() {
       autosaveTimer = window.setTimeout(() => {
         autosaveTimer = null;
         const document = graphToDocumentV1(store.graph());
+        setAutosaveStatusWithTimeout("saving");
         void runAppEffectEither(
           saveGraphDocumentEffect(document),
           appLayer,
         ).then((saveResult) => {
           if (Either.isLeft(saveResult)) {
             console.warn("Autosave failed", saveResult.left);
-            notifyToast(
-              "Autosave failed",
-              "Changes are still local to this session.",
-            );
+            notifyToast("Autosave failed", "Changes stay local.");
+            setAutosaveStatusWithTimeout("error", 2200);
+          } else {
+            setAutosaveStatusWithTimeout("saved", 1400);
           }
         });
       }, 600);
@@ -563,12 +348,13 @@ export default function EditorShell() {
       if (autosaveTimer !== null) {
         window.clearTimeout(autosaveTimer);
       }
+      if (autosaveStatusTimer !== null) {
+        window.clearTimeout(autosaveStatusTimer);
+      }
+      if (uiStateSaveTimer !== null) {
+        window.clearTimeout(uiStateSaveTimer);
+      }
     });
-
-    notifyToast(
-      "Workspace ready",
-      "Graph session loaded. Double-click to add nodes.",
-    );
   });
 
   onMount(() => {
@@ -599,10 +385,7 @@ export default function EditorShell() {
           (saveResult) => {
             if (Either.isLeft(saveResult)) {
               console.warn("Settings save failed", saveResult.left);
-              notifyToast(
-                "Settings not saved",
-                "Preferences will reset after reload.",
-              );
+              notifyToast("Settings not saved", "Preferences will reset.");
             }
           },
         );
@@ -621,424 +404,817 @@ export default function EditorShell() {
     });
   });
 
-  onMount(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented) {
-        return;
-      }
-      if (isEditableTarget(event.target)) {
-        return;
-      }
-      if (event.key === "Escape" && quickAddOpen()) {
-        event.preventDefault();
-        setQuickAddOpen(false);
-        return;
-      }
-      const isQuickAddKey = event.key === "Tab" || event.code === "Space";
-      if (isQuickAddKey) {
-        event.preventDefault();
-        setQuickAddOpen(true);
-      }
-    };
+  const scheduleUiStateSave = (): void => {
+    if (!isLoaded() || !uiStateLoaded()) {
+      return;
+    }
+    if (uiStateSaveTimer !== null) {
+      window.clearTimeout(uiStateSaveTimer);
+    }
+    uiStateSaveTimer = window.setTimeout(() => {
+      uiStateSaveTimer = null;
+      const graphSnapshot = store.graph();
+      const mergedRecent = mergeRecentGraphIds(
+        graphSnapshot.graphId,
+        recentGraphIds(),
+      );
+      setRecentGraphIds(mergedRecent);
+      const uiState: EditorUiState = {
+        lastGraphId: graphSnapshot.graphId,
+        recentGraphIds: mergedRecent,
+        canvasCenter: store.canvasCenter(),
+        selectedNodes: Array.from(store.selectedNodes()).sort((left, right) =>
+          left.localeCompare(right),
+        ),
+        selectedWires: Array.from(store.selectedWires()).sort((left, right) =>
+          left.localeCompare(right),
+        ),
+        bypassedNodes: Array.from(store.bypassedNodes()).sort((left, right) =>
+          left.localeCompare(right),
+        ),
+        collapsedNodes: Array.from(store.collapsedNodes()).sort((left, right) =>
+          left.localeCompare(right),
+        ),
+      };
+      const payload = uiStateToJson(uiState);
+      void runAppEffectEither(saveUiStateEffect(payload), appLayer).then(
+        (saveResult) => {
+          if (Either.isLeft(saveResult)) {
+            console.warn("UI state save failed", saveResult.left);
+            notifyToast("UI state not saved", "Layout may reset.");
+          }
+        },
+      );
+    }, 500);
+  };
 
-    window.addEventListener("keydown", onKeyDown);
-    onCleanup(() => {
-      window.removeEventListener("keydown", onKeyDown);
+  createEffect(() => {
+    store.graph();
+    store.canvasCenter();
+    store.selectedNodes();
+    store.selectedWires();
+    store.bypassedNodes();
+    store.collapsedNodes();
+    scheduleUiStateSave();
+  });
+
+  const selectionTone = createMemo(() =>
+    selectionCount() > 0 ? statusInfo : statusMuted,
+  );
+  const emptyHintStyle = createMemo(() => {
+    const raw = clamp(store.canvasCenter().x, -24, 24);
+    return { transform: `translateX(${raw}px)` };
+  });
+  const selectedNodeIds = createMemo(() =>
+    Array.from(store.selectedNodes()).sort((left, right) =>
+      left.localeCompare(right),
+    ),
+  );
+  const selectedWireIds = createMemo(() =>
+    Array.from(store.selectedWires()).sort((left, right) =>
+      left.localeCompare(right),
+    ),
+  );
+  const selectedNode = createMemo(() => {
+    const ids = selectedNodeIds();
+    if (ids.length !== 1) {
+      return null;
+    }
+    return store.graph().nodes.get(ids[0]) ?? null;
+  });
+  const selectedNodeEntry = createMemo(() => {
+    const node = selectedNode();
+    return node ? (getNodeCatalogEntry(node.type) ?? null) : null;
+  });
+  const selectedNodeLabel = createMemo(() => {
+    const ids = selectedNodeIds();
+    if (ids.length === 0) {
+      return null;
+    }
+    if (ids.length > 1) {
+      return `${ids.length} nodes`;
+    }
+    const node = selectedNode();
+    if (!node) {
+      return "Node";
+    }
+    return selectedNodeEntry()?.label ?? node.type;
+  });
+  const selectionSummary = createMemo(() => {
+    const nodeCount = selectedNodeIds().length;
+    const wireCount = selectedWireIds().length;
+    if (nodeCount > 0 && wireCount > 0) {
+      return `${nodeCount} nodes, ${wireCount} wires`;
+    }
+    if (nodeCount > 1) {
+      return `${nodeCount} nodes`;
+    }
+    if (nodeCount === 1) {
+      return selectedNodeLabel() ?? "1 node";
+    }
+    if (wireCount > 1) {
+      return `${wireCount} wires`;
+    }
+    if (wireCount === 1) {
+      return "1 wire";
+    }
+    return "No selection";
+  });
+  const selectedOutputNode = createMemo(() => {
+    const node = selectedNode();
+    return node && isOutputNodeType(node.type) ? node : null;
+  });
+  const selectedOutputType = createMemo<OutputNodeType | null>(() => {
+    const node = selectedOutputNode();
+    return node ? node.type : null;
+  });
+  const selectedOutputSocketId = createMemo(() => {
+    const node = selectedOutputNode();
+    return node?.outputs[0] ?? null;
+  });
+  const isSingleSelection = createMemo(() => selectedNodeIds().length === 1);
+  const isBypassedSelection = createMemo(() => {
+    if (!isSingleSelection()) {
+      return false;
+    }
+    const node = selectedNode();
+    if (!node) {
+      return false;
+    }
+    return store.bypassedNodes().has(node.id);
+  });
+  const isCollapsedSelection = createMemo(() => {
+    if (!isSingleSelection()) {
+      return false;
+    }
+    const node = selectedNode();
+    if (!node) {
+      return false;
+    }
+    return store.collapsedNodes().has(node.id);
+  });
+  const isSelectedDirty = createMemo(() => {
+    const node = selectedNode();
+    if (!node) {
+      return false;
+    }
+    return store.dirtyState().dirty.has(node.id);
+  });
+  const selectedNodeErrors = createMemo(() => {
+    const node = selectedNode();
+    if (!node) {
+      return [];
+    }
+    return store.dirtyState().nodeErrors.get(node.id) ?? [];
+  });
+  const outputStatusTone = createMemo(() => {
+    switch (outputStatus()) {
+      case "running":
+        return sidePanelInfo;
+      case "ready":
+        return sidePanelSuccess;
+      case "error":
+        return sidePanelDanger;
+      default:
+        return sidePanelMuted;
+    }
+  });
+  const outputLabel = createMemo(() => {
+    const artifact = outputArtifact();
+    if (artifact) {
+      return artifact.label;
+    }
+    const entry = selectedNodeEntry();
+    return entry?.label ?? selectedOutputType() ?? "Output";
+  });
+
+  let lastOutputError: string | null = null;
+
+  const requestOutputNow = (): void => {
+    const socketId = selectedOutputSocketId();
+    if (!socketId) {
+      return;
+    }
+    setOutputStatus("running");
+    setOutputMessage(null);
+    store.requestOutput(socketId);
+  };
+
+  const downloadOutput = (): void => {
+    const artifact = outputArtifact();
+    if (!artifact) {
+      return;
+    }
+    const error = downloadOutputArtifact(artifact);
+    if (error) {
+      notifyToast("Download failed", error);
+    }
+  };
+
+  const exportGraph = (): void => {
+    const document = graphToDocumentV1(store.graph());
+    const payload = graphDocumentToJson(document);
+    const filename = `shadr-${document.graphId}.json`;
+    const error = downloadTextFile(filename, payload);
+    if (error) {
+      notifyToast("Export failed", error);
+      return;
+    }
+    notifyToast("Export ready", "Graph JSON downloaded.");
+  };
+
+  const triggerImport = (): void => {
+    if (importInput) {
+      importInput.value = "";
+      importInput.click();
+    }
+  };
+
+  const handleImportFile = async (event: Event): Promise<void> => {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+    const file = target.files?.[0];
+    if (!file) {
+      return;
+    }
+    target.value = "";
+    try {
+      const text = await file.text();
+      const result = parseGraphDocumentJson(text);
+      if (!result.ok) {
+        notifyToast("Import failed", formatGraphImportError(result.error));
+        return;
+      }
+      const loaded = store.loadGraphDocument(result.document);
+      if (!loaded) {
+        notifyToast("Import failed", "Graph document was invalid.");
+        return;
+      }
+      notifyToast(
+        "Graph imported",
+        `${result.document.nodes.length} nodes loaded.`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to read file.";
+      notifyToast("Import failed", message);
+    }
+  };
+
+  createEffect(() => {
+    const socketId = selectedOutputSocketId();
+    if (!socketId) {
+      store.clearOutput();
+      setOutputStatus("idle");
+      setOutputArtifact(null);
+      setOutputMessage(null);
+      lastOutputError = null;
+      return;
+    }
+    requestOutputNow();
+  });
+
+  createEffect(() => {
+    const outputType = selectedOutputType();
+    if (!outputType) {
+      return;
+    }
+    const execError = store.outputError();
+    if (execError) {
+      const message = formatExecError(execError);
+      setOutputStatus("error");
+      setOutputMessage(message);
+      setOutputArtifact(null);
+      if (message !== lastOutputError) {
+        notifyToast("Output error", message);
+        lastOutputError = message;
+      }
+      return;
+    }
+    const result = compileOutputArtifact(outputType, store.outputValue());
+    if (result.error) {
+      setOutputStatus("error");
+      setOutputMessage(result.error);
+      setOutputArtifact(null);
+      if (result.error !== lastOutputError) {
+        notifyToast("Output error", result.error);
+        lastOutputError = result.error;
+      }
+      return;
+    }
+    setOutputStatus("ready");
+    setOutputMessage(null);
+    setOutputArtifact(result.artifact);
+    lastOutputError = null;
+  });
+
+  const applyCommands = (label: string, commands: GraphCommand[]): boolean => {
+    if (commands.length === 0) {
+      return false;
+    }
+    store.beginHistoryBatch(label);
+    let changed = false;
+    for (const command of commands) {
+      if (store.applyGraphCommandTransient(command)) {
+        store.recordGraphCommand(command);
+        changed = true;
+      }
+    }
+    store.commitHistoryBatch();
+    if (changed) {
+      store.refreshActiveOutput();
+    }
+    return changed;
+  };
+
+  const deleteSelection = (): void => {
+    const graphSnapshot = store.graph();
+    const nodeCommands = selectedNodeIds()
+      .map((nodeId) => createRemoveNodeCommand(graphSnapshot, nodeId))
+      .filter((command): command is NonNullable<typeof command> => !!command);
+    const removedWireIds = new Set<WireId>();
+    for (const command of nodeCommands) {
+      if (command.kind !== "remove-node") {
+        continue;
+      }
+      for (const wire of command.wires) {
+        removedWireIds.add(wire.id);
+      }
+    }
+    const wireCommands = selectedWireIds()
+      .filter((wireId) => !removedWireIds.has(wireId))
+      .map((wireId) => createRemoveWireCommand(graphSnapshot, wireId))
+      .filter((command): command is NonNullable<typeof command> => !!command);
+    const commands = [...nodeCommands, ...wireCommands];
+    if (applyCommands("delete-selection", commands)) {
+      store.clearSelection();
+    }
+  };
+  const toggleBypassSelection = (): void => {
+    const ids = selectedNodeIds();
+    if (ids.length === 0) {
+      return;
+    }
+    store.toggleBypassNodes(new Set<NodeId>(ids));
+  };
+  const toggleCollapseSelection = (): void => {
+    const ids = selectedNodeIds();
+    if (ids.length === 0) {
+      return;
+    }
+    store.toggleCollapsedNodes(new Set<NodeId>(ids));
+  };
+  const clearSelection = (): void => {
+    store.clearSelection();
+  };
+
+  const commandPaletteEntries = createMemo<CommandPaletteEntry[]>(() => {
+    const settingsSnapshot = store.settings();
+    const hasSelection = selectionCount() > 0;
+    const hasNodeSelection = selectedNodeIds().length > 0;
+
+    const commandEntries: CommandPaletteEntry[] = [
+      {
+        id: "command:undo",
+        label: "Undo",
+        description: "Revert the last change",
+        kind: "command",
+        keywords: ["history"],
+        onSelect: () => store.undo(),
+      },
+      {
+        id: "command:redo",
+        label: "Redo",
+        description: "Reapply the last change",
+        kind: "command",
+        keywords: ["history"],
+        onSelect: () => store.redo(),
+      },
+      {
+        id: "command:delete-selection",
+        label: "Delete selection",
+        description: "Remove selected nodes or wires",
+        kind: "command",
+        enabled: hasSelection,
+        keywords: ["remove", "delete"],
+        onSelect: () => deleteSelection(),
+      },
+      {
+        id: "command:clear-selection",
+        label: "Clear selection",
+        description: "Deselect all items",
+        kind: "command",
+        enabled: hasSelection,
+        keywords: ["deselect", "clear"],
+        onSelect: () => clearSelection(),
+      },
+      {
+        id: "command:toggle-bypass",
+        label: "Toggle bypass",
+        description: "Bypass selected nodes",
+        kind: "command",
+        enabled: hasNodeSelection,
+        keywords: ["bypass", "node"],
+        onSelect: () => toggleBypassSelection(),
+      },
+      {
+        id: "command:toggle-collapse",
+        label: "Toggle collapse",
+        description: "Collapse selected nodes",
+        kind: "command",
+        enabled: hasNodeSelection,
+        keywords: ["collapse", "node"],
+        onSelect: () => toggleCollapseSelection(),
+      },
+    ];
+
+    const controlEntries: CommandPaletteEntry[] = [
+      {
+        id: "control:grid-visibility",
+        label: "Grid visibility",
+        description: "Show or hide the canvas grid",
+        kind: "control",
+        stateLabel: settingsSnapshot.gridVisible ? "On" : "Off",
+        keywords: ["grid", "visibility"],
+        onSelect: () =>
+          store.updateSettings({
+            gridVisible: !store.settings().gridVisible,
+          }),
+      },
+      {
+        id: "control:snap-to-grid",
+        label: "Snap to grid",
+        description: "Toggle snap-to-grid placement",
+        kind: "control",
+        stateLabel: settingsSnapshot.snapToGrid ? "On" : "Off",
+        keywords: ["grid", "snap"],
+        onSelect: () =>
+          store.updateSettings({
+            snapToGrid: !store.settings().snapToGrid,
+          }),
+      },
+    ];
+
+    const nodeEntries: CommandPaletteEntry[] = NODE_CATALOG.map((entry) => {
+      const keywords = [entry.type, entry.label, entry.description].filter(
+        (value): value is string =>
+          typeof value === "string" && value.length > 0,
+      );
+      return {
+        id: `node:${entry.type}`,
+        label: entry.label,
+        description: entry.description,
+        kind: "node",
+        keywords,
+        onSelect: () => {
+          const pointer = store.pointerPosition();
+          store.addNodeAt(entry.type, pointer?.world);
+        },
+      };
     });
+
+    return [...commandEntries, ...controlEntries, ...nodeEntries];
   });
 
   return (
-    <main class="grid min-h-screen grid-rows-[auto_1fr] gap-4 p-3 md:p-4">
-      <header class="grid grid-cols-1 items-center gap-4 rounded-[1.1rem] border border-[rgba(120,150,190,0.24)] bg-[rgba(10,14,24,0.88)] px-[1.1rem] py-[0.85rem] shadow-[0_20px_40px_rgba(3,6,15,0.45)] backdrop-blur-[14px] md:grid-cols-[minmax(180px,1.2fr)_minmax(200px,1fr)_auto]">
-        <div class="flex flex-col gap-1">
-          <h1 class="text-[1.1rem] font-bold uppercase tracking-[0.08em]">
-            Shadr
-          </h1>
-          <p class="text-[0.8rem] tracking-[0.02em] text-[#9aa8c7]">
-            Deterministic node studio
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <span class={statusPillBase}>Untitled.graph</span>
-          <span class={statusPillOk}>Saved</span>
-          <span class={statusPillBase}>Offline</span>
-        </div>
-        <div class="flex justify-start gap-2 md:justify-end">
-          <button class={ghostButtonBase} type="button">
-            Open
+    <main class="relative h-screen w-screen overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--app-text)]">
+      <div class="absolute inset-0">
+        <EditorCanvas store={store} onViewportEmpty={notifyViewportEmpty} />
+      </div>
+
+      <div class={overlayRoot}>
+        <div class="absolute left-3 top-3 flex items-center gap-2">
+          <div class={appBadge}>
+            <Sparkles class="h-4 w-4 text-[color:var(--status-info-text)]" />
+            <span class="sr-only">Shadr</span>
+          </div>
+          <button
+            class={`${historyButtonBase} ${
+              store.canUndo() ? historyButtonActive : historyButtonDisabled
+            }`}
+            disabled={!store.canUndo()}
+            onClick={() => store.undo()}
+            aria-label="Undo"
+          >
+            <Undo2 class="h-3 w-3" />
+            <span class="sr-only">Undo</span>
           </button>
-          <button class={ghostButtonPrimary} type="button">
-            Save
+          <button
+            class={`${historyButtonBase} ${
+              store.canRedo() ? historyButtonActive : historyButtonDisabled
+            }`}
+            disabled={!store.canRedo()}
+            onClick={() => store.redo()}
+            aria-label="Redo"
+          >
+            <Redo2 class="h-3 w-3" />
+            <span class="sr-only">Redo</span>
           </button>
         </div>
-      </header>
 
-      <div class="grid min-h-0 grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)] lg:grid-cols-[260px_minmax(0,1fr)_300px]">
-        <aside class={`${panelBase} order-2 md:order-none`}>
-          <div class="flex justify-between gap-3">
-            <div>
-              <h2 class="text-[1rem] uppercase tracking-[0.08em]">
-                Node Library
-              </h2>
-              <p class="mt-1 text-[0.85rem] text-[#9aa8c7]">
-                Drag to add or tap to preview.
-              </p>
-            </div>
-            <span class={panelTag}>{NODE_CATALOG.length} presets</span>
-          </div>
-          <div class="flex">
-            <input
-              class={panelInput}
-              type="text"
-              placeholder="Search nodes"
-              aria-label="Search node library"
-              value={libraryQuery()}
-              onInput={(event) => setLibraryQuery(event.currentTarget.value)}
-            />
-          </div>
-          <div class="flex flex-1 flex-col gap-2 overflow-auto pr-1">
-            <For each={filteredCatalog()}>
-              {(item) => (
-                <button
-                  class={panelItem}
-                  type="button"
-                  draggable={true}
-                  onClick={() => {
-                    store.addNodeAt(item.type);
-                  }}
-                  onDragStart={(event) => {
-                    event.dataTransfer?.setData(NODE_DRAG_TYPE, item.type);
-                    event.dataTransfer?.setData("text/plain", item.label);
-                    event.dataTransfer?.setDragImage(
-                      event.currentTarget,
-                      12,
-                      12,
-                    );
-                  }}
-                >
-                  <span>{item.label}</span>
-                  <span class={panelItemMeta}>Params</span>
-                </button>
-              )}
-            </For>
-            {filteredCatalog().length === 0 ? (
-              <div class={panelPlaceholder}>No matching nodes found.</div>
-            ) : null}
-          </div>
-        </aside>
-
-        <section class="order-1 grid min-h-0 grid-rows-[auto_1fr] overflow-hidden rounded-[1.2rem] border border-[rgba(120,150,190,0.35)] bg-[linear-gradient(180deg,rgba(14,20,34,0.92)_0%,rgba(7,10,16,0.98)_100%)] shadow-[0_24px_40px_rgba(3,6,15,0.55)] md:order-none">
-          <div class="flex items-center justify-between border-b border-[rgba(120,150,190,0.2)] bg-[rgba(9,12,20,0.92)] px-4 py-3 text-[0.75rem] uppercase tracking-[0.08em] text-[#cbd6ee]">
-            <span>Canvas</span>
-            <span class="text-[#9aa8c7]">Zoom 100%</span>
-          </div>
-          <div class="relative min-h-[320px]">
-            <EditorCanvas store={store} onViewportEmpty={notifyViewportEmpty} />
-          </div>
-        </section>
-
-        <aside class={`${panelBase} hidden lg:flex`}>
-          <div class="flex justify-between gap-3">
-            <div>
-              <h2 class="text-[1rem] uppercase tracking-[0.08em]">Inspector</h2>
-              <p class="mt-1 text-[0.85rem] text-[#9aa8c7]">
-                {selectedNode()
-                  ? "Adjust parameters for the selected node."
-                  : "Select a node to edit parameters."}
-              </p>
-            </div>
-            <span class={panelTag}>
-              {selectedNode() ? "Editable" : "Read-only"}
+        <div class="absolute bottom-4 left-3 flex flex-wrap items-center gap-2">
+          {autosaveStatus() === "saving" ? (
+            <span class={`${statusBase} ${statusInfo}`}>Saving</span>
+          ) : null}
+          {autosaveStatus() === "saved" ? (
+            <span class={`${statusBase} ${statusSuccess}`}>Saved</span>
+          ) : null}
+          {autosaveStatus() === "error" ? (
+            <span class={`${statusBase} ${statusDanger}`}>Save failed</span>
+          ) : null}
+          {outputStatus() === "running" ? (
+            <span class={`${statusBase} ${statusInfo}`}>Compiling</span>
+          ) : null}
+          {outputStatus() === "ready" ? (
+            <span class={`${statusBase} ${statusSuccess}`}>Result ready</span>
+          ) : null}
+          {outputStatus() === "error" ? (
+            <span class={`${statusBase} ${statusDanger}`}>Output error</span>
+          ) : null}
+          {isDirtyGraph() ? (
+            <span class={`${statusBase} ${statusWarn}`}>
+              <CircleDot class="h-3 w-3" />
+              Dirty
             </span>
+          ) : null}
+          {selectionCount() > 0 ? (
+            <span class={`${statusBase} ${selectionTone()}`}>
+              {selectionCount()} selected
+            </span>
+          ) : null}
+        </div>
+
+        {isEmptyGraph() ? (
+          <div
+            class={`${statusBase} ${statusMuted} absolute bottom-24 left-1/2 -translate-x-1/2`}
+            style={emptyHintStyle()}
+          >
+            Double-click to add
           </div>
-          <div class="flex flex-col gap-2">
-            <For each={inspectorRows()}>
-              {(row) => (
-                <div class={panelRow}>
-                  <span class={panelRowLabel}>{row.label}</span>
-                  <span class={panelRowValue}>{row.value}</span>
-                </div>
-              )}
-            </For>
-          </div>
-          {selectedNode() && selectedEntry()?.paramSchema ? (
-            <ParamEditor
-              node={selectedNode()!}
-              schema={selectedEntry()!.paramSchema!}
-              onParamChange={(key, value) =>
-                store.updateNodeParam(selectedNode()!.id, key, value)
-              }
-            />
-          ) : (
-            <div class={panelPlaceholder}>
-              Parameter editing will appear here when nodes are selected.
-            </div>
-          )}
-          <div class={panelSection}>
-            <div class="flex items-center justify-between gap-2">
-              <h3 class="text-[0.85rem] uppercase tracking-[0.08em] text-[#9aa8c7]">
-                Sockets
-              </h3>
-              <span class={panelTag}>{inspectorSockets().length}</span>
-            </div>
-            <div class={panelSocketList}>
-              <For each={inspectorSockets()}>
-                {(socket) => (
-                  <div class={panelSocketRow}>
-                    <div class="flex flex-col gap-1">
-                      <span class="text-[0.85rem] font-semibold text-[#e2ecff]">
-                        {socket.name}
-                      </span>
-                      <span class={panelSocketMeta}>
-                        {socket.direction === "input" ? "Input" : "Output"} ·{" "}
-                        {socket.dataType}
-                      </span>
-                    </div>
-                    <span class={panelSocketValue}>{socket.valueLabel}</span>
+        ) : null}
+
+        <div class="absolute bottom-4 left-1/2 -translate-x-1/2">
+          <div class={controlMenuRoot}>
+            {selectionCount() > 0 ? (
+              <>
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <span class={controlMenuTitle}>Selection</span>
+                    <span class={controlMenuValue}>{selectionSummary()}</span>
                   </div>
-                )}
-              </For>
-              {selectedNode() && inspectorSockets().length === 0 ? (
-                <div class={panelSocketEmpty}>No sockets defined.</div>
-              ) : null}
-              {!selectedNode() ? (
-                <div class={panelSocketEmpty}>
-                  Select a node to inspect socket values.
-                </div>
-              ) : null}
-            </div>
-          </div>
-          <div class={panelSection}>
-            <div class="flex items-center justify-between gap-2">
-              <h3 class="text-[0.85rem] uppercase tracking-[0.08em] text-[#9aa8c7]">
-                Output Preview
-              </h3>
-              <div class="flex items-center gap-2">
-                <button
-                  class={ghostButtonPrimary}
-                  type="button"
-                  disabled={
-                    !selectedOutputNode() ||
-                    selectedOutputNode()!.outputs.length === 0
-                  }
-                  onClick={() => {
-                    const node = selectedOutputNode();
-                    if (!node || node.outputs.length === 0) {
-                      return;
-                    }
-                    store.requestOutput(node.outputs[0]);
-                  }}
-                >
-                  Compile
-                </button>
-                <button
-                  class={ghostButtonBase}
-                  type="button"
-                  disabled={outputPanelState().status !== "ready"}
-                  onClick={() => {
-                    const state = outputPanelState();
-                    if (state.status !== "ready") {
-                      return;
-                    }
-                    const error = downloadOutputArtifact(state.artifact);
-                    if (error) {
-                      notifyToast("Export failed", error);
-                      return;
-                    }
-                    notifyToast(
-                      "Export ready",
-                      `Downloaded ${state.artifact.filename}.`,
-                    );
-                  }}
-                >
-                  Download
-                </button>
-              </div>
-            </div>
-            {outputPanelState().status === "ready" ? (
-              <div class={panelPreviewBody}>
-                {outputPanelState().artifact.kind === "image" ? (
-                  <img
-                    class={panelPreviewImage}
-                    src={outputPanelState().artifact.dataUrl}
-                    alt="Output preview"
-                    width={outputPanelState().artifact.width}
-                    height={outputPanelState().artifact.height}
-                  />
-                ) : (
-                  <div class={panelPreviewBase}>
-                    <pre class={panelPreviewText}>
-                      {outputPanelState().artifact.text}
-                    </pre>
+                  <div class="flex flex-wrap items-center gap-2">
+                    {selectedNodeIds().length > 0 ? (
+                      <>
+                        <button
+                          class={`${controlMenuButton} ${
+                            isBypassedSelection()
+                              ? controlMenuWarn
+                              : controlMenuMuted
+                          }`}
+                          onClick={toggleBypassSelection}
+                        >
+                          <EyeOff class="h-3.5 w-3.5" />
+                          Bypass
+                        </button>
+                        <button
+                          class={`${controlMenuButton} ${
+                            isCollapsedSelection()
+                              ? controlMenuInfo
+                              : controlMenuMuted
+                          }`}
+                          onClick={toggleCollapseSelection}
+                        >
+                          <Minimize2 class="h-3.5 w-3.5" />
+                          Collapse
+                        </button>
+                      </>
+                    ) : null}
+                    <button
+                      class={`${controlMenuButton} ${controlMenuDanger}`}
+                      onClick={deleteSelection}
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                      Delete
+                    </button>
+                    <button
+                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                      onClick={clearSelection}
+                    >
+                      <X class="h-3.5 w-3.5" />
+                      Clear
+                    </button>
                   </div>
-                )}
-                <div class={panelTag}>{outputPanelState().artifact.label}</div>
-              </div>
+                </div>
+              </>
             ) : (
-              <div
-                class={`${panelPreviewBase} ${
-                  outputPanelState().status === "error" ? panelPreviewError : ""
-                }`}
-              >
-                {outputPanelState().message}
-              </div>
+              <>
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <span class={controlMenuTitle}>Workspace</span>
+                    <span class={controlMenuValue}>No selection</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                      onClick={triggerImport}
+                    >
+                      Import
+                    </button>
+                    <button
+                      class={`${controlMenuButton} ${controlMenuInfo}`}
+                      onClick={exportGraph}
+                    >
+                      Export
+                    </button>
+                    <button
+                      class={`${controlMenuButton} ${controlMenuMuted}`}
+                      onClick={() => store.setCommandPaletteOpen(true)}
+                    >
+                      Commands
+                    </button>
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class={controlMenuTitle}>Settings</span>
+                  <button
+                    class={`${controlMenuButton} ${
+                      gridVisible() ? controlMenuInfo : controlMenuMuted
+                    }`}
+                    onClick={() =>
+                      store.updateSettings({
+                        gridVisible: !store.settings().gridVisible,
+                      })
+                    }
+                  >
+                    Grid {gridVisible() ? "On" : "Off"}
+                  </button>
+                  <button
+                    class={`${controlMenuButton} ${
+                      snapToGrid() ? controlMenuInfo : controlMenuMuted
+                    }`}
+                    onClick={() =>
+                      store.updateSettings({
+                        snapToGrid: !store.settings().snapToGrid,
+                      })
+                    }
+                  >
+                    Snap {snapToGrid() ? "On" : "Off"}
+                  </button>
+                </div>
+              </>
             )}
           </div>
-          <div class={panelSection}>
-            <div class="flex items-center justify-between gap-2">
-              <h3 class="text-[0.85rem] uppercase tracking-[0.08em] text-[#9aa8c7]">
-                Canvas Settings
-              </h3>
-              <span class={panelTag}>Local</span>
-            </div>
-            <div class="flex flex-col gap-3">
-              <label class={panelSettingRow}>
-                <span class={panelSettingLabel}>Show grid</span>
-                <input
-                  class={panelCheckbox}
-                  type="checkbox"
-                  checked={store.settings().gridVisible}
-                  onChange={(event) =>
-                    updateSetting("gridVisible", event.currentTarget.checked)
-                  }
-                />
-              </label>
-              <label class={panelSettingRow}>
-                <span class={panelSettingLabel}>Snap to grid</span>
-                <input
-                  class={panelCheckbox}
-                  type="checkbox"
-                  checked={store.settings().snapToGrid}
-                  onChange={(event) =>
-                    updateSetting("snapToGrid", event.currentTarget.checked)
-                  }
-                />
-              </label>
-              <div class="flex flex-col gap-2">
-                <div class={panelSettingRow}>
-                  <span class={panelSettingLabel}>Zoom sensitivity</span>
-                  <span class={panelSettingValue}>
-                    {store.settings().zoomSensitivity.toFixed(2)}
-                  </span>
+        </div>
+
+        <input
+          ref={(element) => {
+            importInput = element;
+          }}
+          class="hidden"
+          type="file"
+          accept="application/json"
+          onChange={handleImportFile}
+        />
+
+        {selectionCount() > 0 ? (
+          <aside class="absolute right-3 top-1/2 -translate-y-1/2">
+            <div class={sidePanelRoot}>
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                  <span class={sidePanelTitle}>Context</span>
                 </div>
-                <input
-                  class={`${panelRange} ${panelRangeThumb}`}
-                  type="range"
-                  min={MIN_ZOOM_SENSITIVITY}
-                  max={MAX_ZOOM_SENSITIVITY}
-                  step={0.05}
-                  value={store.settings().zoomSensitivity}
-                  onInput={updateNumericSetting(
-                    "zoomSensitivity",
-                    MIN_ZOOM_SENSITIVITY,
-                    MAX_ZOOM_SENSITIVITY,
-                  )}
-                />
+                <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                  {selectionCount()} selected
+                </span>
               </div>
-              <div class="flex flex-col gap-2">
-                <div class={panelSettingRow}>
-                  <span class={panelSettingLabel}>Pan sensitivity</span>
-                  <span class={panelSettingValue}>
-                    {store.settings().panSensitivity.toFixed(2)}
+
+              <div class="flex flex-wrap items-center gap-2">
+                {selectedNodeIds().length > 0 ? (
+                  <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                    {selectedNodeIds().length} nodes
                   </span>
-                </div>
-                <input
-                  class={`${panelRange} ${panelRangeThumb}`}
-                  type="range"
-                  min={MIN_PAN_SENSITIVITY}
-                  max={MAX_PAN_SENSITIVITY}
-                  step={0.05}
-                  value={store.settings().panSensitivity}
-                  onInput={updateNumericSetting(
-                    "panSensitivity",
-                    MIN_PAN_SENSITIVITY,
-                    MAX_PAN_SENSITIVITY,
-                  )}
-                />
+                ) : null}
+                {selectedWireIds().length > 0 ? (
+                  <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                    {selectedWireIds().length} wires
+                  </span>
+                ) : null}
               </div>
+
+              {selectedNode() ? (
+                <div class="flex flex-col gap-2">
+                  <div class="flex items-center gap-2">
+                    <CircleDot class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                    <span class={sidePanelTitle}>Node</span>
+                  </div>
+                  <div class={sidePanelValue}>{selectedNodeLabel()}</div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span
+                      class={`${sidePanelChip} ${
+                        isSelectedDirty() ? sidePanelWarn : sidePanelInfo
+                      }`}
+                    >
+                      {isSelectedDirty() ? "Dirty" : "Clean"}
+                    </span>
+                    <span
+                      class={`${sidePanelChip} ${
+                        selectedNodeErrors().length > 0
+                          ? sidePanelDanger
+                          : sidePanelMuted
+                      }`}
+                    >
+                      {selectedNodeErrors().length > 0
+                        ? `${selectedNodeErrors().length} errors`
+                        : "No errors"}
+                    </span>
+                    {isBypassedSelection() ? (
+                      <span class={`${sidePanelChip} ${sidePanelWarn}`}>
+                        Bypassed
+                      </span>
+                    ) : null}
+                    {isCollapsedSelection() ? (
+                      <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                        Collapsed
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {selectedOutputType() ? (
+                    <div class="flex flex-col gap-2">
+                      <div class="flex items-center gap-2">
+                        <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                        <span class={sidePanelTitle}>Output</span>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class={`${sidePanelChip} ${outputStatusTone()}`}>
+                          {outputStatus() === "running"
+                            ? "Compiling"
+                            : outputStatus() === "ready"
+                              ? "Ready"
+                              : outputStatus() === "error"
+                                ? "Error"
+                                : "Idle"}
+                        </span>
+                        <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                          {outputLabel()}
+                        </span>
+                      </div>
+                      {outputMessage() ? (
+                        <div class={`${sidePanelRow} ${sidePanelDanger}`}>
+                          <span class="truncate">{outputMessage()}</span>
+                        </div>
+                      ) : null}
+                      {outputArtifact() ? (
+                        <div class="flex flex-col gap-2">
+                          {outputArtifact()!.kind === "image" ? (
+                            <img
+                              class="h-28 w-full rounded-lg border border-[color:var(--border-soft)] object-cover"
+                              src={outputArtifact()!.dataUrl}
+                              alt="Output preview"
+                            />
+                          ) : (
+                            <pre class="max-h-32 overflow-auto rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] p-2 text-[0.75rem] text-[color:var(--text-soft)]">
+                              {outputArtifact()!.text}
+                            </pre>
+                          )}
+                        </div>
+                      ) : null}
+                      <div class="flex flex-wrap items-center gap-2">
+                        <button
+                          class={`${controlMenuButton} ${controlMenuInfo}`}
+                          onClick={requestOutputNow}
+                        >
+                          Compile
+                        </button>
+                        <button
+                          class={`${controlMenuButton} ${controlMenuMuted}`}
+                          onClick={downloadOutput}
+                          disabled={!outputArtifact()}
+                        >
+                          Download
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
-          </div>
-          {isDev ? (
-            <div class={panelSection}>
-              <GraphDiagnostics
-                graph={store.graph()}
-                dirtyState={store.dirtyState()}
-                execHistory={store.execHistory()}
-              />
-            </div>
-          ) : null}
-          {isDev ? (
-            <div class={panelSection}>
-              <ExecDebugConsole
-                entries={store.execHistory()}
-                onClear={store.clearExecHistory}
-              />
-            </div>
-          ) : null}
-        </aside>
+          </aside>
+        ) : null}
       </div>
 
       <Toast.Region class={toastRegion} duration={4200} limit={3}>
         <Toast.List class={toastList} />
       </Toast.Region>
 
-      <Dialog.Root open={quickAddOpen()} onOpenChange={setQuickAddOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay class={quickAddOverlay} />
-          <Dialog.Content class={quickAddPanel} style={quickAddPosition()}>
-            <div class="flex items-center justify-between">
-              <Dialog.Title class={quickAddTitle}>Quick add</Dialog.Title>
-              <span class={quickAddKbd}>Space / Tab</span>
-            </div>
-            <input
-              ref={quickAddInput}
-              class={quickAddInputField}
-              type="text"
-              placeholder="Type to search nodes"
-              value={quickAddQuery()}
-              onInput={(event) => setQuickAddQuery(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setQuickAddOpen(false);
-                  return;
-                }
-                if (event.key === "Enter") {
-                  const first = filteredQuickAdd()[0];
-                  if (first) {
-                    event.preventDefault();
-                    selectQuickAddEntry(first.type);
-                  }
-                }
-              }}
-            />
-            <div class={quickAddList}>
-              <For each={filteredQuickAdd()}>
-                {(item) => (
-                  <button
-                    class={quickAddItem}
-                    type="button"
-                    onClick={() => selectQuickAddEntry(item.type)}
-                  >
-                    <div class="flex flex-col gap-1">
-                      <span class="text-[0.9rem] font-semibold">
-                        {item.label}
-                      </span>
-                      <span class="text-[0.75rem] text-[#9aa8c7]">
-                        {item.description}
-                      </span>
-                    </div>
-                    <span class={quickAddItemMeta}>{item.type}</span>
-                  </button>
-                )}
-              </For>
-              {filteredQuickAdd().length === 0 ? (
-                <div class={quickAddEmpty}>No matching nodes found.</div>
-              ) : null}
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+      <CommandPalette
+        open={store.commandPaletteOpen()}
+        onOpenChange={store.setCommandPaletteOpen}
+        entries={commandPaletteEntries()}
+      />
     </main>
   );
 }

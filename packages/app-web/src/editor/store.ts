@@ -69,9 +69,13 @@ export type EditorStore = Readonly<{
   settings: Accessor<EditorSettings>;
   canvasCenter: Accessor<Point>;
   pointerPosition: Accessor<PointerPosition | null>;
+  commandPaletteOpen: Accessor<boolean>;
+  canUndo: Accessor<boolean>;
+  canRedo: Accessor<boolean>;
   loadGraphDocument: (document: GraphDocumentV1) => boolean;
   updateNodeParam: (nodeId: NodeId, key: string, value: JsonValue) => boolean;
   requestOutput: (socketId: SocketId) => void;
+  clearOutput: () => void;
   refreshActiveOutput: () => void;
   clearExecHistory: () => void;
   clearSelection: () => void;
@@ -79,8 +83,11 @@ export type EditorStore = Readonly<{
   setWireSelection: (next: ReadonlySet<WireId>) => void;
   toggleBypassNodes: (nodeIds: ReadonlySet<NodeId>) => void;
   toggleCollapsedNodes: (nodeIds: ReadonlySet<NodeId>) => void;
+  setBypassedNodes: (next: ReadonlySet<NodeId>) => void;
+  setCollapsedNodes: (next: ReadonlySet<NodeId>) => void;
   setCanvasCenter: (center: Point) => void;
   setPointerPosition: (position: PointerPosition | null) => void;
+  setCommandPaletteOpen: (open: boolean) => void;
   setSettings: (next: EditorSettings) => void;
   updateSettings: (patch: Partial<EditorSettings>) => void;
   addNodeAt: (nodeType: string, position?: Point) => NodeId | null;
@@ -123,6 +130,12 @@ export const createEditorStore = (): EditorStore => {
   const [canvasCenter, setCanvasCenter] = createSignal<Point>({ x: 0, y: 0 });
   const [pointerPosition, setPointerPosition] =
     createSignal<PointerPosition | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] =
+    createSignal<boolean>(false);
+  const [historyState, setHistoryState] = createSignal({
+    undo: 0,
+    redo: 0,
+  });
   let undoStack: HistoryEntry[] = [];
   let redoStack: HistoryEntry[] = [];
   let openBatch: HistoryEntry | null = null;
@@ -161,6 +174,7 @@ export const createEditorStore = (): EditorStore => {
     undoStack = [];
     redoStack = [];
     openBatch = null;
+    setHistoryState({ undo: 0, redo: 0 });
   };
 
   const collectNodeErrors = (state: DirtyState): ExecDebugNodeError[] => {
@@ -212,6 +226,7 @@ export const createEditorStore = (): EditorStore => {
     }
     undoStack = [...undoStack, entry];
     redoStack = [];
+    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
   };
 
   const recordCommand = (command: GraphCommand): void => {
@@ -227,6 +242,7 @@ export const createEditorStore = (): EditorStore => {
     }
     redoStack = [];
     openBatch = { label, commands: [] };
+    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
   };
 
   const commitHistoryBatch = (): void => {
@@ -240,6 +256,7 @@ export const createEditorStore = (): EditorStore => {
     }
     undoStack = [...undoStack, batch];
     redoStack = [];
+    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
   };
 
   const markDirtyForWireChangeGraph = (
@@ -378,6 +395,12 @@ export const createEditorStore = (): EditorStore => {
     evaluateOutputSocket(socketId);
   };
 
+  const clearOutput = (): void => {
+    setActiveOutputSocketId(null);
+    setOutputValue(null);
+    setOutputError(null);
+  };
+
   const refreshActiveOutput = (): void => {
     const socketId = activeOutputSocketId();
     if (socketId) {
@@ -425,6 +448,10 @@ export const createEditorStore = (): EditorStore => {
     });
   };
 
+  const setBypassedNodesState = (next: ReadonlySet<NodeId>): void => {
+    setBypassedNodes(new Set(next));
+  };
+
   const toggleCollapsedNodes = (nodeIds: ReadonlySet<NodeId>): void => {
     if (nodeIds.size === 0) {
       return;
@@ -440,6 +467,10 @@ export const createEditorStore = (): EditorStore => {
       }
       return next;
     });
+  };
+
+  const setCollapsedNodesState = (next: ReadonlySet<NodeId>): void => {
+    setCollapsedNodes(new Set(next));
   };
 
   const createSocketsForNode = (
@@ -560,6 +591,7 @@ export const createEditorStore = (): EditorStore => {
       refreshActiveOutput();
     }
     redoStack = [...redoStack, entry];
+    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
   };
 
   const redo = (): void => {
@@ -584,6 +616,7 @@ export const createEditorStore = (): EditorStore => {
       refreshActiveOutput();
     }
     undoStack = [...undoStack, entry];
+    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
   };
 
   return {
@@ -600,9 +633,13 @@ export const createEditorStore = (): EditorStore => {
     settings,
     canvasCenter,
     pointerPosition,
+    commandPaletteOpen,
+    canUndo: () => historyState().undo > 0,
+    canRedo: () => historyState().redo > 0,
     loadGraphDocument,
     updateNodeParam,
     requestOutput,
+    clearOutput,
     refreshActiveOutput,
     clearExecHistory,
     markDirtyForNodeChange,
@@ -611,8 +648,11 @@ export const createEditorStore = (): EditorStore => {
     setWireSelection,
     toggleBypassNodes,
     toggleCollapsedNodes,
+    setBypassedNodes: setBypassedNodesState,
+    setCollapsedNodes: setCollapsedNodesState,
     setCanvasCenter,
     setPointerPosition,
+    setCommandPaletteOpen,
     setSettings,
     updateSettings: (patch) => {
       setSettings((current) => ({ ...current, ...patch }));

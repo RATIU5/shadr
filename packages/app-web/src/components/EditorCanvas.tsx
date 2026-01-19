@@ -17,11 +17,14 @@ import {
 } from "@shadr/shared";
 import {
   CanvasScene,
+  type CanvasTheme,
+  darkCanvasTheme,
   defaultNodeLayout,
   getNodeHeaderToggleBounds,
   getNodeSize,
   getSocketPosition,
   getWireControlPoints,
+  lightCanvasTheme,
   type NodeLayout,
 } from "@shadr/ui-canvas";
 import { Either } from "effect";
@@ -79,6 +82,49 @@ type ContextMenuEntry =
       kind: "separator";
     }>;
 
+type ThemeScheme = "dark" | "light";
+type CanvasPalette = Readonly<{
+  scheme: ThemeScheme;
+  sceneTheme: CanvasTheme;
+  background: number;
+  gridMinor: number;
+  gridMajor: number;
+  gridAxis: number;
+  marquee: number;
+  wireHoverNeutral: number;
+  wireHoverValid: number;
+  wireHoverInvalid: number;
+}>;
+
+const getCanvasPalette = (scheme: ThemeScheme): CanvasPalette => {
+  if (scheme === "light") {
+    return {
+      scheme,
+      sceneTheme: lightCanvasTheme,
+      background: 0xf4f6fb,
+      gridMinor: 0xd4dde8,
+      gridMajor: 0xc0cada,
+      gridAxis: 0x9fb2c9,
+      marquee: 0x2563eb,
+      wireHoverNeutral: 0x2563eb,
+      wireHoverValid: 0x16a34a,
+      wireHoverInvalid: 0xdc2626,
+    };
+  }
+  return {
+    scheme,
+    sceneTheme: darkCanvasTheme,
+    background: 0x0d0f14,
+    gridMinor: 0x1b2836,
+    gridMajor: 0x1f3346,
+    gridAxis: 0x2a3e56,
+    marquee: 0x4fb3ff,
+    wireHoverNeutral: 0x7bf1ff,
+    wireHoverValid: 0x45d188,
+    wireHoverInvalid: 0xff6b6b,
+  };
+};
+
 type DragState =
   | { kind: "none" }
   | {
@@ -131,6 +177,8 @@ const CLIPBOARD_KIND = "shadr-clipboard";
 const CLIPBOARD_VERSION = 1 as const;
 let clipboardFallback: ClipboardPayload | null = null;
 const DUPLICATE_OFFSET: Point = { x: 32, y: 32 };
+const LONG_PRESS_DURATION_MS = 450;
+const LONG_PRESS_MOVE_THRESHOLD = 8;
 const WIRE_INSERT_NODE_TYPES: Record<string, ReadonlyArray<string>> = {
   float: ["reroute-float", "clamp"],
   int: ["reroute-int"],
@@ -273,6 +321,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   let gridGraphics: Graphics | null = null;
   let dragState: DragState = { kind: "none" };
   let isViewportEmpty = false;
+  let canvasPalette: CanvasPalette = getCanvasPalette("dark");
 
   const { onViewportEmpty } = props;
   const {
@@ -285,6 +334,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     settings,
     canvasCenter,
     pointerPosition,
+    commandPaletteOpen,
     applyGraphCommand,
     applyGraphCommandTransient,
     recordGraphCommand,
@@ -296,6 +346,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     setWireSelection,
     setCanvasCenter,
     setPointerPosition,
+    setCommandPaletteOpen,
     toggleBypassNodes,
     toggleCollapsedNodes,
     addNodeAt,
@@ -310,9 +361,11 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   let bypassedNodesSnapshot = bypassedNodes();
   let collapsedNodesSnapshot = collapsedNodes();
   let settingsSnapshot = settings();
+  let commandPaletteOpenSnapshot = commandPaletteOpen();
   let hoveredNodeIdSnapshot: NodeId | null = null;
   let hoveredWireIdSnapshot: WireId | null = null;
   let wireCounter = 1;
+  let lastAppliedCenter: Point | null = null;
 
   const nextWireId = (): WireId => {
     let candidate = makeWireId(`wire-${wireCounter}`);
@@ -724,6 +777,23 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     isViewportEmpty = nextEmpty;
   };
 
+  const applyCanvasPalette = (): void => {
+    if (!scene || !app) {
+      return;
+    }
+    scene.setTheme(canvasPalette.sceneTheme);
+    const renderer = app.renderer as { background?: unknown };
+    const background = renderer.background;
+    if (
+      background &&
+      typeof background === "object" &&
+      "color" in background &&
+      typeof (background as { color?: unknown }).color === "number"
+    ) {
+      (background as { color: number }).color = canvasPalette.background;
+    }
+  };
+
   const updateGrid = (): void => {
     if (!scene || !gridGraphics || !container) {
       return;
@@ -795,7 +865,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       }
       gridGraphics.stroke({
         width: lineWidth,
-        color: 0x1b2836,
+        color: canvasPalette.gridMinor,
         alpha: minorAlpha,
       });
     }
@@ -815,7 +885,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       }
       gridGraphics.stroke({
         width: lineWidth * 1.4,
-        color: 0x1f3346,
+        color: canvasPalette.gridMajor,
         alpha: majorAlpha,
       });
     }
@@ -827,7 +897,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       gridGraphics.lineTo(0, endY);
       gridGraphics.stroke({
         width: axisWidth,
-        color: 0x2a3e56,
+        color: canvasPalette.gridAxis,
         alpha: axisAlpha,
       });
     }
@@ -836,7 +906,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       gridGraphics.lineTo(endX, 0);
       gridGraphics.stroke({
         width: axisWidth,
-        color: 0x2a3e56,
+        color: canvasPalette.gridAxis,
         alpha: axisAlpha,
       });
     }
@@ -984,8 +1054,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     const zoom = scene?.getZoom() ?? 1;
     const strokeWidth = 1 / Math.max(zoom, 0.1);
     graphics.rect(minX, minY, maxX - minX, maxY - minY);
-    graphics.stroke({ width: strokeWidth, color: 0x4fb3ff, alpha: 1 });
-    graphics.fill({ color: 0x4fb3ff, alpha: 0.1 });
+    graphics.stroke({
+      width: strokeWidth,
+      color: canvasPalette.marquee,
+      alpha: 1,
+    });
+    graphics.fill({ color: canvasPalette.marquee, alpha: 0.1 });
   };
 
   const getSocketConnectionCount = (socket: GraphSocket): number => {
@@ -1195,11 +1269,11 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const getWireColor = (status: WireHoverStatus): number => {
     switch (status) {
       case "valid":
-        return 0x45d188;
+        return canvasPalette.wireHoverValid;
       case "invalid":
-        return 0xff6b6b;
+        return canvasPalette.wireHoverInvalid;
       default:
-        return 0x7bf1ff;
+        return canvasPalette.wireHoverNeutral;
     }
   };
 
@@ -1401,6 +1475,28 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       setCanvasCenter(scene.getCameraCenter());
       syncScene();
     }
+  };
+
+  const panCanvasBy = (delta: Point): void => {
+    if (!scene) {
+      return;
+    }
+    scene.panCameraBy(delta);
+    setCanvasCenter(scene.getCameraCenter());
+    syncScene();
+  };
+
+  const zoomCanvasBy = (factor: number): void => {
+    if (!scene || !container) {
+      return;
+    }
+    const center = {
+      x: container.clientWidth / 2,
+      y: container.clientHeight / 2,
+    };
+    scene.zoomAt(center, scene.getZoom() * factor);
+    setCanvasCenter(scene.getCameraCenter());
+    syncScene();
   };
 
   const getConnectedStartNodes = (menu: ContextMenuState): NodeId[] => {
@@ -1610,15 +1706,29 @@ export default function EditorCanvas(props: EditorCanvasProps) {
 
     let disposed = false;
     let cleanup: (() => void) | null = null;
+    let mediaQuery: MediaQueryList | null = null;
+
+    const updatePaletteForScheme = (scheme: ThemeScheme): void => {
+      canvasPalette = getCanvasPalette(scheme);
+      applyCanvasPalette();
+      updateGrid();
+      syncScene();
+    };
 
     const setupPixi = async (): Promise<void> => {
       const module = await import("pixi.js");
       if (disposed || !container) {
         return;
       }
+      const initialScheme: ThemeScheme =
+        typeof window !== "undefined" &&
+        window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
+      canvasPalette = getCanvasPalette(initialScheme);
       app = new module.Application();
       await app.init({
-        background: "#0d0f14",
+        background: canvasPalette.background,
         antialias: true,
         autoDensity: true,
         resolution: window.devicePixelRatio,
@@ -1634,7 +1744,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       container.appendChild(app.canvas);
       app.canvas.style.display = "block";
 
-      scene = new CanvasScene({ layout });
+      scene = new CanvasScene({ layout, theme: canvasPalette.sceneTheme });
       scene.attachTo(app.stage);
       scene.setViewportSize(
         { width: container.clientWidth, height: container.clientHeight },
@@ -1676,10 +1786,102 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       });
       resizeObserver.observe(container);
 
+      let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+      let longPressStart: {
+        pointerId: number;
+        screen: Point;
+        client: Point;
+      } | null = null;
+
+      const clearLongPress = (): void => {
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+        longPressStart = null;
+      };
+
+      const openContextMenu = (
+        screenPoint: Point,
+        clientPoint: Point,
+      ): void => {
+        if (!scene) {
+          return;
+        }
+        const hit = scene.hitTest(screenPoint);
+        const worldPoint = scene.screenToWorld(screenPoint);
+        updatePointerPosition(worldPoint, {
+          clientX: clientPoint.x,
+          clientY: clientPoint.y,
+        });
+        setSocketTooltip(null);
+        setHoveredNodeId(null);
+        setHoveredWireId(null);
+        if (hit.kind === "node") {
+          if (!selectedNodesSnapshot.has(hit.nodeId)) {
+            setNodeSelection(new Set([hit.nodeId]));
+            setWireSelection(new Set<WireId>());
+          }
+        } else if (hit.kind === "wire") {
+          if (!selectedWiresSnapshot.has(hit.wireId)) {
+            setWireSelection(new Set([hit.wireId]));
+            setNodeSelection(new Set<NodeId>());
+          }
+        }
+        setContextMenu({
+          screen: screenPoint,
+          world: worldPoint,
+          hit,
+        });
+      };
+
+      const startLongPress = (event: PointerEvent): void => {
+        if (!scene || !app) {
+          return;
+        }
+        if (event.pointerType !== "touch" || event.button !== 0) {
+          return;
+        }
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        clearLongPress();
+        const screenPoint = getScreenPoint(event);
+        longPressStart = {
+          pointerId: event.pointerId,
+          screen: screenPoint,
+          client: { x: event.clientX, y: event.clientY },
+        };
+        longPressTimer = setTimeout(() => {
+          if (!scene || !longPressStart) {
+            return;
+          }
+          const { screen, client, pointerId } = longPressStart;
+          clearLongPress();
+          if (contextMenu()) {
+            return;
+          }
+          ghostWire.clear();
+          ghostWire.visible = false;
+          socketHover.clear();
+          socketHover.visible = false;
+          marquee.clear();
+          marquee.visible = false;
+          dragState = { kind: "none" };
+          try {
+            app?.canvas.releasePointerCapture(pointerId);
+          } catch {
+            // ignore capture errors when pointer isn't held
+          }
+          openContextMenu(screen, client);
+        }, LONG_PRESS_DURATION_MS);
+      };
+
       const onPointerDown = (event: PointerEvent): void => {
         if (!scene || !app) {
           return;
         }
+        startLongPress(event);
         if (event.button === 1) {
           event.preventDefault();
           setContextMenu(null);
@@ -1773,6 +1975,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           return;
         }
 
+        if (event.pointerType === "touch") {
+          dragState = { kind: "pan", lastScreen: screenPoint };
+          app.canvas.setPointerCapture(event.pointerId);
+          return;
+        }
+
         clearSelection();
         marquee.visible = true;
         updateMarquee(marquee, worldPoint, worldPoint);
@@ -1791,6 +1999,14 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         }
         if (contextMenu()) {
           return;
+        }
+        if (longPressStart && event.pointerId === longPressStart.pointerId) {
+          const screenPoint = getScreenPoint(event);
+          const dx = screenPoint.x - longPressStart.screen.x;
+          const dy = screenPoint.y - longPressStart.screen.y;
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_THRESHOLD) {
+            clearLongPress();
+          }
         }
         const screenPoint = getScreenPoint(event);
         const worldPoint = scene.screenToWorld(screenPoint);
@@ -1927,6 +2143,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         if (!scene || !app) {
           return;
         }
+        clearLongPress();
         const screenPoint = getScreenPoint(event);
         const worldPoint = scene.screenToWorld(screenPoint);
         if (dragState.kind === "marquee") {
@@ -2028,6 +2245,13 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         if (event.defaultPrevented) {
           return;
         }
+        if (commandPaletteOpenSnapshot) {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setCommandPaletteOpen(false);
+          }
+          return;
+        }
         const target = event.target;
         const isEditableTarget =
           target instanceof HTMLElement &&
@@ -2050,6 +2274,14 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         }
 
         if (isEditableTarget) {
+          return;
+        }
+
+        const isCommandPalette =
+          event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey);
+        if (isCommandPalette) {
+          event.preventDefault();
+          setCommandPaletteOpen(true);
           return;
         }
 
@@ -2099,6 +2331,35 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           return;
         }
 
+        const isArrowKey =
+          event.key === "ArrowUp" ||
+          event.key === "ArrowDown" ||
+          event.key === "ArrowLeft" ||
+          event.key === "ArrowRight";
+        if (isArrowKey) {
+          event.preventDefault();
+          const baseStep = event.shiftKey ? 240 : 120;
+          const zoom = scene?.getZoom() ?? 1;
+          const step = baseStep / Math.max(zoom, 0.1);
+          const delta =
+            event.key === "ArrowUp"
+              ? { x: 0, y: -step }
+              : event.key === "ArrowDown"
+                ? { x: 0, y: step }
+                : event.key === "ArrowLeft"
+                  ? { x: -step, y: 0 }
+                  : { x: step, y: 0 };
+          panCanvasBy(delta);
+          return;
+        }
+
+        if (event.key === "[" || event.key === "]") {
+          event.preventDefault();
+          const factor = event.key === "]" ? 1.12 : 1 / 1.12;
+          zoomCanvasBy(factor);
+          return;
+        }
+
         const isCopy =
           event.key.toLowerCase() === "c" && (event.metaKey || event.ctrlKey);
         const isDuplicate =
@@ -2134,28 +2395,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           return;
         }
         event.preventDefault();
+        clearLongPress();
         const screenPoint = getScreenPoint(event);
-        const hit = scene.hitTest(screenPoint);
-        const worldPoint = scene.screenToWorld(screenPoint);
-        updatePointerPosition(worldPoint, event);
-        setSocketTooltip(null);
-        setHoveredNodeId(null);
-        if (hit.kind === "node") {
-          if (!selectedNodesSnapshot.has(hit.nodeId)) {
-            setNodeSelection(new Set([hit.nodeId]));
-            setWireSelection(new Set<WireId>());
-          }
-        } else if (hit.kind === "wire") {
-          if (!selectedWiresSnapshot.has(hit.wireId)) {
-            setWireSelection(new Set([hit.wireId]));
-            setNodeSelection(new Set<NodeId>());
-          }
-        }
-        setContextMenu({
-          screen: screenPoint,
-          world: worldPoint,
-          hit,
-        });
+        openContextMenu(screenPoint, { x: event.clientX, y: event.clientY });
       };
 
       const onPointerLeave = (): void => {
@@ -2170,6 +2412,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         setHoveredWireId(null);
         setPointerPosition(null);
         setContextMenu(null);
+        clearLongPress();
         dragState = { kind: "none" };
       };
 
@@ -2196,6 +2439,13 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       app.canvas.addEventListener("contextmenu", onContextMenu);
       app.canvas.addEventListener("wheel", onWheel, { passive: false });
       window.addEventListener("keydown", onKeyDown);
+      const onSchemeChange = (event: MediaQueryListEvent): void => {
+        updatePaletteForScheme(event.matches ? "light" : "dark");
+      };
+      if (typeof window !== "undefined") {
+        mediaQuery = window.matchMedia("(prefers-color-scheme: light)");
+        mediaQuery.addEventListener("change", onSchemeChange);
+      }
 
       cleanup = () => {
         app?.canvas.removeEventListener("pointerdown", onPointerDown);
@@ -2206,6 +2456,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         app?.canvas.removeEventListener("contextmenu", onContextMenu);
         app?.canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
+        mediaQuery?.removeEventListener("change", onSchemeChange);
         resizeObserver.disconnect();
         app?.destroy(true);
         app = null;
@@ -2229,9 +2480,26 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     bypassedNodesSnapshot = bypassedNodes();
     collapsedNodesSnapshot = collapsedNodes();
     settingsSnapshot = settings();
+    commandPaletteOpenSnapshot = commandPaletteOpen();
     hoveredNodeIdSnapshot = hoveredNodeId();
     hoveredWireIdSnapshot = hoveredWireId();
     syncScene();
+  });
+
+  createEffect(() => {
+    const center = canvasCenter();
+    if (!scene) {
+      return;
+    }
+    if (
+      !lastAppliedCenter ||
+      center.x !== lastAppliedCenter.x ||
+      center.y !== lastAppliedCenter.y
+    ) {
+      lastAppliedCenter = center;
+      scene.setCameraCenter(center);
+      syncScene();
+    }
   });
 
   createEffect(() => {
@@ -2292,7 +2560,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       />
       {socketTooltip() ? (
         <div
-          class="pointer-events-none absolute z-10 max-w-[240px] rounded-lg border border-[rgba(120,150,190,0.45)] bg-[rgba(9,12,20,0.95)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[#dbe6ff] shadow-[0_12px_24px_rgba(3,6,15,0.5)]"
+          class="pointer-events-none absolute z-10 max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
           style={{
             left: `${socketTooltip()!.x}px`,
             top: `${socketTooltip()!.y}px`,
@@ -2301,17 +2569,17 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           <div class="text-[0.75rem] font-semibold">
             {socketTooltip()!.title}
           </div>
-          <div class="mt-[0.15rem] text-[#9aa8c7]">
+          <div class="mt-[0.15rem] text-[color:var(--text-muted)]">
             {socketTooltip()!.typeLabel}
           </div>
-          <div class="mt-[0.2rem] text-[#e4ebff]">
+          <div class="mt-[0.2rem] text-[color:var(--text-strong)]">
             {socketTooltip()!.valueLabel}
           </div>
         </div>
       ) : null}
       {contextMenu() ? (
         <div
-          class="absolute z-20 min-w-[200px] rounded-xl border border-[rgba(120,150,190,0.35)] bg-[rgba(7,10,18,0.96)] p-2 text-[0.8rem] text-[#dbe6ff] shadow-[0_18px_36px_rgba(3,6,15,0.6)]"
+          class="absolute z-20 min-w-[200px] rounded-xl border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-strong)] p-2 text-[0.8rem] text-[color:var(--text-soft)] shadow-[var(--shadow-panel)]"
           style={{
             left: `clamp(12px, ${contextMenu()!.screen.x}px, calc(100% - 220px))`,
             top: `clamp(12px, ${contextMenu()!.screen.y}px, calc(100% - 220px))`,
@@ -2322,10 +2590,10 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         >
           {buildContextMenuEntries(contextMenu()!).map((entry) =>
             entry.kind === "separator" ? (
-              <div class="my-1 h-px bg-[rgba(120,150,190,0.2)]" />
+              <div class="my-1 h-px bg-[color:var(--border-subtle)]" />
             ) : (
               <button
-                class="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition hover:bg-[rgba(120,150,190,0.18)]"
+                class="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--surface-highlight)]"
                 onClick={() => {
                   entry.onSelect();
                   setContextMenu(null);
