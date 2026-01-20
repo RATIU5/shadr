@@ -8,7 +8,7 @@
     "dev": "tsc -b -w --preserveWatchOutput",
     "typecheck": "tsc -b",
     "lint": "eslint --fix .",
-    "test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/ui-canvas/test/**/*.test.ts"
+    "test": "vitest --run --config vitest.config.ts --root ../.."
   },
   "exports": {
     ".": {
@@ -21,5 +21,8 @@
     "@shadr/graph-core": "workspace:*",
     "@shadr/shared": "workspace:*",
     "pixi.js": "^8.6.1"
+  },
+  "devDependencies": {
+    "effect": "catalog:effect"
   }
 }

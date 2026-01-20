@@ -14,6 +14,7 @@ export type NodeCatalogEntry = Readonly<{
   type: string;
   label: string;
   description: string;
+  category?: string;
   paramSchema?: ParamSchemaDefinition;
 }>;
 

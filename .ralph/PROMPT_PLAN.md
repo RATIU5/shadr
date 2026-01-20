@@ -4,17 +4,19 @@
 
 0a. Study `AGENTS.md` for build/run commands and previous learnings.
 0b. Study `specs/architecture.md` for current project structure.
-0c. Study existing `fix_plan.md` to understand previous state.
+0c. Study `FEATURES.md` for list of features to include (may be missing or implemented)
+0d. Study existing `fix_plan.md` to understand previous state.
 
 ## 1. Analysis
 
 Use up to 50 parallel subagents to analyze:
 
-1. **Source code**: Study `app/` and `packages/` directories
+1. **Source code**: Study `packages/*` directories
 2. **Build health**: Run `pnpm typecheck && pnpm check` (use 1 subagent)
-3. **Code gaps**: Search for TODO, FIXME, placeholder, minimal implementations
-4. **Missing tests**: Identify untested functionality
-5. **Type issues**: Find any `any` types or missing type definitions
+3. **Run tests**: Run `pnpm test`, verify all tests pass, create tasks to fix failing tests
+4. **Code gaps**: Search for TODO, FIXME, placeholder, minimal implementations
+5. **Missing tests**: Identify untested functionality
+6. **Type issues**: Find any `any` types or missing type definitions
 
 **Do NOT assume functionality is missing** - confirm with code search first.
 

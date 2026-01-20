@@ -262,7 +262,9 @@ export const getUndoCommands = (
     case "remove-node":
       return [
         { kind: "add-node", node: command.node, sockets: command.sockets },
-        ...command.wires.map((wire) => ({ kind: "add-wire", wire })),
+        ...command.wires.map(
+          (wire): GraphCommand => ({ kind: "add-wire", wire }),
+        ),
       ];
     case "remove-frame":
       return [{ kind: "add-frame", frame: command.frame }];
@@ -320,7 +322,9 @@ export const getUndoCommands = (
           after: command.before,
           removedWires: command.removedWires,
         },
-        ...command.removedWires.map((wire) => ({ kind: "add-wire", wire })),
+        ...command.removedWires.map(
+          (wire): GraphCommand => ({ kind: "add-wire", wire }),
+        ),
       ];
   }
 };

@@ -209,6 +209,12 @@ The system is split into **four primary layers**, each with explicit responsibil
 
 ---
 
+## Repo Layout Notes
+
+- `packages/app-web/src/routes` is reserved for route components; shared editor utilities live under `packages/app-web/src/editor`.
+
+---
+
 ## Non-Goals (By Design)
 
 - No multi-user or collaborative features

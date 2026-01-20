@@ -1,14 +1,10 @@
-import type {
-  Graph,
-  GraphDocumentV1,
-  GraphError,
-  GraphId,
-} from "@shadr/graph-core";
+import type { Graph, GraphError, GraphId } from "@shadr/graph-core";
 import {
   createGraph,
   graphFromDocumentV1,
   graphToDocumentV1,
 } from "@shadr/graph-core";
+import type { GraphDocumentV1 } from "@shadr/shared";
 import { Context, Effect, Layer } from "effect";
 
 /* eslint-disable no-unused-vars */
@@ -34,12 +30,14 @@ export const GraphServiceLive = Layer.succeed(GraphService, {
 
 export const graphFromDocument = (
   document: GraphDocumentV1,
-): Effect.Effect<Graph, GraphError> =>
+): Effect.Effect<Graph, GraphError, GraphService> =>
   Effect.flatMap(GraphService, (service) =>
     service.graphFromDocument(document),
   );
 
-export const graphToDocument = (graph: Graph): Effect.Effect<GraphDocumentV1> =>
+export const graphToDocument = (
+  graph: Graph,
+): Effect.Effect<GraphDocumentV1, never, GraphService> =>
   Effect.flatMap(GraphService, (service) =>
     Effect.sync(() => service.graphToDocument(graph)),
   );

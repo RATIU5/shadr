@@ -28,33 +28,36 @@ const expectOk = <T>(effect: GraphEffect<T>): T => {
 
 const createTestNode = (
   id: string,
+  inputCount = 1,
 ): {
   nodeId: ReturnType<typeof makeNodeId>;
-  inputId: ReturnType<typeof makeSocketId>;
+  inputIds: ReadonlyArray<ReturnType<typeof makeSocketId>>;
   outputId: ReturnType<typeof makeSocketId>;
   node: GraphNode;
   sockets: GraphSocket[];
 } => {
   const nodeId = makeNodeId(id);
-  const inputId = makeSocketId(`${id}.in`);
+  const inputIds = Array.from({ length: inputCount }, (_, index) =>
+    makeSocketId(`${id}.in${inputCount === 1 ? "" : index + 1}`),
+  );
   const outputId = makeSocketId(`${id}.out`);
   const node: GraphNode = {
     id: nodeId,
     type: "test",
     position: { x: 0, y: 0 },
     params: {},
-    inputs: [inputId],
+    inputs: inputIds,
     outputs: [outputId],
   };
   const sockets: GraphSocket[] = [
-    {
+    ...inputIds.map((inputId, index) => ({
       id: inputId,
       nodeId,
-      name: "in",
-      direction: "input",
+      name: inputCount === 1 ? "in" : `in${index + 1}`,
+      direction: "input" as const,
       dataType: "float",
       required: false,
-    },
+    })),
     {
       id: outputId,
       nodeId,
@@ -64,7 +67,7 @@ const createTestNode = (
       required: false,
     },
   ];
-  return { nodeId, inputId, outputId, node, sockets };
+  return { nodeId, inputIds, outputId, node, sockets };
 };
 
 describe("topoSort", () => {
@@ -73,7 +76,7 @@ describe("topoSort", () => {
     const nodeA = createTestNode("A");
     const nodeB = createTestNode("B");
     const nodeC = createTestNode("C");
-    const nodeD = createTestNode("D");
+    const nodeD = createTestNode("D", 2);
 
     graph = expectOk(addNode(graph, nodeA.node, nodeA.sockets));
     graph = expectOk(addNode(graph, nodeB.node, nodeB.sockets));
@@ -83,28 +86,28 @@ describe("topoSort", () => {
       addWire(graph, {
         id: makeWireId("A-B"),
         fromSocketId: nodeA.outputId,
-        toSocketId: nodeB.inputId,
+        toSocketId: nodeB.inputIds[0],
       }),
     );
     graph = expectOk(
       addWire(graph, {
         id: makeWireId("A-C"),
         fromSocketId: nodeA.outputId,
-        toSocketId: nodeC.inputId,
+        toSocketId: nodeC.inputIds[0],
       }),
     );
     graph = expectOk(
       addWire(graph, {
         id: makeWireId("B-D"),
         fromSocketId: nodeB.outputId,
-        toSocketId: nodeD.inputId,
+        toSocketId: nodeD.inputIds[0],
       }),
     );
     graph = expectOk(
       addWire(graph, {
         id: makeWireId("C-D"),
         fromSocketId: nodeC.outputId,
-        toSocketId: nodeD.inputId,
+        toSocketId: nodeD.inputIds[1],
       }),
     );
 
@@ -125,7 +128,7 @@ describe("topoSort", () => {
     const nodeA = createTestNode("A");
     const nodeB = createTestNode("B");
     const nodeC = createTestNode("C");
-    const nodeD = createTestNode("D");
+    const nodeD = createTestNode("D", 2);
     const nodeE = createTestNode("E");
 
     graph = expectOk(addNode(graph, nodeA.node, nodeA.sockets));
@@ -137,28 +140,28 @@ describe("topoSort", () => {
       addWire(graph, {
         id: makeWireId("A-B"),
         fromSocketId: nodeA.outputId,
-        toSocketId: nodeB.inputId,
+        toSocketId: nodeB.inputIds[0],
       }),
     );
     graph = expectOk(
       addWire(graph, {
         id: makeWireId("A-C"),
         fromSocketId: nodeA.outputId,
-        toSocketId: nodeC.inputId,
+        toSocketId: nodeC.inputIds[0],
       }),
     );
     graph = expectOk(
       addWire(graph, {
         id: makeWireId("B-D"),
         fromSocketId: nodeB.outputId,
-        toSocketId: nodeD.inputId,
+        toSocketId: nodeD.inputIds[0],
       }),
     );
     graph = expectOk(
       addWire(graph, {
         id: makeWireId("C-D"),
         fromSocketId: nodeC.outputId,
-        toSocketId: nodeD.inputId,
+        toSocketId: nodeD.inputIds[1],
       }),
     );
 

@@ -8,7 +8,7 @@
     "dev": "tsc -b -w --preserveWatchOutput",
     "typecheck": "tsc -b",
     "lint": "eslint --fix .",
-    "test": "vitest --run --config ../../vitest.config.ts --root ../.. --include packages/plugin-system/test/**/*.test.ts"
+    "test": "vitest --run --config vitest.config.ts --root ../.."
   },
   "exports": {
     ".": {

@@ -41,7 +41,7 @@ import {
 } from "@shadr/ui-canvas";
 import { Either } from "effect";
 import type { Application, Graphics } from "pixi.js";
-import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 
 import NodeParamMeasure, {
   type NodeParamSize,
@@ -67,6 +67,11 @@ import {
   isNoopCommand,
 } from "~/editor/history";
 import {
+  getActiveKeybindingProfile,
+  type KeybindingActionId,
+  resolveKeybindingAction,
+} from "~/editor/keybindings";
+import {
   getNodeCatalogEntry,
   isRerouteNodeType,
   NODE_CATALOG,
@@ -79,6 +84,31 @@ import type { ConnectionAttemptReason } from "~/editor/validation-warnings";
 import { runAppEffectSyncEither } from "~/services/runtime";
 
 type Point = Readonly<{ x: number; y: number }>;
+/* eslint-disable no-unused-vars -- function parameter names document the test API */
+type CanvasTestApi = Readonly<{
+  getNodeIds: () => ReadonlyArray<NodeId>;
+  getWireIds: () => ReadonlyArray<WireId>;
+  getNodePosition: (nodeId: NodeId) => Point | null;
+  getNodeScreenCenter: (nodeId: NodeId) => Point | null;
+  getSocketsForNode: (nodeId: NodeId) => Readonly<{
+    inputs: ReadonlyArray<SocketId>;
+    outputs: ReadonlyArray<SocketId>;
+  }> | null;
+  getSocketScreenPosition: (socketId: SocketId) => Point | null;
+}>;
+/* eslint-enable no-unused-vars */
+
+const QUICK_ADD_NODE_TYPE =
+  NODE_CATALOG.find((entry) => entry.type === "math-add")?.type ??
+  NODE_CATALOG.at(0)?.type ??
+  "const-float";
+const QUICK_ADD_NODE_LABEL = "Add Node";
+
+const toMenuTestId = (label: string): string =>
+  label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-+|-+$)/g, "");
 type Bounds = Readonly<{
   minX: number;
   minY: number;
@@ -107,6 +137,7 @@ type WireTooltip = Readonly<{
   typeLabel: string;
   valueLabel: string;
 }>;
+type KeyboardFocus = "node" | "socket" | "wire";
 type ContextMenuState = Readonly<{
   screen: Point;
   world: Point;
@@ -122,6 +153,15 @@ type ContextMenuEntry =
   | Readonly<{
       kind: "separator";
     }>;
+
+const applyResponseCurve = (value: number, curve: number): number => {
+  if (curve === 1) {
+    return value;
+  }
+  const magnitude = Math.abs(value);
+  const adjusted = Math.pow(1 + magnitude, curve) - 1;
+  return Math.sign(value) * adjusted;
+};
 
 type ThemeScheme = "dark" | "light";
 type CanvasPalette = Readonly<{
@@ -603,6 +643,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   let frameCounter = 1;
   let wireCounter = 1;
   let lastAppliedCenter: Point | null = null;
+  let keyboardFocus: KeyboardFocus | null = null;
+  let focusedSocketId: SocketId | null = null;
+  let wireFocusAnchorSocketId: SocketId | null = null;
 
   const nextFrameId = (): FrameId => {
     let candidate = makeFrameId(`frame-${frameCounter}`);
@@ -1016,6 +1059,61 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const getSceneSocketPosition = (socketId: SocketId): Point | null =>
     scene?.getSocketPosition(socketId) ??
     getSocketPosition(graphSnapshot, socketId, layout);
+
+  const registerTestApi = (): (() => void) | null => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const target = window as Window & { __SHADR_TEST__?: CanvasTestApi };
+    const toPagePoint = (point: Point): Point | null => {
+      const canvas = app?.canvas;
+      if (!canvas) {
+        return null;
+      }
+      const rect = canvas.getBoundingClientRect();
+      return { x: rect.left + point.x, y: rect.top + point.y };
+    };
+    target.__SHADR_TEST__ = {
+      getNodeIds: () => Array.from(graphSnapshot.nodes.keys()).sort(),
+      getWireIds: () => Array.from(graphSnapshot.wires.keys()).sort(),
+      getNodePosition: (nodeId) => {
+        const node = graphSnapshot.nodes.get(nodeId);
+        return node ? { ...node.position } : null;
+      },
+      getNodeScreenCenter: (nodeId) => {
+        const node = graphSnapshot.nodes.get(nodeId);
+        if (!node || !scene) {
+          return null;
+        }
+        const { width, height } = getNodeSize(node, layout);
+        const screenPoint = scene.worldToScreen({
+          x: node.position.x + width / 2,
+          y: node.position.y + height / 2,
+        });
+        return toPagePoint(screenPoint);
+      },
+      getSocketsForNode: (nodeId) => {
+        const node = graphSnapshot.nodes.get(nodeId);
+        if (!node) {
+          return null;
+        }
+        return { inputs: [...node.inputs], outputs: [...node.outputs] };
+      },
+      getSocketScreenPosition: (socketId) => {
+        if (!scene) {
+          return null;
+        }
+        const position = getSceneSocketPosition(socketId);
+        if (!position) {
+          return null;
+        }
+        return toPagePoint(scene.worldToScreen(position));
+      },
+    };
+    return () => {
+      delete target.__SHADR_TEST__;
+    };
+  };
 
   const getFrameResizeHandle = (
     frame: GraphFrame,
@@ -2465,11 +2563,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     if (selectedNodesSnapshot.size > 0) {
       return Array.from(selectedNodesSnapshot);
     }
-    if (menu.hit.kind === "node") {
-      return [menu.hit.nodeId];
+    const hit = menu.hit;
+    if (hit.kind === "node") {
+      return [hit.nodeId];
     }
-    if (menu.hit.kind === "wire") {
-      const wire = graphSnapshot.wires.get(menu.hit.wireId);
+    if (hit.kind === "wire") {
+      const wire = graphSnapshot.wires.get(hit.wireId);
       if (!wire) {
         return [];
       }
@@ -2546,22 +2645,23 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const buildContextMenuEntries = (
     menu: ContextMenuState,
   ): ContextMenuEntry[] => {
-    if (menu.mode === "wire-insert" && menu.hit.kind === "wire") {
-      const insertCandidates = getWireInsertCandidates(menu.hit.wireId);
+    const hit = menu.hit;
+    if (menu.mode === "wire-insert" && hit.kind === "wire") {
+      const insertCandidates = getWireInsertCandidates(hit.wireId);
       return insertCandidates.map((candidate) => ({
         kind: "item",
         label: `Insert ${candidate.label}`,
         onSelect: () => {
-          insertNodeOnWire(menu.hit.wireId, candidate);
+          insertNodeOnWire(hit.wireId, candidate);
         },
       }));
     }
     const entries: ContextMenuEntry[] = [
       {
         kind: "item",
-        label: "Add Basic Node",
+        label: QUICK_ADD_NODE_LABEL,
         onSelect: () => {
-          addNodeAt("basic", menu.world);
+          addNodeAt(QUICK_ADD_NODE_TYPE, menu.world);
         },
       },
       {
@@ -2665,10 +2765,10 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         },
       });
     }
-    switch (menu.hit.kind) {
+    switch (hit.kind) {
       case "node": {
         pushSeparator(entries);
-        const node = graphSnapshot.nodes.get(menu.hit.nodeId);
+        const node = graphSnapshot.nodes.get(hit.nodeId);
         if (node?.type === SUBGRAPH_NODE_TYPE && onDiveIntoSubgraph) {
           entries.push({
             kind: "item",
@@ -2682,11 +2782,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           kind: "item",
           label: "Delete Node",
           onSelect: () => {
-            removeNodesWithReconnect(
-              [menu.hit.nodeId],
-              "delete-node",
-              "remove",
-            );
+            removeNodesWithReconnect([hit.nodeId], "delete-node", "remove");
           },
         });
         entries.push({
@@ -2694,7 +2790,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           label: "Delete Node + Bridge Wires",
           onSelect: () => {
             removeNodesWithReconnect(
-              [menu.hit.nodeId],
+              [hit.nodeId],
               "delete-node-bridge",
               "bridge",
             );
@@ -2704,7 +2800,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           kind: "item",
           label: "Toggle Bypass",
           onSelect: () => {
-            toggleBypassNodes(new Set([menu.hit.nodeId]));
+            toggleBypassNodes(new Set([hit.nodeId]));
           },
         });
         break;
@@ -2712,13 +2808,13 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       case "frame":
         pushSeparator(entries);
         {
-          const frame = graphSnapshot.frames.get(menu.hit.frameId);
+          const frame = graphSnapshot.frames.get(hit.frameId);
           if (frame) {
             entries.push({
               kind: "item",
               label: frame.collapsed ? "Expand Frame" : "Collapse Frame",
               onSelect: () => {
-                toggleFrameCollapsed(menu.hit.frameId);
+                toggleFrameCollapsed(hit.frameId);
               },
             });
           }
@@ -2727,19 +2823,19 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           kind: "item",
           label: "Delete Frame",
           onSelect: () => {
-            removeFrames([menu.hit.frameId], "delete-frame");
+            removeFrames([hit.frameId], "delete-frame");
           },
         });
         break;
       case "wire": {
         pushSeparator(entries);
-        const insertCandidates = getWireInsertCandidates(menu.hit.wireId);
+        const insertCandidates = getWireInsertCandidates(hit.wireId);
         for (const candidate of insertCandidates) {
           entries.push({
             kind: "item",
             label: `Insert ${candidate.label}`,
             onSelect: () => {
-              insertNodeOnWire(menu.hit.wireId, candidate);
+              insertNodeOnWire(hit.wireId, candidate);
             },
           });
         }
@@ -2750,14 +2846,14 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           kind: "item",
           label: "Disconnect Wire",
           onSelect: () => {
-            removeWires([menu.hit.wireId], "disconnect-wire");
+            removeWires([hit.wireId], "disconnect-wire");
           },
         });
         break;
       }
       case "socket": {
         pushSeparator(entries);
-        const socket = graphSnapshot.sockets.get(menu.hit.socketId);
+        const socket = graphSnapshot.sockets.get(hit.socketId);
         if (socket?.direction === "input") {
           entries.push({
             kind: "item",
@@ -2788,6 +2884,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       return;
     }
 
+    const unregisterTestApi = registerTestApi();
     let disposed = false;
     let cleanup: (() => void) | null = null;
     let mediaQuery: MediaQueryList | null = null;
@@ -2826,6 +2923,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       }
 
       container.appendChild(app.canvas);
+      app.canvas.setAttribute("data-testid", "editor-canvas");
       app.canvas.style.display = "block";
 
       scene = new CanvasScene({ layout, theme: canvasPalette.sceneTheme });
@@ -2975,6 +3073,340 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         });
       };
 
+      const clearKeyboardFocus = (): void => {
+        keyboardFocus = null;
+        focusedSocketId = null;
+        wireFocusAnchorSocketId = null;
+        socketHover.clear();
+        socketHover.visible = false;
+        setSocketTooltip(null);
+        setWireTooltip(null);
+      };
+
+      const getSingleSelectionId = <T,>(
+        selection: ReadonlySet<T>,
+      ): T | null => {
+        if (selection.size !== 1) {
+          return null;
+        }
+        const [entry] = selection;
+        return entry ?? null;
+      };
+
+      const getSortedNodes = (): GraphNode[] => {
+        const nodes = Array.from(graphSnapshot.nodes.values());
+        nodes.sort((left, right) => {
+          if (left.position.y !== right.position.y) {
+            return left.position.y - right.position.y;
+          }
+          return left.position.x - right.position.x;
+        });
+        return nodes;
+      };
+
+      const getNodeCenter = (node: GraphNode): Point => {
+        const { width, height } = getNodeSize(node, layout);
+        return {
+          x: node.position.x + width / 2,
+          y: node.position.y + height / 2,
+        };
+      };
+
+      const focusNode = (nodeId: NodeId): void => {
+        if (!graphSnapshot.nodes.has(nodeId)) {
+          return;
+        }
+        setNodeSelection(new Set([nodeId]));
+        keyboardFocus = "node";
+        focusedSocketId = null;
+        wireFocusAnchorSocketId = null;
+        socketHover.clear();
+        socketHover.visible = false;
+        setSocketTooltip(null);
+        setWireTooltip(null);
+      };
+
+      const getSortedSocketsForNode = (
+        nodeId: NodeId,
+        direction: GraphSocket["direction"],
+      ): GraphSocket[] => {
+        const node = graphSnapshot.nodes.get(nodeId);
+        if (!node) {
+          return [];
+        }
+        const socketIds = direction === "input" ? node.inputs : node.outputs;
+        const sockets = socketIds.flatMap((socketId) => {
+          const socket = graphSnapshot.sockets.get(socketId);
+          return socket ? [socket] : [];
+        });
+        sockets.sort((left, right) => {
+          const leftPos = getSceneSocketPosition(left.id);
+          const rightPos = getSceneSocketPosition(right.id);
+          if (leftPos && rightPos && leftPos.y !== rightPos.y) {
+            return leftPos.y - rightPos.y;
+          }
+          if (leftPos && rightPos && leftPos.x !== rightPos.x) {
+            return leftPos.x - rightPos.x;
+          }
+          return left.name.localeCompare(right.name);
+        });
+        return sockets;
+      };
+
+      const focusSocket = (socketId: SocketId): void => {
+        const socket = graphSnapshot.sockets.get(socketId);
+        if (!socket) {
+          return;
+        }
+        if (!selectedNodesSnapshot.has(socket.nodeId)) {
+          setNodeSelection(new Set([socket.nodeId]));
+        }
+        keyboardFocus = "socket";
+        focusedSocketId = socketId;
+        wireFocusAnchorSocketId = null;
+        setWireTooltip(null);
+        const position = getSceneSocketPosition(socketId);
+        updateSocketHover(socketHover, position, "neutral");
+        if (position && scene) {
+          const screenPoint = scene.worldToScreen(position);
+          setSocketTooltip(buildSocketTooltip(socketId, screenPoint));
+        } else {
+          setSocketTooltip(null);
+        }
+      };
+
+      const focusFirstSocket = (
+        nodeId: NodeId,
+        preferred: GraphSocket["direction"] | null,
+      ): boolean => {
+        const directions: GraphSocket["direction"][] = preferred
+          ? [preferred, preferred === "input" ? "output" : "input"]
+          : ["input", "output"];
+        for (const direction of directions) {
+          const sockets = getSortedSocketsForNode(nodeId, direction);
+          if (sockets.length > 0) {
+            focusSocket(sockets[0].id);
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const moveSocketInColumn = (
+        nodeId: NodeId,
+        direction: GraphSocket["direction"],
+        delta: number,
+      ): void => {
+        const sockets = getSortedSocketsForNode(nodeId, direction);
+        if (sockets.length === 0) {
+          return;
+        }
+        const currentIndex = focusedSocketId
+          ? sockets.findIndex((socket) => socket.id === focusedSocketId)
+          : -1;
+        const startIndex =
+          currentIndex >= 0
+            ? (currentIndex + delta + sockets.length) % sockets.length
+            : delta < 0
+              ? sockets.length - 1
+              : 0;
+        const next = sockets[startIndex];
+        if (next) {
+          focusSocket(next.id);
+        }
+      };
+
+      const getWiresForSocket = (socketId: SocketId): GraphWire[] => {
+        const socket = graphSnapshot.sockets.get(socketId);
+        if (!socket) {
+          return [];
+        }
+        const wires = Array.from(graphSnapshot.wires.values()).filter((wire) =>
+          socket.direction === "input"
+            ? wire.toSocketId === socketId
+            : wire.fromSocketId === socketId,
+        );
+        wires.sort((left, right) => {
+          const leftOther =
+            socket.direction === "input" ? left.fromSocketId : left.toSocketId;
+          const rightOther =
+            socket.direction === "input"
+              ? right.fromSocketId
+              : right.toSocketId;
+          const leftPos = getSceneSocketPosition(leftOther);
+          const rightPos = getSceneSocketPosition(rightOther);
+          if (leftPos && rightPos && leftPos.y !== rightPos.y) {
+            return leftPos.y - rightPos.y;
+          }
+          if (leftPos && rightPos && leftPos.x !== rightPos.x) {
+            return leftPos.x - rightPos.x;
+          }
+          return left.id.localeCompare(right.id);
+        });
+        return wires;
+      };
+
+      const focusWire = (
+        wireId: WireId,
+        anchorSocketId: SocketId | null,
+      ): void => {
+        const wire = graphSnapshot.wires.get(wireId);
+        if (!wire) {
+          return;
+        }
+        keyboardFocus = "wire";
+        focusedSocketId = null;
+        wireFocusAnchorSocketId = anchorSocketId ?? wire.fromSocketId;
+        setWireSelection(new Set([wireId]));
+        setSocketTooltip(null);
+        socketHover.clear();
+        socketHover.visible = false;
+        setWireTooltip(
+          settingsSnapshot.wireHoverLabels ? buildWireTooltip(wireId) : null,
+        );
+      };
+
+      const focusNextNode = (delta: number): void => {
+        const nodes = getSortedNodes();
+        if (nodes.length === 0) {
+          return;
+        }
+        const currentId = getSingleSelectionId(selectedNodesSnapshot);
+        const currentIndex = currentId
+          ? nodes.findIndex((node) => node.id === currentId)
+          : -1;
+        const nextIndex =
+          currentIndex >= 0
+            ? (currentIndex + delta + nodes.length) % nodes.length
+            : delta < 0
+              ? nodes.length - 1
+              : 0;
+        const next = nodes[nextIndex];
+        if (next) {
+          focusNode(next.id);
+        }
+      };
+
+      const focusDirectionalNode = (
+        direction: "left" | "right" | "up" | "down",
+      ): void => {
+        const currentId = getSingleSelectionId(selectedNodesSnapshot);
+        if (!currentId) {
+          focusNextNode(1);
+          return;
+        }
+        const current = graphSnapshot.nodes.get(currentId);
+        if (!current) {
+          return;
+        }
+        const origin = getNodeCenter(current);
+        let best: { nodeId: NodeId; score: number } | null = null;
+        for (const node of graphSnapshot.nodes.values()) {
+          if (node.id === currentId) {
+            continue;
+          }
+          const center = getNodeCenter(node);
+          const dx = center.x - origin.x;
+          const dy = center.y - origin.y;
+          if (direction === "left" && dx >= -1) {
+            continue;
+          }
+          if (direction === "right" && dx <= 1) {
+            continue;
+          }
+          if (direction === "up" && dy >= -1) {
+            continue;
+          }
+          if (direction === "down" && dy <= 1) {
+            continue;
+          }
+          const primary =
+            direction === "left" || direction === "right"
+              ? Math.abs(dx)
+              : Math.abs(dy);
+          const secondary =
+            direction === "left" || direction === "right"
+              ? Math.abs(dy)
+              : Math.abs(dx);
+          const score = primary + secondary * 0.35;
+          if (!best || score < best.score) {
+            best = { nodeId: node.id, score };
+          }
+        }
+        if (best) {
+          focusNode(best.nodeId);
+        }
+      };
+
+      const moveWireFocus = (delta: number): void => {
+        const currentWireId = getSingleSelectionId(selectedWiresSnapshot);
+        const inferredAnchor = currentWireId
+          ? (graphSnapshot.wires.get(currentWireId)?.fromSocketId ?? null)
+          : null;
+        const anchor =
+          wireFocusAnchorSocketId ?? focusedSocketId ?? inferredAnchor;
+        if (!anchor) {
+          return;
+        }
+        const wires = getWiresForSocket(anchor);
+        if (wires.length === 0) {
+          return;
+        }
+        const currentIndex = currentWireId
+          ? wires.findIndex((wire) => wire.id === currentWireId)
+          : -1;
+        const nextIndex =
+          currentIndex >= 0
+            ? (currentIndex + delta + wires.length) % wires.length
+            : delta < 0
+              ? wires.length - 1
+              : 0;
+        const nextWire = wires[nextIndex];
+        if (nextWire) {
+          focusWire(nextWire.id, anchor);
+        }
+      };
+
+      const openKeyboardContextMenu = (): void => {
+        if (!scene || !app) {
+          return;
+        }
+        let worldPoint = canvasCenter();
+        const selectedNodeId = getSingleSelectionId(selectedNodesSnapshot);
+        const selectedFrameId = getSingleSelectionId(selectedFramesSnapshot);
+        const selectedWireId = getSingleSelectionId(selectedWiresSnapshot);
+        if (focusedSocketId) {
+          const socketPos = getSceneSocketPosition(focusedSocketId);
+          if (socketPos) {
+            worldPoint = socketPos;
+          }
+        } else if (selectedNodeId) {
+          const node = graphSnapshot.nodes.get(selectedNodeId);
+          if (node) {
+            worldPoint = getNodeCenter(node);
+          }
+        } else if (selectedFrameId) {
+          const frame = graphSnapshot.frames.get(selectedFrameId);
+          if (frame) {
+            worldPoint = {
+              x: frame.position.x + frame.size.width / 2,
+              y: frame.position.y + frame.size.height / 2,
+            };
+          }
+        } else if (selectedWireId) {
+          const midpoint = getWireMidpoint(selectedWireId);
+          if (midpoint) {
+            worldPoint = midpoint;
+          }
+        }
+        const screenPoint = scene.worldToScreen(worldPoint);
+        const rect = app.canvas.getBoundingClientRect();
+        openContextMenu(screenPoint, {
+          x: rect.left + screenPoint.x,
+          y: rect.top + screenPoint.y,
+        });
+      };
+
       const startLongPress = (event: PointerEvent): void => {
         if (!scene || !app) {
           return;
@@ -3022,6 +3454,9 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         worldPoint: Point,
         pointerId: number,
       ): boolean => {
+        if (!app) {
+          return false;
+        }
         const wire = graphSnapshot.wires.get(wireId);
         if (!wire) {
           return false;
@@ -3065,9 +3500,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       };
 
       const onPointerDown = (event: PointerEvent): void => {
-        if (!scene || !app) {
+        const activeScene = scene;
+        const activeApp = app;
+        if (!activeScene || !activeApp) {
           return;
         }
+        clearKeyboardFocus();
         startLongPress(event);
         wireTapCandidate = null;
         if (event.button === 1) {
@@ -3078,7 +3516,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             kind: "pan",
             lastScreen: getScreenPoint(event),
           };
-          app.canvas.setPointerCapture(event.pointerId);
+          activeApp.canvas.setPointerCapture(event.pointerId);
           return;
         }
         if (event.button !== 0) {
@@ -3086,8 +3524,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         }
         setContextMenu(null);
         const screenPoint = getScreenPoint(event);
-        const hit = scene.hitTest(screenPoint);
-        const worldPoint = scene.screenToWorld(screenPoint);
+        const hit = activeScene.hitTest(screenPoint);
+        const worldPoint = activeScene.screenToWorld(screenPoint);
         updatePointerPosition(worldPoint, event);
         setSocketTooltip(null);
 
@@ -3104,7 +3542,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               current: worldPoint,
               grabbedWire: null,
             };
-            app.canvas.setPointerCapture(event.pointerId);
+            activeApp.canvas.setPointerCapture(event.pointerId);
             return;
           }
           if (socket?.direction === "input") {
@@ -3135,7 +3573,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               current: worldPoint,
               grabbedWire: wire,
             };
-            app.canvas.setPointerCapture(event.pointerId);
+            activeApp.canvas.setPointerCapture(event.pointerId);
             return;
           }
         }
@@ -3181,7 +3619,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             startPositions,
             bounds: dragBounds,
           };
-          app.canvas.setPointerCapture(event.pointerId);
+          activeApp.canvas.setPointerCapture(event.pointerId);
           return;
         }
 
@@ -3200,7 +3638,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               origin: worldPoint,
               startFrame: frame,
             };
-            app.canvas.setPointerCapture(event.pointerId);
+            activeApp.canvas.setPointerCapture(event.pointerId);
             return;
           }
           const next = new Set(selectedFramesSnapshot);
@@ -3258,7 +3696,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             startNodePositions,
             bounds: dragBounds,
           };
-          app.canvas.setPointerCapture(event.pointerId);
+          activeApp.canvas.setPointerCapture(event.pointerId);
           return;
         }
 
@@ -3277,7 +3715,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
 
         if (event.pointerType === "touch") {
           dragState = { kind: "pan", lastScreen: screenPoint };
-          app.canvas.setPointerCapture(event.pointerId);
+          activeApp.canvas.setPointerCapture(event.pointerId);
           return;
         }
 
@@ -3290,7 +3728,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           current: worldPoint,
           additive: event.shiftKey,
         };
-        app.canvas.setPointerCapture(event.pointerId);
+        activeApp.canvas.setPointerCapture(event.pointerId);
       };
 
       const onPointerMove = (event: PointerEvent): void => {
@@ -3482,9 +3920,13 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           const nextScreen = getScreenPoint(event);
           const prevWorld = scene.screenToWorld(dragState.lastScreen);
           const nextWorld = scene.screenToWorld(nextScreen);
-          const delta = {
+          const baseDelta = {
             x: (prevWorld.x - nextWorld.x) * settingsSnapshot.panSensitivity,
             y: (prevWorld.y - nextWorld.y) * settingsSnapshot.panSensitivity,
+          };
+          const delta = {
+            x: applyResponseCurve(baseDelta.x, settingsSnapshot.panCurve),
+            y: applyResponseCurve(baseDelta.y, settingsSnapshot.panCurve),
           };
           scene.panCameraBy(delta);
           setCanvasCenter(scene.getCameraCenter());
@@ -3860,7 +4302,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           }
         }
         const worldPoint = scene.screenToWorld(screenPoint);
-        addNodeAt("basic", worldPoint);
+        addNodeAt(QUICK_ADD_NODE_TYPE, worldPoint);
       };
 
       const onKeyDown = (event: KeyboardEvent): void => {
@@ -3882,6 +4324,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
             target.tagName === "TEXTAREA" ||
             target.tagName === "SELECT");
         if (event.key === "Escape") {
+          clearKeyboardFocus();
           if (dragState.kind === "wire" && dragState.grabbedWire) {
             applyGraphCommandTransient({
               kind: "add-wire",
@@ -3905,135 +4348,262 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           return;
         }
 
-        const isCommandPalette =
-          event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey);
-        if (isCommandPalette) {
-          event.preventDefault();
-          setCommandPaletteOpen(true);
+        const action = resolveKeybindingAction(
+          event,
+          getActiveKeybindingProfile(settingsSnapshot.keybindings),
+        );
+        if (!action) {
           return;
         }
 
-        const isUndo =
-          event.key.toLowerCase() === "z" &&
-          (event.metaKey || event.ctrlKey) &&
-          !event.shiftKey;
-        const isRedo =
-          (event.key.toLowerCase() === "z" &&
-            (event.metaKey || event.ctrlKey) &&
-            event.shiftKey) ||
-          (event.key.toLowerCase() === "y" && (event.metaKey || event.ctrlKey));
-
-        if (isUndo) {
+        const prevent = (): void => {
           event.preventDefault();
-          undo();
-          return;
-        }
+        };
 
-        if (isRedo) {
-          event.preventDefault();
-          redo();
-          return;
-        }
-
-        if (event.key.toLowerCase() === "b") {
-          if (selectedNodesSnapshot.size > 0) {
-            event.preventDefault();
-            toggleBypassNodes(selectedNodesSnapshot);
+        const handleSocketNavigation = (
+          direction: "input" | "output" | "up" | "down",
+        ): void => {
+          const nodeId = focusedSocketId
+            ? (graphSnapshot.sockets.get(focusedSocketId)?.nodeId ?? null)
+            : getSingleSelectionId(selectedNodesSnapshot);
+          if (!nodeId) {
+            return;
           }
-          return;
-        }
+          if (direction === "input" || direction === "output") {
+            focusFirstSocket(nodeId, direction);
+            return;
+          }
+          const activeSocket = focusedSocketId
+            ? graphSnapshot.sockets.get(focusedSocketId)
+            : null;
+          const column = activeSocket ? activeSocket.direction : "input";
+          const delta = direction === "up" ? -1 : 1;
+          moveSocketInColumn(nodeId, column, delta);
+        };
 
-        if (event.key === "Backspace" || event.key === "Delete") {
-          event.preventDefault();
-          deleteSelection();
-          return;
-        }
+        const handleActivate = (reverse: boolean): void => {
+          if (keyboardFocus === "wire") {
+            const wireId = getSingleSelectionId(selectedWiresSnapshot);
+            const wire = wireId ? graphSnapshot.wires.get(wireId) : null;
+            if (!wire) {
+              return;
+            }
+            const anchor = wireFocusAnchorSocketId;
+            let targetSocketId: SocketId | null = null;
+            if (
+              anchor &&
+              (wire.fromSocketId === anchor || wire.toSocketId === anchor)
+            ) {
+              if (reverse) {
+                targetSocketId = anchor;
+              } else {
+                targetSocketId =
+                  wire.fromSocketId === anchor
+                    ? wire.toSocketId
+                    : wire.fromSocketId;
+              }
+            } else {
+              targetSocketId = reverse ? wire.fromSocketId : wire.toSocketId;
+            }
+            const socket = targetSocketId
+              ? graphSnapshot.sockets.get(targetSocketId)
+              : null;
+            if (socket) {
+              focusNode(socket.nodeId);
+            }
+            return;
+          }
+          if (keyboardFocus === "socket" && focusedSocketId) {
+            const socket = graphSnapshot.sockets.get(focusedSocketId);
+            if (!socket) {
+              return;
+            }
+            if (reverse) {
+              focusNode(socket.nodeId);
+              return;
+            }
+            const wires = getWiresForSocket(socket.id);
+            if (wires.length > 0) {
+              focusWire(wires[0].id, socket.id);
+            }
+            return;
+          }
+          const selectedNodeId = getSingleSelectionId(selectedNodesSnapshot);
+          if (!selectedNodeId) {
+            focusNextNode(1);
+            return;
+          }
+          if (reverse) {
+            return;
+          }
+          focusFirstSocket(selectedNodeId, "input");
+        };
 
-        if (event.key.toLowerCase() === "f") {
-          event.preventDefault();
-          if (event.shiftKey || selectedNodesSnapshot.size === 0) {
+        switch (action) {
+          case "menu.context":
+            prevent();
+            openKeyboardContextMenu();
+            return;
+          case "commandPalette.open":
+            prevent();
+            setCommandPaletteOpen(true);
+            return;
+          case "history.undo":
+            prevent();
+            undo();
+            return;
+          case "history.redo":
+            prevent();
+            redo();
+            return;
+          case "selection.toggleBypass":
+            if (selectedNodesSnapshot.size > 0) {
+              prevent();
+              toggleBypassNodes(selectedNodesSnapshot);
+            }
+            return;
+          case "selection.delete":
+            prevent();
+            deleteSelection();
+            clearKeyboardFocus();
+            return;
+          case "view.frameSelection":
+            prevent();
+            if (selectedNodesSnapshot.size === 0) {
+              frameNodes();
+            } else {
+              frameNodes(selectedNodesSnapshot);
+            }
+            return;
+          case "view.frameAll":
+            prevent();
             frameNodes();
-          } else {
-            frameNodes(selectedNodesSnapshot);
+            return;
+          case "group.create":
+            prevent();
+            groupSelectionIntoFrame();
+            return;
+          case "group.ungroup":
+            prevent();
+            ungroupSelectedFrames();
+            return;
+          case "navigation.focusNext":
+            prevent();
+            if (keyboardFocus === "socket" && focusedSocketId) {
+              const socket = graphSnapshot.sockets.get(focusedSocketId);
+              if (socket) {
+                moveSocketInColumn(socket.nodeId, socket.direction, 1);
+              }
+              return;
+            }
+            if (keyboardFocus === "wire") {
+              moveWireFocus(1);
+              return;
+            }
+            focusNextNode(1);
+            return;
+          case "navigation.focusPrev":
+            prevent();
+            if (keyboardFocus === "socket" && focusedSocketId) {
+              const socket = graphSnapshot.sockets.get(focusedSocketId);
+              if (socket) {
+                moveSocketInColumn(socket.nodeId, socket.direction, -1);
+              }
+              return;
+            }
+            if (keyboardFocus === "wire") {
+              moveWireFocus(-1);
+              return;
+            }
+            focusNextNode(-1);
+            return;
+          case "navigation.activate":
+            prevent();
+            handleActivate(false);
+            return;
+          case "navigation.activateReverse":
+            prevent();
+            handleActivate(true);
+            return;
+          case "navigation.socketInput":
+            prevent();
+            handleSocketNavigation("input");
+            return;
+          case "navigation.socketOutput":
+            prevent();
+            handleSocketNavigation("output");
+            return;
+          case "navigation.socketUp":
+            prevent();
+            handleSocketNavigation("up");
+            return;
+          case "navigation.socketDown":
+            prevent();
+            handleSocketNavigation("down");
+            return;
+          case "navigation.nodeLeft":
+            prevent();
+            focusDirectionalNode("left");
+            return;
+          case "navigation.nodeRight":
+            prevent();
+            focusDirectionalNode("right");
+            return;
+          case "navigation.nodeUp":
+            prevent();
+            focusDirectionalNode("up");
+            return;
+          case "navigation.nodeDown":
+            prevent();
+            focusDirectionalNode("down");
+            return;
+          case "view.panUp":
+          case "view.panDown":
+          case "view.panLeft":
+          case "view.panRight": {
+            prevent();
+            const baseStep = event.shiftKey ? 240 : 120;
+            const zoom = scene?.getZoom() ?? 1;
+            const step = baseStep / Math.max(zoom, 0.1);
+            const delta =
+              action === "view.panUp"
+                ? { x: 0, y: -step }
+                : action === "view.panDown"
+                  ? { x: 0, y: step }
+                  : action === "view.panLeft"
+                    ? { x: -step, y: 0 }
+                    : { x: step, y: 0 };
+            panCanvasBy(delta);
+            return;
           }
-          return;
-        }
-
-        const isGroup =
-          event.key.toLowerCase() === "g" &&
-          (event.metaKey || event.ctrlKey) &&
-          !event.shiftKey;
-        const isUngroup =
-          event.key.toLowerCase() === "g" &&
-          (event.metaKey || event.ctrlKey) &&
-          event.shiftKey;
-        if (isGroup) {
-          event.preventDefault();
-          groupSelectionIntoFrame();
-          return;
-        }
-        if (isUngroup) {
-          event.preventDefault();
-          ungroupSelectedFrames();
-          return;
-        }
-
-        const isArrowKey =
-          event.key === "ArrowUp" ||
-          event.key === "ArrowDown" ||
-          event.key === "ArrowLeft" ||
-          event.key === "ArrowRight";
-        if (isArrowKey) {
-          event.preventDefault();
-          const baseStep = event.shiftKey ? 240 : 120;
-          const zoom = scene?.getZoom() ?? 1;
-          const step = baseStep / Math.max(zoom, 0.1);
-          const delta =
-            event.key === "ArrowUp"
-              ? { x: 0, y: -step }
-              : event.key === "ArrowDown"
-                ? { x: 0, y: step }
-                : event.key === "ArrowLeft"
-                  ? { x: -step, y: 0 }
-                  : { x: step, y: 0 };
-          panCanvasBy(delta);
-          return;
-        }
-
-        if (event.key === "[" || event.key === "]") {
-          event.preventDefault();
-          const factor = event.key === "]" ? 1.12 : 1 / 1.12;
-          zoomCanvasBy(factor);
-          return;
-        }
-
-        const isCopy =
-          event.key.toLowerCase() === "c" && (event.metaKey || event.ctrlKey);
-        const isDuplicate =
-          event.key.toLowerCase() === "d" &&
-          (event.metaKey || event.ctrlKey) &&
-          !event.shiftKey;
-        const isPaste =
-          event.key.toLowerCase() === "v" && (event.metaKey || event.ctrlKey);
-
-        if (isCopy) {
-          event.preventDefault();
-          const payload = buildClipboardPayload();
-          if (payload) {
-            void writeClipboardPayload(payload);
+          case "view.zoomIn":
+          case "view.zoomOut": {
+            prevent();
+            const factor = action === "view.zoomIn" ? 1.12 : 1 / 1.12;
+            zoomCanvasBy(factor);
+            return;
           }
-          return;
-        }
-
-        if (isDuplicate) {
-          event.preventDefault();
-          duplicateSelection();
-          return;
-        }
-
-        if (isPaste) {
-          event.preventDefault();
-          void pasteClipboardPayload();
+          case "clipboard.copy": {
+            prevent();
+            const payload = buildClipboardPayload();
+            if (payload) {
+              void writeClipboardPayload(payload);
+            }
+            return;
+          }
+          case "clipboard.duplicate":
+            prevent();
+            duplicateSelection();
+            return;
+          case "clipboard.paste":
+            prevent();
+            void pasteClipboardPayload();
+            return;
+          default: {
+            const _exhaustive: KeybindingActionId = action;
+            void _exhaustive;
+            return;
+          }
         }
       };
 
@@ -4043,6 +4613,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         }
         event.preventDefault();
         clearLongPress();
+        clearKeyboardFocus();
         const screenPoint = getScreenPoint(event);
         openContextMenu(screenPoint, { x: event.clientX, y: event.clientY });
       };
@@ -4084,8 +4655,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         const screenPoint = getScreenPoint(event);
         const zoom = scene.getZoom();
         const strength = settingsSnapshot.zoomSensitivity;
-        const delta = -event.deltaY * 0.001 * strength;
-        const nextZoom = zoom * Math.exp(delta);
+        const rawDelta = -event.deltaY * 0.001 * strength;
+        const curvedDelta = applyResponseCurve(
+          rawDelta,
+          settingsSnapshot.zoomCurve,
+        );
+        const nextZoom = zoom * Math.exp(curvedDelta);
         scene.zoomAt(screenPoint, nextZoom);
         setCanvasCenter(scene.getCameraCenter());
         syncScene();
@@ -4130,6 +4705,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     onCleanup(() => {
       disposed = true;
       cleanup?.();
+      unregisterTestApi?.();
     });
   });
 
@@ -4240,47 +4816,49 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           });
         }}
       />
-      {socketTooltip() ? (
-        <div
-          class="pointer-events-none absolute z-[var(--layer-canvas-overlay)] max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
-          style={{
-            left: `${socketTooltip()!.x}px`,
-            top: `${socketTooltip()!.y}px`,
-          }}
-        >
-          <div class="text-[0.75rem] font-semibold">
-            {socketTooltip()!.title}
-          </div>
-          <div class="mt-[0.15rem] text-[color:var(--text-muted)]">
-            {socketTooltip()!.typeLabel}
-          </div>
-          <div class="mt-[0.2rem] text-[color:var(--text-strong)]">
-            {socketTooltip()!.valueLabel}
-          </div>
-          {socketTooltip()!.connectionLabel ? (
-            <div class="mt-[0.2rem] text-[color:var(--text-muted)]">
-              {socketTooltip()!.connectionLabel}
+      <Show when={socketTooltip()} keyed>
+        {(tooltip) => (
+          <div
+            class="pointer-events-none absolute z-[var(--layer-canvas-overlay)] max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
+            style={{
+              left: `${tooltip.x}px`,
+              top: `${tooltip.y}px`,
+            }}
+          >
+            <div class="text-[0.75rem] font-semibold">{tooltip.title}</div>
+            <div class="mt-[0.15rem] text-[color:var(--text-muted)]">
+              {tooltip.typeLabel}
             </div>
-          ) : null}
-        </div>
-      ) : null}
-      {wireTooltip() ? (
-        <div
-          class="pointer-events-none absolute z-[var(--layer-canvas-overlay)] max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
-          style={{
-            left: `${wireTooltip()!.x}px`,
-            top: `${wireTooltip()!.y}px`,
-          }}
-        >
-          <div class="text-[0.75rem] font-semibold">{wireTooltip()!.title}</div>
-          <div class="mt-[0.15rem] text-[color:var(--text-muted)]">
-            {wireTooltip()!.typeLabel}
+            <div class="mt-[0.2rem] text-[color:var(--text-strong)]">
+              {tooltip.valueLabel}
+            </div>
+            {tooltip.connectionLabel ? (
+              <div class="mt-[0.2rem] text-[color:var(--text-muted)]">
+                {tooltip.connectionLabel}
+              </div>
+            ) : null}
           </div>
-          <div class="mt-[0.2rem] text-[color:var(--text-strong)]">
-            {wireTooltip()!.valueLabel}
+        )}
+      </Show>
+      <Show when={wireTooltip()} keyed>
+        {(tooltip) => (
+          <div
+            class="pointer-events-none absolute z-[var(--layer-canvas-overlay)] max-w-[240px] rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-panel-soft)] px-[0.6rem] py-[0.45rem] text-[0.72rem] leading-[1.35] text-[color:var(--text-soft)] shadow-[var(--shadow-toast)]"
+            style={{
+              left: `${tooltip.x}px`,
+              top: `${tooltip.y}px`,
+            }}
+          >
+            <div class="text-[0.75rem] font-semibold">{tooltip.title}</div>
+            <div class="mt-[0.15rem] text-[color:var(--text-muted)]">
+              {tooltip.typeLabel}
+            </div>
+            <div class="mt-[0.2rem] text-[color:var(--text-strong)]">
+              {tooltip.valueLabel}
+            </div>
           </div>
-        </div>
-      ) : null}
+        )}
+      </Show>
       {contextMenu() ? (
         <>
           <div
@@ -4292,6 +4870,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           />
           <div
             class="absolute z-[var(--layer-canvas-menu)] min-w-[200px] rounded-xl border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-strong)] p-2 text-[0.8rem] text-[color:var(--text-soft)] shadow-[var(--shadow-panel)]"
+            data-testid="canvas-context-menu"
             style={{
               left: `clamp(12px, ${contextMenu()!.screen.x}px, calc(100% - 220px))`,
               top: `clamp(12px, ${contextMenu()!.screen.y}px, calc(100% - 220px))`,
@@ -4311,6 +4890,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               ) : (
                 <button
                   class="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition hover:bg-[color:var(--surface-highlight)]"
+                  data-testid={`canvas-menu-${toMenuTestId(entry.label)}`}
                   role="menuitem"
                   onClick={() => {
                     entry.onSelect();

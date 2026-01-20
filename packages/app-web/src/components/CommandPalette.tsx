@@ -34,7 +34,7 @@ type KindStyle = Readonly<{
 const KIND_STYLE: Record<CommandPaletteEntry["kind"], KindStyle> = {
   command: {
     icon: Command,
-    label: "Command",
+    label: "CMD",
     badge:
       "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]",
   },
@@ -46,7 +46,7 @@ const KIND_STYLE: Record<CommandPaletteEntry["kind"], KindStyle> = {
   },
   control: {
     icon: Settings2,
-    label: "Control",
+    label: "CTRL",
     badge:
       "border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] text-[color:var(--status-warn-text)]",
   },

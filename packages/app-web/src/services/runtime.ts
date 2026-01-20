@@ -1,41 +1,57 @@
+import type { Either } from "effect";
 import { Effect, Layer } from "effect";
 
-import { ExecServiceLive } from "~/services/exec-service";
-import { GraphServiceLive } from "~/services/graph-service";
-import { StorageServiceLive } from "~/services/storage-service";
+import { type ExecService, ExecServiceLive } from "~/services/exec-service";
+import { type GraphService, GraphServiceLive } from "~/services/graph-service";
 import {
-  type UiEventServiceApi,
+  type StorageService,
+  StorageServiceLive,
+} from "~/services/storage-service";
+import {
+  type UiEventService,
   UiEventServiceLive,
 } from "~/services/ui-event-service";
 
-const baseLayer = Layer.mergeAll(
+type CoreServiceTags = ExecService | GraphService | StorageService;
+type AppServiceTags = CoreServiceTags | UiEventService;
+
+const baseLayer: Layer.Layer<CoreServiceTags> = Layer.mergeAll(
   GraphServiceLive,
   ExecServiceLive,
   StorageServiceLive,
 );
-const defaultLayer = Layer.mergeAll(baseLayer, UiEventServiceLive);
+const defaultLayer: Layer.Layer<AppServiceTags> = Layer.mergeAll(
+  baseLayer,
+  UiEventServiceLive,
+);
 
 export const createAppLayer = (
-  uiEventLayer?: Layer.Layer<never, never, UiEventServiceApi>,
-): typeof defaultLayer =>
+  uiEventLayer?: Layer.Layer<UiEventService>,
+): Layer.Layer<AppServiceTags> =>
   uiEventLayer ? Layer.mergeAll(baseLayer, uiEventLayer) : defaultLayer;
 
-export const runAppEffect = <A, E>(
-  effect: Effect.Effect<A, E>,
-  layer = defaultLayer,
-): Promise<A> => Effect.runPromise(Effect.provide(effect, layer));
+export const runAppEffect = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  layer?: Layer.Layer<R>,
+): Promise<A> => {
+  const resolvedLayer = (layer ?? defaultLayer) as Layer.Layer<R>;
+  return Effect.runPromise(Effect.provide(effect, resolvedLayer));
+};
 
-export const runAppEffectEither = <A, E>(
-  effect: Effect.Effect<A, E>,
-  layer = defaultLayer,
-): Promise<Effect.Either<E, A>> => runAppEffect(Effect.either(effect), layer);
+export const runAppEffectEither = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  layer?: Layer.Layer<R>,
+): Promise<Either.Either<A, E>> => runAppEffect(Effect.either(effect), layer);
 
-export const runAppEffectSync = <A, E>(
-  effect: Effect.Effect<A, E>,
-  layer = defaultLayer,
-): A => Effect.runSync(Effect.provide(effect, layer));
+export const runAppEffectSync = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  layer?: Layer.Layer<R>,
+): A => {
+  const resolvedLayer = (layer ?? defaultLayer) as Layer.Layer<R>;
+  return Effect.runSync(Effect.provide(effect, resolvedLayer));
+};
 
-export const runAppEffectSyncEither = <A, E>(
-  effect: Effect.Effect<A, E>,
-  layer = defaultLayer,
-): Effect.Either<E, A> => runAppEffectSync(Effect.either(effect), layer);
+export const runAppEffectSyncEither = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  layer?: Layer.Layer<R>,
+): Either.Either<A, E> => runAppEffectSync(Effect.either(effect), layer);

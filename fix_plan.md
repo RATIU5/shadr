@@ -1,4 +1,4 @@
-# Fix Plan (Core)
+# Fix Plan
 
 Last updated: 2026-01-19
 Features reference: `FEATURES.md` (for what to work on after all tasks are complete)
@@ -13,19 +13,84 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 ## Critical
 
+- [ ] Type error: No overload matches this call. The last overload gave the following error. Object literal may only specify known properties, and inline does not exist in type DepsOptions. (ts 2769) (vitest.config.ts)
+- [ ] Test failure: `packages/ui-overlay/test/exports.test.ts` cannot resolve `@shadr/ui-overlay`
+- [ ] Test failure: `packages/graph-core/test/topo-sort.test.ts` throws `SocketConnectionLimitExceeded` during setup
+- [ ] Test failure: `vitest` jsdom workers fail to start (missing `jsdom`) for `packages/app-web/test/command-palette.test.tsx` and `packages/app-web/test/keybinding-settings-panel.test.tsx`
+- [ ] Test run 2026-01-19: `packages/ui-overlay/test/exports.test.ts` cannot resolve `@shadr/ui-overlay`
+- [ ] Test run 2026-01-19: `packages/graph-core/test/topo-sort.test.ts` throws `SocketConnectionLimitExceeded`
+- [ ] Test run 2026-01-19: Vitest jsdom workers fail to start (missing `jsdom`) for `packages/app-web/test/command-palette.test.tsx` and `packages/app-web/test/keybinding-settings-panel.test.tsx`
+- [ ] Test run 2026-01-19: `packages/app-web/test/command-palette.test.tsx` throws "Client-only API called on the server side" (lucide-solid icon render)
+- [ ] Test run 2026-01-19: `packages/app-web/test/keybinding-settings-panel.test.tsx` throws "Client-only API called on the server side"
+
 ## High Priority
+
+- [ ] Remove the double click functionality to create a new node (double click is reserved for only entering subgraphs and renaming text on the canvas, these features will be implemented later)
+- [ ] Change the CMD + K command palette shortcut to be the space bar (shortcut not active when text input is active anywhere in the app)
+- [ ] Allow search by tag type in command menu (cmd/command, control/ctrl/ctl, node)
+- [ ] The group frame needs to have a larger hit area at the corners to resize
+- [ ] Double-clicking text rendered on the canvas should open a text input to allow for renaming (form with text input and clear/reset button on the same row as icons)
+- [ ] Subgraphs should change the command menu at the bottom, provide options like forms to create inputs/outputs, uncollapse, etc...
+- [ ] Labels for sockets need to appear inside the node box, and have "smart" width: too long of text is condensed to "..." in the middle, leaving the letters on each end visible
+- [ ] Reloading the app breaks the subgraphs and renames the "main" graph layer, while removing the inner subgraph. Ensure the functionality for subgraphs is robust
+- [ ] The settings dialog needs to have a max height with scrollable contents
+- [ ] Smart keyboard shortcut setting: global key down listener, list each key stroke in the disabled input box, and a complex layer for parsing/processing key strokes matching them up with valid/stored shortcuts and pass that event through the event bus
+- [ ] In the UI, prefer icons over text for buttons when possible
+- [ ] Re-create the rendering for the node box in Pixi.js. Sockets need to be rendered on top of the box on the edge/border of the box, the border needs to remain the same size throughout the box on all sides (currently it's incosistent: thicker and thinner in some areas, prefer thinner border), use icons (svg) over text whne possible (convert the "v" collapse letter to an actual cheveron icon)
+- [ ] The sub grid items disappear as you zoom out, leaving only the middle y and x lines visible. The grid lines adjust dynamically: as you zoom in, more subdivided lines appear through opacity changes, and as you zoom out, the subdivided lines dissapear via opacity to get a smooth effect. This happens dynamically at every zoom level, so at every zoom level there are three types: minor, major, and middle x/y.
+- [ ] Re-create the side panel: taller in size, max height and scrollable container, content tabs. The tabs can adjust dynamically: when debug is enabled, then a new debug tab appears. Prefer smart icons for tab names, not text. The side panel is visible only when one tab is enabled or visible: when debug is enabled, then the side panel is always visible. When the debug is disabled, and no node is selected, then the panel is not visible. When an active node or wire is selected, then the panel appears. More tabs may appear in certain contexts.
+- [ ] Transform the bottom command menu bar to: a text input (condensed when not active to make room for more commands. When active, the text input takes control and covers all other actions and buttons, as well as extending in height to show results while text input is at the bottom), export and import icon with proper tooltips, move the settings to the top left container of the window, remove the workspace text too. Make this bottom command menu the command palette/center. When the shortcut to activate the control palette is pressed, the text input is activated and the whole command menu container expands for the results
+- [ ] When loading any graph file or json, or on load, make sure the "main" graph layer is selected and active, not any subgraphs
 
 ## Medium Priority
 
-## Low Priority
+- [ ] Setup playright testing for the UI frontend web app, test common things like modals, sidebars, etc...
+- [ ] Add tests for worker execution plumbing (protocol + worker lifecycle) in `packages/app-web/src/workers/exec-worker-protocol.ts` and `packages/app-web/src/workers/exec-worker.ts`
+- [ ] Add UI canvas coverage for camera transforms and wire geometry/layout invariants in `packages/ui-canvas/src/camera.ts`, `packages/ui-canvas/src/wire-geometry.ts`, `packages/ui-canvas/src/layout.ts`
 
-- [ ] Implement **behavior settings** expansion: autosave frequency controls, undo stack depth controls, and advanced pan/zoom curves
-- [ ] Implement **full keyboard navigation** across canvas: node-to-node traversal, socket navigation, wire navigation, and action palette parity
-- [ ] Implement **keyboard shortcut customization** UI: keybinding editor, conflict detection, profiles, and export/import
-- [ ] Change command palette tag names: Command -> CMD, Control -> CTRL
+## Low Priority
 
 ## Completed
 
+- [x] Test failure: `packages/devtools/test/exports.test.ts` cannot resolve `@shadr/devtools`
+- [x] Test run 2026-01-19: `packages/devtools/test/exports.test.ts` cannot resolve `@shadr/devtools`
+- [x] Test failure: `packages/app-web/test/store.test.ts` cannot resolve `~/editor/conversion-registry` from `packages/app-web/src/editor/store.ts`
+- [x] Test run 2026-01-19: `packages/app-web/test/store.test.ts` cannot resolve `~/editor/conversion-registry` from `packages/app-web/src/editor/store.ts`
+- [x] Fix Vitest jsdom dependency resolution for app-web jsdom tests (`packages/app-web/test/command-palette.test.tsx`, `packages/app-web/test/keybinding-settings-panel.test.tsx`)
+- [x] Fix `packages/exec-engine/test/subgraph.test.ts` depth limit case not emitting expected `NodeComputeFailed` error
+- [x] Test failure: `packages/exec-engine/test/subgraph.test.ts` depth limit case missing `NodeComputeFailed` error
+- [x] Test run 2026-01-19: `packages/exec-engine/test/subgraph.test.ts` depth limit case missing `NodeComputeFailed` error
+- [x] Fix `packages/graph-core/test/cycle-detect.test.ts` failure where `CycleDetected` error escapes instead of returning a cycle path
+- [x] Test failure: `packages/graph-core/test/cycle-detect.test.ts` throws `CycleDetected` instead of returning a cycle path
+- [x] Test run 2026-01-19: `packages/graph-core/test/cycle-detect.test.ts` throws `CycleDetected` instead of returning a cycle path
+- [x] Fix `packages/graph-core/test/topo-sort.test.ts` failures due to `SocketConnectionLimitExceeded` during setup
+- [x] Fix `packages/ui-canvas/test/scene.test.ts` failing to resolve `effect` (add missing dependency or adjust test resolution)
+- [x] Test failure: `packages/ui-canvas/test/scene.test.ts` cannot resolve `effect`
+- [x] Test run 2026-01-19: `packages/ui-canvas/test/scene.test.ts` cannot resolve `effect`
+- [x] Fix package entry resolution for export tests: `@shadr/devtools` and `@shadr/ui-overlay` not found in `packages/devtools/test/exports.test.ts` and `packages/ui-overlay/test/exports.test.ts`
+- [x] Fix Vitest resolving `~/editor/conversion-registry` during app-web tests (`packages/app-web/src/editor/store.ts` import alias failure in `packages/app-web/test/store.test.ts`)
+- [x] Ensure all tests pass, if not, list each test failure as a new todo task and complete them the next iteration
+- [x] Fix `pnpm -r test` failing to resolve `vitest.config.ts` (resolves to `/Users/john.memmott/vitest.config.ts`); adjust package test scripts or root config usage. Files: `packages/app-web/package.json:10`, `packages/devtools/package.json:11`, `packages/exec-engine/package.json:11`, `packages/graph-core/package.json:11`, `packages/plugin-system/package.json:11`, `packages/shared/package.json:11`, `packages/storage-idb/package.json:11`, `packages/ui-canvas/package.json:11`, `packages/ui-overlay/package.json:11`
+- [x] Ensure app-web tests run in `pnpm -r test` by adding a test script and wiring `packages/app-web/test/services.test.ts` into the Vitest config or per-package script in `packages/app-web/package.json:5`
+- [x] Add component-level tests for command palette and settings panels to lock keyboard navigation behavior in `packages/app-web/src/components/CommandPalette.tsx:1` and `packages/app-web/src/components/KeybindingSettingsPanel.tsx:1`
+- [x] Add unit tests for editor state management (history, selection, keybindings) in `packages/app-web/src/editor/history.ts:1`, `packages/app-web/src/editor/store.ts:1`, `packages/app-web/src/editor/keybindings.ts:1`
+- [x] Add Playwright coverage for core editor flows beyond smoke (create/drag/connect/delete nodes, context menu actions) in `packages/app-web/src/components/EditorCanvas.tsx:1` and `tests/e2e/app-smoke.spec.ts:1`
+- [x] Error on client: `index.jsx:17 TypeError: Cannot read properties of null (reading 'connectionLabel')     at EditorCanvas.tsx:4751:26     at Object.fn (chunk-Q2H4LCBP.js?v=f7b339c5:107:35)     at runComputation (chunk-ECXJ2U5I.js?v=f7b339c5:741:22)     at updateComputation (chunk-ECXJ2U5I.js?v=f7b339c5:723:3)     at runTop (chunk-ECXJ2U5I.js?v=f7b339c5:832:7)     at runQueue (chunk-ECXJ2U5I.js?v=f7b339c5:903:42)     at completeUpdates (chunk-ECXJ2U5I.js?v=f7b339c5:859:84)     at runUpdates (chunk-ECXJ2U5I.js?v=f7b339c5:849:5)     at writeSignal (chunk-ECXJ2U5I.js?v=f7b339c5:698:7)     at setter (chunk-ECXJ2U5I.js?v=f7b339c5:229:12) pushError @ index.jsx:17 index.jsx:17 TypeError: Cannot read properties of null (reading 'hitTest')     at HTMLCanvasElement.onPointerDown (EditorCanvas.tsx:3443:27) pushError @ index.jsx:17 EditorCanvas.tsx:3443 Uncaught TypeError: Cannot read properties of null (reading 'hitTest')     at HTMLCanvasElement.onPointerDown (EditorCanvas.tsx:3443:27)` when clicking on sockets
+- [x] Fix `pnpm test` failure: Vitest v4 rejects `--include` CLI flag; update test scripts to rely on `vitest.config.ts` include or new CLI option in `packages/devtools/package.json:11`, `packages/exec-engine/package.json:11`, `packages/graph-core/package.json:11`, `packages/plugin-system/package.json:11`, `packages/shared/package.json:11`, `packages/storage-idb/package.json:11`, `packages/ui-canvas/package.json:11`, `packages/ui-overlay/package.json:11`
+- [x] Add devtools smoke test to validate entrypoint wiring. `packages/devtools/src/index.ts:1`
+- [x] Add lightweight tests for UI overlay exports to lock API surface. `packages/ui-overlay/src/index.ts:1`
+- [x] Add app-web service tests for `graph-service` and `exec-service` effect wiring. `packages/app-web/src/services/graph-service.ts:1`
+- [x] Add UI canvas unit tests for scene syncing, hit testing, and viewport culling. `packages/ui-canvas/src/scene.ts:1`
+- [x] The frontend `routes` directory should only contain client-facing file-name routes, not normal ts files and other assortments of files. This will require lots of refactoring.
+- [x] [plugin:vite:import-analysis] Failed to resolve import "~/editor/delete-selection" from "src/components/EditorShell.tsx". Does the file exist? Fix this error
+- [x] Add unit tests for IndexedDB storage validation/error mapping (graph/settings/ui) to protect persistence. `packages/storage-idb/src/index.ts:1`
+- [x] Add `typecheck` script for `app-web` so `pnpm -r typecheck` covers UI code. `packages/app-web/package.json:5`
+- [x] Change command palette tag names: Command -> CMD, Control -> CTRL
+- [x] Implement **keyboard shortcut customization** UI: keybinding editor, conflict detection, profiles, and export/import
+- [x] Implement **full keyboard navigation** across canvas: node-to-node traversal, socket navigation, wire navigation, and action palette parity
+- Notes: Keyboard focus now supports node cycling, directional traversal, socket/wire navigation, and keyboard-opened action menus.
+- [x] Implement **behavior settings** expansion: autosave frequency controls, undo stack depth controls, and advanced pan/zoom curves
+- Notes: Behavior settings now let users tune autosave cadence, undo history retention, and navigation feel.
 - [x] Implement global settings dialog modal, add all settings in tabs inside the modal
 - [x] Implement robust **DOM overlay layer management**: focus traps, pointer-event pass-through, accessibility for overlays, and consistent layering
 - [x] Implement toggleable **debug panel** that can print node outputs, watch sockets, and stream evaluation logs, streams useful events

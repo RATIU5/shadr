@@ -24,6 +24,7 @@ import type {
   JsonObject,
   JsonValue,
   SocketTypeId,
+  SubgraphInputMapping,
   SubgraphNodeParams,
   SubgraphPromotedParam,
 } from "@shadr/shared";
@@ -66,6 +67,7 @@ import CommandPalette, {
 } from "~/components/CommandPalette";
 import DebugPanel from "~/components/DebugPanel";
 import ExecTimelinePanel from "~/components/ExecTimelinePanel";
+import KeybindingSettingsPanel from "~/components/KeybindingSettingsPanel";
 import SubgraphParamOverrides from "~/components/SubgraphParamOverrides";
 import {
   buildDeleteSelectionCommands,
@@ -94,9 +96,17 @@ import {
 } from "~/editor/output-artifacts";
 import {
   coerceSettings,
+  MAX_AUTOSAVE_DELAY_MS,
+  MAX_PAN_CURVE,
   MAX_PAN_SENSITIVITY,
+  MAX_UNDO_STACK_DEPTH,
+  MAX_ZOOM_CURVE,
   MAX_ZOOM_SENSITIVITY,
+  MIN_AUTOSAVE_DELAY_MS,
+  MIN_PAN_CURVE,
   MIN_PAN_SENSITIVITY,
+  MIN_UNDO_STACK_DEPTH,
+  MIN_ZOOM_CURVE,
   MIN_ZOOM_SENSITIVITY,
   settingsToJson,
 } from "~/editor/settings";
@@ -137,6 +147,8 @@ const clamp = (value: number, min: number, max: number): number =>
 
 type Point = Readonly<{ x: number; y: number }>;
 const formatSensitivity = (value: number): string => value.toFixed(2);
+const formatMilliseconds = (value: number): string =>
+  value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${Math.round(value)}ms`;
 
 type GraphFocusSnapshot = Readonly<{
   canvasCenter: Point;
@@ -280,7 +292,12 @@ export default function EditorShell() {
   const [nodeErrorFilter, setNodeErrorFilter] =
     createSignal<NodeErrorFilter>("all");
   const [debugPanelOpen, setDebugPanelOpen] = createSignal(false);
-  type SettingsTab = "canvas" | "interaction" | "display";
+  type SettingsTab =
+    | "canvas"
+    | "interaction"
+    | "behavior"
+    | "display"
+    | "shortcuts";
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [settingsTab, setSettingsTab] = createSignal<SettingsTab>("canvas");
 
@@ -758,7 +775,7 @@ export default function EditorShell() {
     }
     const currentDocument = graphToDocumentV1(store.graph());
     const currentFocus = createFocusSnapshot();
-    let nextStack = [
+    let nextStack: ReadonlyArray<GraphNavEntry> = [
       ...stack.slice(0, -1),
       {
         ...stack[stack.length - 1],
@@ -997,21 +1014,17 @@ export default function EditorShell() {
     });
 
     let autosaveTimer: number | null = null;
-    const scheduleAutosave = (): void => {
-      if (!isLoaded()) {
-        return;
-      }
-      if (autosaveTimer !== null) {
-        window.clearTimeout(autosaveTimer);
-      }
-      autosaveTimer = window.setTimeout(() => {
-        autosaveTimer = null;
-        const document = graphToDocumentV1(store.graph());
-        setAutosaveStatusWithTimeout("saving");
-        void runAppEffectEither(
-          saveGraphDocumentEffect(document),
-          appLayer,
-        ).then((saveResult) => {
+    let autosaveDelayMs = clamp(
+      store.settings().autosaveDelayMs,
+      MIN_AUTOSAVE_DELAY_MS,
+      MAX_AUTOSAVE_DELAY_MS,
+    );
+    const runAutosave = (): void => {
+      autosaveTimer = null;
+      const document = graphToDocumentV1(store.graph());
+      setAutosaveStatusWithTimeout("saving");
+      void runAppEffectEither(saveGraphDocumentEffect(document), appLayer).then(
+        (saveResult) => {
           if (Either.isLeft(saveResult)) {
             console.warn("Autosave failed", saveResult.left);
             notifyToast("Autosave failed", "Changes stay local.");
@@ -1019,13 +1032,34 @@ export default function EditorShell() {
           } else {
             setAutosaveStatusWithTimeout("saved", 1400);
           }
-        });
-      }, 600);
+        },
+      );
+    };
+    const scheduleAutosave = (): void => {
+      if (!isLoaded()) {
+        return;
+      }
+      if (autosaveTimer !== null) {
+        window.clearTimeout(autosaveTimer);
+      }
+      autosaveTimer = window.setTimeout(runAutosave, autosaveDelayMs);
     };
 
     createEffect(() => {
       store.graph();
       scheduleAutosave();
+    });
+
+    createEffect(() => {
+      autosaveDelayMs = clamp(
+        store.settings().autosaveDelayMs,
+        MIN_AUTOSAVE_DELAY_MS,
+        MAX_AUTOSAVE_DELAY_MS,
+      );
+      if (autosaveTimer !== null) {
+        window.clearTimeout(autosaveTimer);
+        autosaveTimer = window.setTimeout(runAutosave, autosaveDelayMs);
+      }
     });
 
     onCleanup(() => {
@@ -1354,13 +1388,17 @@ export default function EditorShell() {
     }
     return "No selection";
   });
+  const isOutputGraphNode = (
+    node: GraphNode | null,
+  ): node is GraphNode & { type: OutputNodeType } =>
+    !!node && isOutputNodeType(node.type);
   const selectedOutputNode = createMemo(() => {
     const node = selectedNode();
-    return node && isOutputNodeType(node.type) ? node : null;
+    return isOutputGraphNode(node) ? node : null;
   });
   const selectedOutputType = createMemo<OutputNodeType | null>(() => {
     const node = selectedOutputNode();
-    return node ? node.type : null;
+    return node?.type ?? null;
   });
   const selectedOutputSocketId = createMemo(() => {
     const node = selectedOutputNode();
@@ -1668,7 +1706,7 @@ export default function EditorShell() {
     const outputsByKey = new Map(
       params.outputs.map((entry) => [entry.key, entry]),
     );
-    const nextInputs: SubgraphNodeParams["inputs"] = [];
+    const nextInputs: SubgraphInputMapping[] = [];
     const nextPromoted: SubgraphPromotedParam[] = [];
     for (const socket of inputs) {
       const entry = inputsByKey.get(socket.name);
@@ -2491,16 +2529,14 @@ export default function EditorShell() {
     if (!socket) {
       return;
     }
+    const nextPromotedParams = promotions.filter(
+      (entry) => makePromotionKey(entry.nodeId, entry.fieldId) !== promotionKey,
+    );
     const nextParams: SubgraphNodeParams = {
       ...params,
-      promotedParams: promotions.filter(
-        (entry) =>
-          makePromotionKey(entry.nodeId, entry.fieldId) !== promotionKey,
-      ),
+      promotedParams:
+        nextPromotedParams.length > 0 ? nextPromotedParams : undefined,
     };
-    if (nextParams.promotedParams?.length === 0) {
-      nextParams.promotedParams = undefined;
-    }
     const nextNode: GraphNode = {
       ...node,
       inputs: node.inputs.filter((id) => id !== socket.id),
@@ -2843,6 +2879,17 @@ export default function EditorShell() {
         kind: "command",
         keywords: ["settings", "preferences"],
         onSelect: () => setSettingsOpen(true),
+      },
+      {
+        id: "command:open-shortcuts",
+        label: "Open shortcuts",
+        description: "Customize keyboard shortcuts",
+        kind: "command",
+        keywords: ["shortcuts", "keybindings", "keyboard"],
+        onSelect: () => {
+          setSettingsTab("shortcuts");
+          setSettingsOpen(true);
+        },
       },
       {
         id: "command:delete-selection",
@@ -3192,7 +3239,7 @@ export default function EditorShell() {
                     ) : null}
                     <button
                       class={`${controlMenuButton} ${controlMenuDanger}`}
-                      onClick={deleteSelection}
+                      onClick={() => deleteSelection()}
                     >
                       <Trash2 class="h-3.5 w-3.5" />
                       Delete
@@ -3502,21 +3549,27 @@ export default function EditorShell() {
                           <span class="truncate">{outputMessage()}</span>
                         </div>
                       ) : null}
-                      {outputArtifact() ? (
-                        <div class="flex flex-col gap-2">
-                          {outputArtifact()!.kind === "image" ? (
-                            <img
-                              class="h-28 w-full rounded-lg border border-[color:var(--border-soft)] object-cover"
-                              src={outputArtifact()!.dataUrl}
-                              alt="Output preview"
-                            />
-                          ) : (
-                            <pre class="max-h-32 overflow-auto rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] p-2 text-[0.75rem] text-[color:var(--text-soft)]">
-                              {outputArtifact()!.text}
-                            </pre>
-                          )}
-                        </div>
-                      ) : null}
+                      {(() => {
+                        const artifact = outputArtifact();
+                        if (!artifact) {
+                          return null;
+                        }
+                        return (
+                          <div class="flex flex-col gap-2">
+                            {artifact.kind === "image" ? (
+                              <img
+                                class="h-28 w-full rounded-lg border border-[color:var(--border-soft)] object-cover"
+                                src={artifact.dataUrl}
+                                alt="Output preview"
+                              />
+                            ) : (
+                              <pre class="max-h-32 overflow-auto rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] p-2 text-[0.75rem] text-[color:var(--text-soft)]">
+                                {artifact.text}
+                              </pre>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <div class="flex flex-wrap items-center gap-2">
                         <button
                           class={`${controlMenuButton} ${controlMenuInfo}`}
@@ -4544,6 +4597,17 @@ export default function EditorShell() {
               <button
                 type="button"
                 class={`${settingsTabBase} ${
+                  settingsTab() === "behavior"
+                    ? settingsTabActive
+                    : settingsTabInactive
+                }`}
+                onClick={() => setSettingsTab("behavior")}
+              >
+                Behavior
+              </button>
+              <button
+                type="button"
+                class={`${settingsTabBase} ${
                   settingsTab() === "display"
                     ? settingsTabActive
                     : settingsTabInactive
@@ -4551,6 +4615,17 @@ export default function EditorShell() {
                 onClick={() => setSettingsTab("display")}
               >
                 Display
+              </button>
+              <button
+                type="button"
+                class={`${settingsTabBase} ${
+                  settingsTab() === "shortcuts"
+                    ? settingsTabActive
+                    : settingsTabInactive
+                }`}
+                onClick={() => setSettingsTab("shortcuts")}
+              >
+                Shortcuts
               </button>
             </div>
 
@@ -4645,6 +4720,39 @@ export default function EditorShell() {
                   </div>
                   <div class={settingsRow}>
                     <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Zoom curve</span>
+                      <span class={settingsValue}>
+                        {formatSensitivity(store.settings().zoomCurve)}
+                      </span>
+                      <span class={settingsNote}>
+                        1.0 is linear. Higher adds acceleration.
+                      </span>
+                    </div>
+                    <div class="flex w-full max-w-[280px] flex-col gap-2">
+                      <input
+                        class={settingsRange}
+                        type="range"
+                        min={MIN_ZOOM_CURVE}
+                        max={MAX_ZOOM_CURVE}
+                        step={0.05}
+                        value={store.settings().zoomCurve}
+                        onInput={(event) => {
+                          const nextValue = clamp(
+                            event.currentTarget.valueAsNumber,
+                            MIN_ZOOM_CURVE,
+                            MAX_ZOOM_CURVE,
+                          );
+                          store.updateSettings({ zoomCurve: nextValue });
+                        }}
+                      />
+                      <div class="flex items-center justify-between text-[0.6rem] text-[color:var(--text-muted)]">
+                        <span>Soft</span>
+                        <span>Boost</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
                       <span class={settingsLabel}>Pan sensitivity</span>
                       <span class={settingsValue}>
                         {formatSensitivity(store.settings().panSensitivity)}
@@ -4673,6 +4781,112 @@ export default function EditorShell() {
                       <div class="flex items-center justify-between text-[0.6rem] text-[color:var(--text-muted)]">
                         <span>Short</span>
                         <span>Long</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Pan curve</span>
+                      <span class={settingsValue}>
+                        {formatSensitivity(store.settings().panCurve)}
+                      </span>
+                      <span class={settingsNote}>
+                        Tunes drag response for precise or fast panning.
+                      </span>
+                    </div>
+                    <div class="flex w-full max-w-[280px] flex-col gap-2">
+                      <input
+                        class={settingsRange}
+                        type="range"
+                        min={MIN_PAN_CURVE}
+                        max={MAX_PAN_CURVE}
+                        step={0.05}
+                        value={store.settings().panCurve}
+                        onInput={(event) => {
+                          const nextValue = clamp(
+                            event.currentTarget.valueAsNumber,
+                            MIN_PAN_CURVE,
+                            MAX_PAN_CURVE,
+                          );
+                          store.updateSettings({ panCurve: nextValue });
+                        }}
+                      />
+                      <div class="flex items-center justify-between text-[0.6rem] text-[color:var(--text-muted)]">
+                        <span>Soft</span>
+                        <span>Boost</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {settingsTab() === "behavior" ? (
+                <div class={settingsSection}>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Autosave delay</span>
+                      <span class={settingsValue}>
+                        {formatMilliseconds(store.settings().autosaveDelayMs)}
+                      </span>
+                      <span class={settingsNote}>
+                        Wait time after edits before autosave runs.
+                      </span>
+                    </div>
+                    <div class="flex w-full max-w-[280px] flex-col gap-2">
+                      <input
+                        class={settingsRange}
+                        type="range"
+                        min={MIN_AUTOSAVE_DELAY_MS}
+                        max={MAX_AUTOSAVE_DELAY_MS}
+                        step={100}
+                        value={store.settings().autosaveDelayMs}
+                        onInput={(event) => {
+                          const nextValue = clamp(
+                            event.currentTarget.valueAsNumber,
+                            MIN_AUTOSAVE_DELAY_MS,
+                            MAX_AUTOSAVE_DELAY_MS,
+                          );
+                          store.updateSettings({ autosaveDelayMs: nextValue });
+                        }}
+                      />
+                      <div class="flex items-center justify-between text-[0.6rem] text-[color:var(--text-muted)]">
+                        <span>Fast</span>
+                        <span>Slow</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class={settingsRow}>
+                    <div class="flex flex-col gap-1">
+                      <span class={settingsLabel}>Undo stack depth</span>
+                      <span class={settingsValue}>
+                        {store.settings().undoStackDepth}
+                      </span>
+                      <span class={settingsNote}>
+                        Limit how many history entries are kept.
+                      </span>
+                    </div>
+                    <div class="flex w-full max-w-[280px] flex-col gap-2">
+                      <input
+                        class={settingsRange}
+                        type="range"
+                        min={MIN_UNDO_STACK_DEPTH}
+                        max={MAX_UNDO_STACK_DEPTH}
+                        step={10}
+                        value={store.settings().undoStackDepth}
+                        onInput={(event) => {
+                          const nextValue = clamp(
+                            event.currentTarget.valueAsNumber,
+                            MIN_UNDO_STACK_DEPTH,
+                            MAX_UNDO_STACK_DEPTH,
+                          );
+                          store.updateSettings({
+                            undoStackDepth: Math.round(nextValue),
+                          });
+                        }}
+                      />
+                      <div class="flex items-center justify-between text-[0.6rem] text-[color:var(--text-muted)]">
+                        <span>Short</span>
+                        <span>Deep</span>
                       </div>
                     </div>
                   </div>
@@ -4733,6 +4947,16 @@ export default function EditorShell() {
                     </button>
                   </div>
                 </div>
+              ) : null}
+              {settingsTab() === "shortcuts" ? (
+                <KeybindingSettingsPanel
+                  keybindings={() => store.settings().keybindings}
+                  onChange={(next) =>
+                    store.updateSettings({
+                      keybindings: next,
+                    })
+                  }
+                />
               ) : null}
             </div>
           </Dialog.Content>

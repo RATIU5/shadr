@@ -41,32 +41,36 @@ export const StorageServiceLive = Layer.succeed(StorageService, {
 
 export const loadGraphDocument = (
   graphId: GraphId,
-): Effect.Effect<GraphDocumentV1 | null, StorageError> =>
+): Effect.Effect<GraphDocumentV1 | null, StorageError, StorageService> =>
   Effect.flatMap(StorageService, (service) =>
     service.loadGraphDocument(graphId),
   );
 
 export const saveGraphDocument = (
   document: GraphDocumentV1,
-): Effect.Effect<void, StorageError> =>
+): Effect.Effect<void, StorageError, StorageService> =>
   Effect.flatMap(StorageService, (service) =>
     service.saveGraphDocument(document),
   );
 
 export const loadSettings = (): Effect.Effect<
   JsonObject | null,
-  StorageError
+  StorageError,
+  StorageService
 > => Effect.flatMap(StorageService, (service) => service.loadSettings());
 
 export const saveSettings = (
   settings: JsonObject,
-): Effect.Effect<void, StorageError> =>
+): Effect.Effect<void, StorageError, StorageService> =>
   Effect.flatMap(StorageService, (service) => service.saveSettings(settings));
 
-export const loadUiState = (): Effect.Effect<JsonObject | null, StorageError> =>
-  Effect.flatMap(StorageService, (service) => service.loadUiState());
+export const loadUiState = (): Effect.Effect<
+  JsonObject | null,
+  StorageError,
+  StorageService
+> => Effect.flatMap(StorageService, (service) => service.loadUiState());
 
 export const saveUiState = (
   uiState: JsonObject,
-): Effect.Effect<void, StorageError> =>
+): Effect.Effect<void, StorageError, StorageService> =>
   Effect.flatMap(StorageService, (service) => service.saveUiState(uiState));

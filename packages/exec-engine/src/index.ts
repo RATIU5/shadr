@@ -1016,6 +1016,38 @@ const evaluateSocketInternal = (
                     outputValues[entry.key] = result.right;
                   }
 
+                  const innerFailures: NodeRuntimeError[] = [];
+                  for (const errors of innerState.nodeErrors.values()) {
+                    for (const error of errors) {
+                      if (error._tag === "NodeComputeFailed") {
+                        innerFailures.push(error);
+                      }
+                    }
+                  }
+                  if (innerFailures.length > 0) {
+                    recordNodeTiming(
+                      instrumentation,
+                      {
+                        nodeId,
+                        nodeType: node.type,
+                        durationMs: Math.max(0, nowMs() - computeStart),
+                        cacheHit: false,
+                      },
+                      hooks,
+                    );
+                    execState.nodeErrors.set(nodeId, [
+                      {
+                        _tag: "NodeComputeFailed",
+                        nodeId,
+                        nodeType: node.type,
+                        cause: innerFailures,
+                      },
+                    ]);
+                    outputCache.set(nodeId, nullOutputs);
+                    execState.dirty.delete(nodeId);
+                    return nullOutputs;
+                  }
+
                   recordNodeTiming(
                     instrumentation,
                     {

@@ -255,7 +255,9 @@ export const buildDeleteSelectionCommands = (
 
   const wireIdsToRemove = new Set<WireId>(removedWireIds);
   for (const wireCommand of wireCommands) {
-    wireIdsToRemove.add(wireCommand.wire.id);
+    if (wireCommand.kind === "remove-wire") {
+      wireIdsToRemove.add(wireCommand.wire.id);
+    }
   }
 
   const bridgeCommands =

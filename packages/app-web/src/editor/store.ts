@@ -63,6 +63,8 @@ import { isOutputNodeType } from "~/editor/output-artifacts";
 import {
   DEFAULT_SETTINGS,
   type EditorSettings,
+  MAX_UNDO_STACK_DEPTH,
+  MIN_UNDO_STACK_DEPTH,
   snapPointToGrid,
 } from "~/editor/settings";
 import type { GraphBreadcrumb } from "~/editor/ui-state";
@@ -83,6 +85,9 @@ type ExecStatsWindow = Window & { __SHADR_EXEC_STATS__?: ExecEvaluationStats };
 type Point = Readonly<{ x: number; y: number }>;
 type PointerPosition = Readonly<{ screen: Point; world: Point }>;
 type ExecProgress = Readonly<{ completed: number; total: number }>;
+type ExecDebugEntryInput =
+  | Omit<Extract<ExecDebugEntry, { status: "success" }>, "id">
+  | Omit<Extract<ExecDebugEntry, { status: "error" }>, "id">;
 export type ExecVisualizationEntry = Readonly<{
   nodeId: NodeId;
   nodeType: string;
@@ -136,6 +141,7 @@ export type EditorStore = Readonly<{
   refreshActiveOutput: () => void;
   clearExecHistory: () => void;
   clearDebugEvents: () => void;
+  markDirtyForNodeChange: (nodeId: NodeId) => void;
   clearSelection: () => void;
   setNodeSelection: (next: ReadonlySet<NodeId>) => void;
   setFrameSelection: (next: ReadonlySet<FrameId>) => void;
@@ -206,19 +212,19 @@ export const createEditorStore = (): EditorStore => {
       : null;
   let evaluationToken = 0;
   const [selectedNodes, setSelectedNodes] = createSignal<ReadonlySet<NodeId>>(
-    new Set(),
+    new Set<NodeId>(),
   );
   const [selectedFrames, setSelectedFrames] = createSignal<
     ReadonlySet<FrameId>
-  >(new Set());
+  >(new Set<FrameId>());
   const [selectedWires, setSelectedWires] = createSignal<ReadonlySet<WireId>>(
-    new Set(),
+    new Set<WireId>(),
   );
   const [bypassedNodes, setBypassedNodes] = createSignal<ReadonlySet<NodeId>>(
-    new Set(),
+    new Set<NodeId>(),
   );
   const [collapsedNodes, setCollapsedNodes] = createSignal<ReadonlySet<NodeId>>(
-    new Set(),
+    new Set<NodeId>(),
   );
   const [settings, setSettingsState] =
     createSignal<EditorSettings>(DEFAULT_SETTINGS);
@@ -237,6 +243,36 @@ export const createEditorStore = (): EditorStore => {
   let undoStack: HistoryEntry[] = [];
   let redoStack: HistoryEntry[] = [];
   let openBatch: HistoryEntry | null = null;
+
+  const clampHistoryDepth = (value: number): number =>
+    Math.min(
+      MAX_UNDO_STACK_DEPTH,
+      Math.max(MIN_UNDO_STACK_DEPTH, Math.round(value)),
+    );
+
+  const syncHistoryState = (): void => {
+    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
+  };
+
+  const trimHistoryStacks = (limit: number): void => {
+    if (limit <= 0) {
+      undoStack = [];
+      redoStack = [];
+      syncHistoryState();
+      return;
+    }
+    if (undoStack.length > limit) {
+      undoStack = undoStack.slice(undoStack.length - limit);
+    }
+    if (redoStack.length > limit) {
+      redoStack = redoStack.slice(redoStack.length - limit);
+    }
+    syncHistoryState();
+  };
+
+  const applyHistoryLimit = (): void => {
+    trimHistoryStacks(clampHistoryDepth(settings().undoStackDepth));
+  };
   let nodeCounter = 1;
   let execHistoryCounter = 1;
   let connectionAttemptCounter = 1;
@@ -284,11 +320,11 @@ export const createEditorStore = (): EditorStore => {
     setExecVisualization(null);
     setDebugEvents([]);
     setWatchedSockets([]);
-    setSelectedNodes(new Set());
-    setSelectedFrames(new Set());
-    setSelectedWires(new Set());
-    setBypassedNodes(new Set());
-    setCollapsedNodes(new Set());
+    setSelectedNodes(new Set<NodeId>());
+    setSelectedFrames(new Set<FrameId>());
+    setSelectedWires(new Set<WireId>());
+    setBypassedNodes(new Set<NodeId>());
+    setCollapsedNodes(new Set<NodeId>());
     setPointerPosition(null);
     setConnectionAttempts([]);
     nodeCounter = nextNodeCounterForGraph(nextGraph);
@@ -298,7 +334,7 @@ export const createEditorStore = (): EditorStore => {
     undoStack = [];
     redoStack = [];
     openBatch = null;
-    setHistoryState({ undo: 0, redo: 0 });
+    syncHistoryState();
     refreshValidationWarnings(nextGraph, []);
   };
 
@@ -317,7 +353,7 @@ export const createEditorStore = (): EditorStore => {
     return entries;
   };
 
-  const recordExecHistory = (entry: Omit<ExecDebugEntry, "id">): void => {
+  const recordExecHistory = (entry: ExecDebugEntryInput): void => {
     const resolved: ExecDebugEntry = {
       id: execHistoryCounter,
       ...entry,
@@ -440,6 +476,12 @@ export const createEditorStore = (): EditorStore => {
           label: "Node IO replaced",
           detail: `${command.after.node.type} (${command.after.node.id})`,
         };
+      default:
+        return {
+          timestamp,
+          kind: "graph",
+          label: "Graph updated",
+        };
     }
   };
 
@@ -492,7 +534,7 @@ export const createEditorStore = (): EditorStore => {
     }
     undoStack = [...undoStack, entry];
     redoStack = [];
-    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
+    applyHistoryLimit();
   };
 
   const recordCommand = (command: GraphCommand): void => {
@@ -508,7 +550,7 @@ export const createEditorStore = (): EditorStore => {
     }
     redoStack = [];
     openBatch = { label, commands: [] };
-    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
+    syncHistoryState();
   };
 
   const commitHistoryBatch = (): void => {
@@ -522,7 +564,7 @@ export const createEditorStore = (): EditorStore => {
     }
     undoStack = [...undoStack, batch];
     redoStack = [];
-    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
+    applyHistoryLimit();
   };
 
   const markDirtyForWireChangeGraph = (
@@ -937,9 +979,9 @@ export const createEditorStore = (): EditorStore => {
   };
 
   const clearSelection = (): void => {
-    setSelectedNodes(new Set());
-    setSelectedFrames(new Set());
-    setSelectedWires(new Set());
+    setSelectedNodes(new Set<NodeId>());
+    setSelectedFrames(new Set<FrameId>());
+    setSelectedWires(new Set<WireId>());
     recordDebugEvent({
       timestamp: Date.now(),
       kind: "selection",
@@ -949,8 +991,8 @@ export const createEditorStore = (): EditorStore => {
 
   const setNodeSelection = (next: ReadonlySet<NodeId>): void => {
     setSelectedNodes(new Set(next));
-    setSelectedFrames(new Set());
-    setSelectedWires(new Set());
+    setSelectedFrames(new Set<FrameId>());
+    setSelectedWires(new Set<WireId>());
     recordDebugEvent({
       timestamp: Date.now(),
       kind: "selection",
@@ -961,8 +1003,8 @@ export const createEditorStore = (): EditorStore => {
 
   const setFrameSelection = (next: ReadonlySet<FrameId>): void => {
     setSelectedFrames(new Set(next));
-    setSelectedNodes(new Set());
-    setSelectedWires(new Set());
+    setSelectedNodes(new Set<NodeId>());
+    setSelectedWires(new Set<WireId>());
     recordDebugEvent({
       timestamp: Date.now(),
       kind: "selection",
@@ -973,8 +1015,8 @@ export const createEditorStore = (): EditorStore => {
 
   const setWireSelection = (next: ReadonlySet<WireId>): void => {
     setSelectedWires(new Set(next));
-    setSelectedNodes(new Set());
-    setSelectedFrames(new Set());
+    setSelectedNodes(new Set<NodeId>());
+    setSelectedFrames(new Set<FrameId>());
     recordDebugEvent({
       timestamp: Date.now(),
       kind: "selection",
@@ -1465,8 +1507,8 @@ export const createEditorStore = (): EditorStore => {
       return null;
     }
     setNodeSelection(new Set([subgraphNodeId]));
-    setWireSelection(new Set());
-    setFrameSelection(new Set());
+    setWireSelection(new Set<WireId>());
+    setFrameSelection(new Set<FrameId>());
     return subgraphNodeId;
   };
 
@@ -1496,7 +1538,7 @@ export const createEditorStore = (): EditorStore => {
       refreshActiveOutput();
     }
     redoStack = [...redoStack, entry];
-    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
+    applyHistoryLimit();
   };
 
   const redo = (): void => {
@@ -1521,7 +1563,7 @@ export const createEditorStore = (): EditorStore => {
       refreshActiveOutput();
     }
     undoStack = [...undoStack, entry];
-    setHistoryState({ undo: undoStack.length, redo: redoStack.length });
+    applyHistoryLimit();
   };
 
   return {
@@ -1573,6 +1615,7 @@ export const createEditorStore = (): EditorStore => {
       if (!next.executionVizEnabled) {
         setExecVisualization(null);
       }
+      applyHistoryLimit();
     },
     updateSettings: (patch) => {
       setSettingsState((current) => {
@@ -1582,6 +1625,7 @@ export const createEditorStore = (): EditorStore => {
         }
         return next;
       });
+      applyHistoryLimit();
     },
     setGraphPath,
     addWatchedSocket,

@@ -6,6 +6,7 @@ import {
   addWire,
   createGraph,
   detectCycle,
+  type Graph,
   type GraphEffect,
   type GraphNode,
   type GraphSocket,
@@ -66,6 +67,41 @@ const createTestNode = (
   return { nodeId, inputId, outputId, node, sockets };
 };
 
+const addWireUnchecked = (
+  graph: Graph,
+  wire: { id: ReturnType<typeof makeWireId>; fromSocketId: GraphSocket["id"]; toSocketId: GraphSocket["id"] },
+): Graph => {
+  const fromSocket = graph.sockets.get(wire.fromSocketId);
+  const toSocket = graph.sockets.get(wire.toSocketId);
+  if (!fromSocket || !toSocket) {
+    throw new Error("Missing socket for unchecked wire add");
+  }
+
+  const wires = new Map(graph.wires);
+  wires.set(wire.id, wire);
+
+  const outgoing = new Map(graph.outgoing);
+  const incoming = new Map(graph.incoming);
+
+  const nextOutgoing = new Set(outgoing.get(fromSocket.nodeId) ?? []);
+  nextOutgoing.add(toSocket.nodeId);
+  outgoing.set(fromSocket.nodeId, nextOutgoing);
+
+  const nextIncoming = new Set(incoming.get(toSocket.nodeId) ?? []);
+  nextIncoming.add(fromSocket.nodeId);
+  incoming.set(toSocket.nodeId, nextIncoming);
+
+  return {
+    graphId: graph.graphId,
+    nodes: graph.nodes,
+    sockets: graph.sockets,
+    wires,
+    frames: graph.frames,
+    outgoing,
+    incoming,
+  };
+};
+
 describe("detectCycle", () => {
   it("returns null for DAGs", () => {
     let graph = createGraph(makeGraphId("graph"));
@@ -117,13 +153,11 @@ describe("detectCycle", () => {
         toSocketId: nodeC.inputId,
       }),
     );
-    graph = expectOk(
-      addWire(graph, {
-        id: makeWireId("C-A"),
-        fromSocketId: nodeC.outputId,
-        toSocketId: nodeA.inputId,
-      }),
-    );
+    graph = addWireUnchecked(graph, {
+      id: makeWireId("C-A"),
+      fromSocketId: nodeC.outputId,
+      toSocketId: nodeA.inputId,
+    });
 
     expect(detectCycle(graph)).toEqual([
       nodeA.nodeId,

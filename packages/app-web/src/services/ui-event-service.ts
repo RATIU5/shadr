@@ -24,11 +24,13 @@ export const UiEventServiceLive = Layer.succeed(UiEventService, {
 /* eslint-disable no-unused-vars */
 export const createUiEventServiceLayer = (
   notify: (_event: UiEvent) => void,
-): Layer.Layer<never, never, UiEventServiceApi> =>
+): Layer.Layer<UiEventService> =>
   Layer.succeed(UiEventService, {
     notify: (event) => Effect.sync(() => notify(event)),
   });
 /* eslint-enable no-unused-vars */
 
-export const notifyUi = (event: UiEvent): Effect.Effect<void> =>
+export const notifyUi = (
+  event: UiEvent,
+): Effect.Effect<void, never, UiEventService> =>
   Effect.flatMap(UiEventService, (service) => service.notify(event));

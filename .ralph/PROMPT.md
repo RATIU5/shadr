@@ -29,6 +29,7 @@ Implement the selected task following existing code patterns.
 After implementing:
 
 - Run validation: `pnpm lint && pnpm check`
+- Run tests: `pnpm test`
 - If tests/checks fail, fix them before proceeding
 - Use only 1 subagent for build/test operations (backpressure control)
 

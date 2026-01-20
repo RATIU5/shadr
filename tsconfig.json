@@ -6,7 +6,6 @@
   "files": [],
   "references": [
     { "path": "./packages/app-web" },
-    { "path": "./packages/kobalte-core" },
     { "path": "./packages/devtools" },
     { "path": "./packages/exec-engine" },
     { "path": "./packages/graph-core" },

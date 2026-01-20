@@ -54,7 +54,7 @@ export const markDirtyForWireChangeEffect = (
   graph: Graph,
   state: ExecState,
   wireId: WireId,
-): Effect.Effect<ExecState, ExecError> =>
+): Effect.Effect<ExecState, ExecError, ExecService> =>
   Effect.flatMap(ExecService, (service) =>
     service.markDirtyForWireChange(graph, state, wireId),
   );
@@ -64,7 +64,7 @@ export const evaluateSocketWithStatsEffect = (
   socketId: SocketId,
   resolveNodeDefinition: NodeDefinitionResolver,
   state?: ExecState,
-): Effect.Effect<ExecEvaluationResult, ExecError> =>
+): Effect.Effect<ExecEvaluationResult, ExecError, ExecService> =>
   Effect.flatMap(ExecService, (service) =>
     service.evaluateSocketWithStats(
       graph,

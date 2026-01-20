@@ -20,3 +20,4 @@ Add discoveries here that help future iterations avoid mistakes.
 - Background output evaluation runs in a web worker via `app-web`'s exec worker client to keep UI responsive; canceling terminates the worker and reports `ExecutionCanceled`.
 - Subgraph promoted params are stored in `SubgraphNodeParams.promotedParams` and synced across instances via `replace-node-io` when sockets are added or removed.
 - DOM overlay layering uses CSS z-index tokens in `app.css` (`--layer-*`) with pointer-events pass-through; panels use `z-[var(--layer-panel)]` and the toast region is `pointer-events-none` with clickable children.
+- `~/editor/*` imports resolve against `packages/app-web/src/editor`; Vite does not resolve to `src/routes/editor`, so shared editor utilities should live in `src/editor`.
