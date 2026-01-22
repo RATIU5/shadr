@@ -67,6 +67,7 @@ vi.mock("pixi.js", () => {
     clear(): void {}
     rect(_x: number, _y: number, _width: number, _height: number): void {}
     circle(_x: number, _y: number, _radius: number): void {}
+    poly(_points: ReadonlyArray<number>, _close?: boolean): void {}
     fill(_color: number): void {}
     stroke(
       _options: Readonly<{ width: number; color: number; alpha: number }>,

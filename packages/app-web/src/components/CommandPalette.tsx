@@ -1,4 +1,4 @@
-import * as Dialog from "@kobalte/core/dialog";
+import type { DialogRootProps } from "@kobalte/core/dialog";
 import {
   Command,
   CornerDownLeft,
@@ -6,7 +6,13 @@ import {
   Search,
   Settings2,
 } from "lucide-solid";
-import { createEffect, createMemo, createSignal, For } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  type JSX,
+} from "solid-js";
 
 export type CommandPaletteEntry = Readonly<{
   id: string;
@@ -21,8 +27,9 @@ export type CommandPaletteEntry = Readonly<{
 
 type CommandPaletteProps = Readonly<{
   open: boolean;
-  onOpenChange: NonNullable<Dialog.DialogRootProps["onOpenChange"]>;
+  onOpenChange: NonNullable<DialogRootProps["onOpenChange"]>;
   entries: ReadonlyArray<CommandPaletteEntry>;
+  trailingActions?: JSX.Element;
 }>;
 
 type KindStyle = Readonly<{
@@ -60,7 +67,39 @@ const KIND_ORDER: ReadonlyArray<CommandPaletteEntry["kind"]> = [
 
 const MAX_RESULTS = 18;
 
+const TAG_KIND_ALIASES: Record<string, CommandPaletteEntry["kind"]> = {
+  cmd: "command",
+  command: "command",
+  ctrl: "control",
+  control: "control",
+  ctl: "control",
+  node: "node",
+};
+
 const normalize = (value: string): string => value.trim().toLowerCase();
+
+export const parseCommandPaletteQuery = (
+  rawQuery: string,
+): Readonly<{
+  query: string;
+  kinds: ReadonlyArray<CommandPaletteEntry["kind"]> | null;
+}> => {
+  const tokens = normalize(rawQuery).split(/\s+/).filter(Boolean);
+  const kinds = new Set<CommandPaletteEntry["kind"]>();
+  const terms: string[] = [];
+  for (const token of tokens) {
+    const kind = TAG_KIND_ALIASES[token];
+    if (kind) {
+      kinds.add(kind);
+    } else {
+      terms.push(token);
+    }
+  }
+  return {
+    query: terms.join(" "),
+    kinds: kinds.size > 0 ? Array.from(kinds) : null,
+  };
+};
 
 const scoreMatch = (query: string, text: string): number | null => {
   if (query.length === 0) {
@@ -120,12 +159,17 @@ const scoreEntry = (
   return best;
 };
 
-const sortEntries = (
+export const sortCommandPaletteEntries = (
   entries: ReadonlyArray<CommandPaletteEntry>,
   query: string,
+  kinds: ReadonlyArray<CommandPaletteEntry["kind"]> | null,
 ): ReadonlyArray<CommandPaletteEntry> => {
+  const filtered =
+    kinds && kinds.length > 0
+      ? entries.filter((entry) => kinds.includes(entry.kind))
+      : entries;
   if (query.length === 0) {
-    return [...entries].sort((left, right) => {
+    return [...filtered].sort((left, right) => {
       const kindOrder =
         KIND_ORDER.indexOf(left.kind) - KIND_ORDER.indexOf(right.kind);
       if (kindOrder !== 0) {
@@ -134,7 +178,7 @@ const sortEntries = (
       return left.label.localeCompare(right.label);
     });
   }
-  const scored = entries
+  const scored = filtered
     .map((entry) => ({ entry, score: scoreEntry(query, entry) }))
     .filter(
       (value): value is { entry: CommandPaletteEntry; score: number } =>
@@ -155,8 +199,12 @@ export default function CommandPalette(props: CommandPaletteProps) {
   let inputRef: HTMLInputElement | undefined;
 
   const results = createMemo(() => {
-    const currentQuery = normalize(query());
-    const sorted = sortEntries(props.entries, currentQuery);
+    const parsed = parseCommandPaletteQuery(query());
+    const sorted = sortCommandPaletteEntries(
+      props.entries,
+      parsed.query,
+      parsed.kinds,
+    );
     return sorted.slice(0, MAX_RESULTS);
   });
 
@@ -207,115 +255,126 @@ export default function CommandPalette(props: CommandPaletteProps) {
   });
 
   return (
-    <Dialog.Root
-      open={props.open}
-      onOpenChange={props.onOpenChange}
-      modal={true}
-    >
-      <Dialog.Portal>
-        <Dialog.Overlay class="fixed inset-0 z-[var(--layer-modal-overlay)] bg-[color:var(--overlay-bg)] backdrop-blur-sm" />
-        <Dialog.Content class="fixed left-1/2 top-[18vh] z-[var(--layer-modal)] w-[min(92vw,720px)] -translate-x-1/2 rounded-[1.2rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] p-4 text-[color:var(--app-text)] shadow-[var(--shadow-popup)]">
-          <Dialog.Title class="sr-only">Command palette</Dialog.Title>
-          <Dialog.Description class="sr-only">
-            Search commands, nodes, and controls.
-          </Dialog.Description>
-          <div class="flex items-center gap-3 rounded-[0.9rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] px-3 py-2">
-            <Search class="h-4 w-4 text-[color:var(--text-muted)]" />
-            <input
-              ref={inputRef}
-              class="w-full bg-transparent text-[0.9rem] text-[color:var(--text-strong)] placeholder:text-[color:var(--text-muted)] focus:outline-none"
-              placeholder="Search commands, nodes, controls"
-              aria-label="Search commands, nodes, and controls"
-              value={query()}
-              onInput={(event) => setQuery(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setActiveIndex((index) =>
-                    Math.min(index + 1, results().length - 1),
-                  );
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setActiveIndex((index) => Math.max(index - 1, 0));
-                }
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  selectEntry(activeEntry());
-                }
-              }}
-            />
-          </div>
-
-          <div class="mt-3 max-h-[52vh] overflow-y-auto pr-1">
-            {results().length === 0 ? (
-              <div class="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-3 py-4 text-center text-[0.8rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
-                No matches
-              </div>
-            ) : (
-              <div class="flex flex-col gap-2">
-                <For each={results()}>
-                  {(entry, index) => {
-                    const style = KIND_STYLE[entry.kind];
-                    const Icon = style.icon;
-                    const isActive = () => index() === activeIndex();
-                    const isDisabled = () => entry.enabled === false;
-                    return (
-                      <button
-                        class={`flex w-full items-center justify-between gap-4 rounded-xl border px-3 py-2 text-left transition ${
-                          isActive()
-                            ? "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)]"
-                            : "border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] hover:border-[color:var(--border-strong)]"
-                        } ${isDisabled() ? "opacity-50" : "opacity-100"}`}
-                        onMouseEnter={() => setActiveIndex(index())}
-                        onClick={() => selectEntry(entry)}
-                        disabled={isDisabled()}
-                      >
-                        <div class="flex min-w-0 flex-1 items-center gap-3">
-                          <span
-                            class={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[0.55rem] uppercase tracking-[0.2em] ${style.badge}`}
-                          >
-                            <Icon class="h-3 w-3" />
-                            {style.label}
-                          </span>
-                          <div class="min-w-0">
-                            <div class="truncate text-[0.9rem]">
-                              {entry.label}
-                            </div>
-                            {entry.description ? (
-                              <div class="truncate text-[0.75rem] text-[color:var(--text-muted)]">
-                                {entry.description}
-                              </div>
-                            ) : null}
+    <div class="flex min-h-0 flex-col gap-2">
+      {props.open ? (
+        <div class="flex min-h-0 flex-1 flex-col gap-2">
+          {results().length === 0 ? (
+            <div class="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-3 py-4 text-center text-[0.8rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
+              No matches
+            </div>
+          ) : (
+            <div class="flex min-h-0 max-h-[40vh] flex-col gap-2 overflow-y-auto pr-1">
+              <For each={results()}>
+                {(entry, index) => {
+                  const style = KIND_STYLE[entry.kind];
+                  const Icon = style.icon;
+                  const isActive = () => index() === activeIndex();
+                  const isDisabled = () => entry.enabled === false;
+                  return (
+                    <button
+                      class={`flex w-full items-center justify-between gap-4 rounded-xl border px-3 py-2 text-left transition ${
+                        isActive()
+                          ? "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)]"
+                          : "border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] hover:border-[color:var(--border-strong)]"
+                      } ${isDisabled() ? "opacity-50" : "opacity-100"}`}
+                      onMouseEnter={() => setActiveIndex(index())}
+                      onClick={() => selectEntry(entry)}
+                      disabled={isDisabled()}
+                    >
+                      <div class="flex min-w-0 flex-1 items-center gap-3">
+                        <span
+                          class={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[0.55rem] uppercase tracking-[0.2em] ${style.badge}`}
+                        >
+                          <Icon class="h-3 w-3" />
+                          {style.label}
+                        </span>
+                        <div class="min-w-0">
+                          <div class="truncate text-[0.9rem]">
+                            {entry.label}
                           </div>
-                        </div>
-                        <div class="flex items-center gap-2">
-                          {entry.stateLabel ? (
-                            <span class="rounded-full border border-[color:var(--border-soft)] bg-[color:var(--surface-chip)] px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)]">
-                              {entry.stateLabel}
-                            </span>
+                          {entry.description ? (
+                            <div class="truncate text-[0.75rem] text-[color:var(--text-muted)]">
+                              {entry.description}
+                            </div>
                           ) : null}
                         </div>
-                      </button>
-                    );
-                  }}
-                </For>
-              </div>
-            )}
-          </div>
-
-          <div class="mt-3 flex items-center justify-between text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
+                      </div>
+                      <div class="flex items-center gap-2">
+                        {entry.stateLabel ? (
+                          <span class="rounded-full border border-[color:var(--border-soft)] bg-[color:var(--surface-chip)] px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)]">
+                            {entry.stateLabel}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
+          )}
+          <div class="flex items-center justify-between text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
             <span class="inline-flex items-center gap-2">
               <CornerDownLeft class="h-3 w-3" />
               Run
             </span>
             <span class="inline-flex items-center gap-2">
               <Command class="h-3 w-3" />
-              Cmd/Ctrl+K
+              Space
             </span>
           </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        </div>
+      ) : null}
+
+      <div class="flex items-center gap-2">
+        <div
+          class={`flex items-center gap-3 rounded-[0.9rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] px-3 py-2 ${
+            props.open ? "w-full" : "w-[min(60vw,260px)]"
+          }`}
+        >
+          <Search class="h-4 w-4 text-[color:var(--text-muted)]" />
+          <input
+            ref={inputRef}
+            class="w-full bg-transparent text-[0.9rem] text-[color:var(--text-strong)] placeholder:text-[color:var(--text-muted)] focus:outline-none"
+            placeholder="Search commands, nodes, controls"
+            aria-label="Search commands, nodes, and controls"
+            value={query()}
+            onInput={(event) => {
+              setQuery(event.currentTarget.value);
+              if (!props.open) {
+                props.onOpenChange(true);
+              }
+            }}
+            onFocus={() => {
+              if (!props.open) {
+                props.onOpenChange(true);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveIndex((index) =>
+                  Math.min(index + 1, results().length - 1),
+                );
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveIndex((index) => Math.max(index - 1, 0));
+              }
+              if (event.key === "Enter") {
+                event.preventDefault();
+                selectEntry(activeEntry());
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                props.onOpenChange(false);
+              }
+            }}
+          />
+        </div>
+        {!props.open && props.trailingActions ? (
+          <div class="flex items-center gap-2">{props.trailingActions}</div>
+        ) : null}
+      </div>
+    </div>
   );
 }

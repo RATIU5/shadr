@@ -33,7 +33,7 @@ export const defaultNodeLayout: NodeLayout = {
   headerHeight: 24,
   bodyPadding: 12,
   socketSpacing: 18,
-  socketOffsetX: 8,
+  socketOffsetX: 0,
 };
 
 export type NodeHeaderToggleBounds = Readonly<{

@@ -14,6 +14,11 @@ const SOCKET_TRIANGLE_HEIGHT_RATIO = 0.866;
 const BADGE_RADIUS = 3;
 const SOCKET_LABEL_FONT_SIZE = 9;
 const SOCKET_LABEL_OFFSET = 8;
+const SOCKET_LABEL_INNER_PADDING = 6;
+const SOCKET_LABEL_CENTER_GUTTER = 10;
+const SOCKET_LABEL_ELLIPSIS = "...";
+const SOCKET_LABEL_CHAR_WIDTH_RATIO = 0.6;
+const NODE_STROKE_WIDTH = 1;
 
 export type NodeVisualState = Readonly<{
   selected: boolean;
@@ -30,7 +35,15 @@ export type NodeExecutionState = Readonly<{
   cacheHit: boolean;
 }>;
 
+/* eslint-disable no-unused-vars -- type-only signature in PixiTextMetrics */
 type SocketShape = "circle" | "triangle" | "square";
+type PixiTextMetrics = Readonly<{
+  measureText: (
+    text: string,
+    style: PIXI.TextStyleOptions,
+  ) => { width: number };
+}>;
+/* eslint-enable no-unused-vars */
 
 const DEFAULT_VISUAL_STATE: NodeVisualState = {
   selected: false,
@@ -51,7 +64,7 @@ export class NodeView {
   private readonly socketLabels: PIXI.Container;
   private readonly socketLabelTexts = new Map<SocketId, PIXI.Text>();
   private readonly titleText: PIXI.Text;
-  private readonly toggleText: PIXI.Text;
+  private readonly toggleIcon: PIXI.Graphics;
   private readonly executionText: PIXI.Text;
   private readonly executionBar: PIXI.Graphics;
   private layout: NodeLayout;
@@ -83,15 +96,7 @@ export class NodeView {
       },
     });
     this.titleText.anchor.set(0, 0.5);
-    this.toggleText = new PIXI.Text({
-      text: "",
-      style: {
-        fontFamily: "Space Grotesk, ui-sans-serif, system-ui, sans-serif",
-        fontSize: 10,
-        fill: theme.node.headerText,
-      },
-    });
-    this.toggleText.anchor.set(0.5);
+    this.toggleIcon = new PIXI.Graphics();
     this.executionText = new PIXI.Text({
       text: "",
       style: {
@@ -109,7 +114,7 @@ export class NodeView {
     this.container.addChild(this.headerIcons);
     this.container.addChild(this.executionBadge);
     this.container.addChild(this.titleText);
-    this.container.addChild(this.toggleText);
+    this.container.addChild(this.toggleIcon);
     this.container.addChild(this.executionText);
     this.container.addChild(this.executionBar);
     this.layout = layout;
@@ -235,6 +240,11 @@ export class NodeView {
     const labelColor = this.state.bypassed
       ? this.theme.node.headerTextMuted
       : this.theme.node.headerTextMuted;
+    const labelStyle = {
+      fontFamily: "Space Grotesk, ui-sans-serif, system-ui, sans-serif",
+      fontSize: SOCKET_LABEL_FONT_SIZE,
+      fill: labelColor,
+    } as const;
     for (const socket of sockets) {
       const socketIndex =
         socket.direction === "input"
@@ -267,14 +277,20 @@ export class NodeView {
       let y = socketY;
       switch (position) {
         case "left":
-          anchorX = 1;
-          anchorY = 0.5;
-          x = socketX - SOCKET_LABEL_OFFSET;
-          break;
-        case "right":
           anchorX = 0;
           anchorY = 0.5;
-          x = socketX + SOCKET_LABEL_OFFSET;
+          x = Math.max(
+            this.layout.bodyPadding + SOCKET_LABEL_INNER_PADDING,
+            socketX + SOCKET_LABEL_OFFSET,
+          );
+          break;
+        case "right":
+          anchorX = 1;
+          anchorY = 0.5;
+          x = Math.min(
+            width - this.layout.bodyPadding - SOCKET_LABEL_INNER_PADDING,
+            socketX - SOCKET_LABEL_OFFSET,
+          );
           break;
         case "top":
           anchorX = 0.5;
@@ -293,20 +309,24 @@ export class NodeView {
         x += labelSettings.offset.x;
         y += labelSettings.offset.y;
       }
+      const maxWidth = resolveSocketLabelMaxWidth(
+        width,
+        x,
+        position,
+        this.layout.bodyPadding,
+      );
+      const fittedText =
+        maxWidth > 0 ? fitSocketLabelText(labelText, maxWidth, labelStyle) : "";
       let text = this.socketLabelTexts.get(socket.id);
       if (!text) {
         text = new PIXI.Text({
-          text: labelText,
-          style: {
-            fontFamily: "Space Grotesk, ui-sans-serif, system-ui, sans-serif",
-            fontSize: SOCKET_LABEL_FONT_SIZE,
-            fill: labelColor,
-          },
+          text: fittedText,
+          style: labelStyle,
         });
         this.socketLabelTexts.set(socket.id, text);
         this.socketLabels.addChild(text);
       } else {
-        text.text = labelText;
+        text.text = fittedText;
         text.style.fill = labelColor;
       }
       text.anchor.set(anchorX, anchorY);
@@ -373,7 +393,7 @@ export class NodeView {
       this.headerIcons.visible = false;
       this.executionBadge.visible = false;
       this.titleText.visible = false;
-      this.toggleText.visible = false;
+      this.toggleIcon.visible = false;
       this.executionText.visible = false;
       return;
     }
@@ -381,7 +401,7 @@ export class NodeView {
     this.headerIcons.visible = true;
     this.executionBadge.visible = true;
     this.titleText.visible = true;
-    this.toggleText.visible = true;
+    this.toggleIcon.visible = true;
     this.executionText.visible = true;
     const { width } = getNodeSize(node, this.layout);
     const headerHeight = this.layout.headerHeight;
@@ -403,10 +423,36 @@ export class NodeView {
     this.titleText.style.fill = textColor;
 
     const toggleBounds = getNodeHeaderToggleBounds(this.layout);
-    this.toggleText.text = this.state.collapsed ? ">" : "v";
-    this.toggleText.style.fill = textColor;
-    this.toggleText.x = toggleBounds.x + toggleBounds.size / 2;
-    this.toggleText.y = headerHeight / 2;
+    const toggleCenterX = toggleBounds.x + toggleBounds.size / 2;
+    const toggleCenterY = headerHeight / 2;
+    const toggleHalf = Math.max(2, toggleBounds.size / 2 - 2);
+    this.toggleIcon.clear();
+    this.toggleIcon.stroke({ width: 1.5, color: textColor, alpha: 1 });
+    if (this.state.collapsed) {
+      this.toggleIcon.poly(
+        [
+          toggleCenterX - toggleHalf / 2,
+          toggleCenterY - toggleHalf,
+          toggleCenterX + toggleHalf / 2,
+          toggleCenterY,
+          toggleCenterX - toggleHalf / 2,
+          toggleCenterY + toggleHalf,
+        ],
+        false,
+      );
+    } else {
+      this.toggleIcon.poly(
+        [
+          toggleCenterX - toggleHalf,
+          toggleCenterY - toggleHalf / 2,
+          toggleCenterX,
+          toggleCenterY + toggleHalf / 2,
+          toggleCenterX + toggleHalf,
+          toggleCenterY - toggleHalf / 2,
+        ],
+        false,
+      );
+    }
 
     const titleX = toggleBounds.x + toggleBounds.size + 6;
     this.titleText.x = titleX;
@@ -492,6 +538,118 @@ export class NodeView {
   }
 }
 
+const resolveSocketLabelMaxWidth = (
+  nodeWidth: number,
+  x: number,
+  position: "left" | "right" | "top" | "bottom",
+  bodyPadding: number,
+): number => {
+  if (position === "left") {
+    const centerLimit = nodeWidth / 2 - SOCKET_LABEL_CENTER_GUTTER;
+    return Math.max(0, centerLimit - x);
+  }
+  if (position === "right") {
+    const centerLimit = nodeWidth / 2 + SOCKET_LABEL_CENTER_GUTTER;
+    return Math.max(0, x - centerLimit);
+  }
+  const leftLimit = bodyPadding + SOCKET_LABEL_INNER_PADDING;
+  const rightLimit = nodeWidth - bodyPadding - SOCKET_LABEL_INNER_PADDING;
+  const leftSpace = x - leftLimit;
+  const rightSpace = rightLimit - x;
+  return Math.max(0, Math.min(leftSpace, rightSpace) * 2);
+};
+
+const fitSocketLabelText = (
+  text: string,
+  maxWidth: number,
+  style: PIXI.TextStyleOptions,
+): string => {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+  const fullWidth = measureLabelWidth(trimmed, style);
+  if (fullWidth <= maxWidth) {
+    return trimmed;
+  }
+  const ellipsisWidth = measureLabelWidth(SOCKET_LABEL_ELLIPSIS, style);
+  if (ellipsisWidth >= maxWidth) {
+    return SOCKET_LABEL_ELLIPSIS;
+  }
+  let start = 1;
+  let end = 1;
+  let best = trimmed[0] + SOCKET_LABEL_ELLIPSIS + trimmed.at(-1);
+  while (start + end < trimmed.length - 1) {
+    const nextStart = start <= end ? start + 1 : start;
+    const nextEnd = end < start ? end + 1 : end;
+    const candidate =
+      trimmed.slice(0, nextStart) +
+      SOCKET_LABEL_ELLIPSIS +
+      trimmed.slice(trimmed.length - nextEnd);
+    const width = measureLabelWidth(candidate, style);
+    if (width > maxWidth) {
+      break;
+    }
+    start = nextStart;
+    end = nextEnd;
+    best = candidate;
+  }
+  return best;
+};
+
+const measureLabelWidth = (
+  text: string,
+  style: PIXI.TextStyleOptions,
+): number => {
+  let pixiMetrics: unknown = null;
+  try {
+    pixiMetrics = (PIXI as unknown as { TextMetrics?: unknown }).TextMetrics;
+  } catch {
+    pixiMetrics = null;
+  }
+  if (
+    pixiMetrics &&
+    typeof pixiMetrics === "object" &&
+    "measureText" in pixiMetrics
+  ) {
+    return (pixiMetrics as PixiTextMetrics).measureText(text, style).width;
+  }
+  const isJsdom =
+    typeof navigator !== "undefined" && navigator.userAgent.includes("jsdom");
+  if (!isJsdom && typeof document !== "undefined") {
+    const canvas = getLabelMeasureCanvas();
+    let context: CanvasRenderingContext2D | null = null;
+    try {
+      context = canvas.getContext("2d");
+    } catch {
+      context = null;
+    }
+    if (context) {
+      context.font = buildLabelFont(style);
+      return context.measureText(text).width;
+    }
+  }
+  const fontSize = typeof style.fontSize === "number" ? style.fontSize : 10;
+  return text.length * fontSize * SOCKET_LABEL_CHAR_WIDTH_RATIO;
+};
+
+let labelMeasureCanvas: HTMLCanvasElement | null = null;
+
+const getLabelMeasureCanvas = (): HTMLCanvasElement => {
+  if (!labelMeasureCanvas) {
+    labelMeasureCanvas = document.createElement("canvas");
+  }
+  return labelMeasureCanvas;
+};
+
+const buildLabelFont = (style: PIXI.TextStyleOptions): string => {
+  const fontSize = typeof style.fontSize === "number" ? style.fontSize : 10;
+  const fontFamily = Array.isArray(style.fontFamily)
+    ? style.fontFamily.join(", ")
+    : (style.fontFamily ?? "sans-serif");
+  return `${fontSize}px ${fontFamily}`;
+};
+
 const resolveBodyStyle = (
   state: NodeVisualState,
   theme: CanvasTheme,
@@ -500,38 +658,39 @@ const resolveBodyStyle = (
   strokeColor: number;
   strokeWidth: number;
 } => {
+  const strokeWidth = NODE_STROKE_WIDTH;
   if (state.hasError) {
     return {
       fillColor: state.bypassed ? theme.node.bypassedFill : theme.node.fill,
       strokeColor: theme.node.errorStroke,
-      strokeWidth: 3,
+      strokeWidth,
     };
   }
   if (state.selected) {
     return {
       fillColor: state.bypassed ? theme.node.bypassedFill : theme.node.fill,
       strokeColor: theme.node.selectedStroke,
-      strokeWidth: 3,
+      strokeWidth,
     };
   }
   if (state.hovered) {
     return {
       fillColor: state.bypassed ? theme.node.bypassedFill : theme.node.fill,
       strokeColor: theme.node.hoveredStroke,
-      strokeWidth: 2,
+      strokeWidth,
     };
   }
   if (state.bypassed) {
     return {
       fillColor: theme.node.bypassedFill,
       strokeColor: theme.node.bypassedStroke,
-      strokeWidth: 2,
+      strokeWidth,
     };
   }
   return {
     fillColor: theme.node.fill,
     strokeColor: theme.node.stroke,
-    strokeWidth: 2,
+    strokeWidth,
   };
 };
 

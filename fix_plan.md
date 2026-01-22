@@ -13,45 +13,49 @@ Features reference: `FEATURES.md` (for what to work on after all tasks are compl
 
 ## Critical
 
-- [ ] Type error: No overload matches this call. The last overload gave the following error. Object literal may only specify known properties, and inline does not exist in type DepsOptions. (ts 2769) (vitest.config.ts)
-- [ ] Test failure: `packages/ui-overlay/test/exports.test.ts` cannot resolve `@shadr/ui-overlay`
-- [ ] Test failure: `packages/graph-core/test/topo-sort.test.ts` throws `SocketConnectionLimitExceeded` during setup
-- [ ] Test failure: `vitest` jsdom workers fail to start (missing `jsdom`) for `packages/app-web/test/command-palette.test.tsx` and `packages/app-web/test/keybinding-settings-panel.test.tsx`
-- [ ] Test run 2026-01-19: `packages/ui-overlay/test/exports.test.ts` cannot resolve `@shadr/ui-overlay`
-- [ ] Test run 2026-01-19: `packages/graph-core/test/topo-sort.test.ts` throws `SocketConnectionLimitExceeded`
-- [ ] Test run 2026-01-19: Vitest jsdom workers fail to start (missing `jsdom`) for `packages/app-web/test/command-palette.test.tsx` and `packages/app-web/test/keybinding-settings-panel.test.tsx`
-- [ ] Test run 2026-01-19: `packages/app-web/test/command-palette.test.tsx` throws "Client-only API called on the server side" (lucide-solid icon render)
-- [ ] Test run 2026-01-19: `packages/app-web/test/keybinding-settings-panel.test.tsx` throws "Client-only API called on the server side"
-
 ## High Priority
 
-- [ ] Remove the double click functionality to create a new node (double click is reserved for only entering subgraphs and renaming text on the canvas, these features will be implemented later)
-- [ ] Change the CMD + K command palette shortcut to be the space bar (shortcut not active when text input is active anywhere in the app)
-- [ ] Allow search by tag type in command menu (cmd/command, control/ctrl/ctl, node)
-- [ ] The group frame needs to have a larger hit area at the corners to resize
-- [ ] Double-clicking text rendered on the canvas should open a text input to allow for renaming (form with text input and clear/reset button on the same row as icons)
-- [ ] Subgraphs should change the command menu at the bottom, provide options like forms to create inputs/outputs, uncollapse, etc...
-- [ ] Labels for sockets need to appear inside the node box, and have "smart" width: too long of text is condensed to "..." in the middle, leaving the letters on each end visible
-- [ ] Reloading the app breaks the subgraphs and renames the "main" graph layer, while removing the inner subgraph. Ensure the functionality for subgraphs is robust
-- [ ] The settings dialog needs to have a max height with scrollable contents
-- [ ] Smart keyboard shortcut setting: global key down listener, list each key stroke in the disabled input box, and a complex layer for parsing/processing key strokes matching them up with valid/stored shortcuts and pass that event through the event bus
-- [ ] In the UI, prefer icons over text for buttons when possible
-- [ ] Re-create the rendering for the node box in Pixi.js. Sockets need to be rendered on top of the box on the edge/border of the box, the border needs to remain the same size throughout the box on all sides (currently it's incosistent: thicker and thinner in some areas, prefer thinner border), use icons (svg) over text whne possible (convert the "v" collapse letter to an actual cheveron icon)
-- [ ] The sub grid items disappear as you zoom out, leaving only the middle y and x lines visible. The grid lines adjust dynamically: as you zoom in, more subdivided lines appear through opacity changes, and as you zoom out, the subdivided lines dissapear via opacity to get a smooth effect. This happens dynamically at every zoom level, so at every zoom level there are three types: minor, major, and middle x/y.
-- [ ] Re-create the side panel: taller in size, max height and scrollable container, content tabs. The tabs can adjust dynamically: when debug is enabled, then a new debug tab appears. Prefer smart icons for tab names, not text. The side panel is visible only when one tab is enabled or visible: when debug is enabled, then the side panel is always visible. When the debug is disabled, and no node is selected, then the panel is not visible. When an active node or wire is selected, then the panel appears. More tabs may appear in certain contexts.
-- [ ] Transform the bottom command menu bar to: a text input (condensed when not active to make room for more commands. When active, the text input takes control and covers all other actions and buttons, as well as extending in height to show results while text input is at the bottom), export and import icon with proper tooltips, move the settings to the top left container of the window, remove the workspace text too. Make this bottom command menu the command palette/center. When the shortcut to activate the control palette is pressed, the text input is activated and the whole command menu container expands for the results
-- [ ] When loading any graph file or json, or on load, make sure the "main" graph layer is selected and active, not any subgraphs
-
 ## Medium Priority
-
-- [ ] Setup playright testing for the UI frontend web app, test common things like modals, sidebars, etc...
-- [ ] Add tests for worker execution plumbing (protocol + worker lifecycle) in `packages/app-web/src/workers/exec-worker-protocol.ts` and `packages/app-web/src/workers/exec-worker.ts`
-- [ ] Add UI canvas coverage for camera transforms and wire geometry/layout invariants in `packages/ui-canvas/src/camera.ts`, `packages/ui-canvas/src/wire-geometry.ts`, `packages/ui-canvas/src/layout.ts`
 
 ## Low Priority
 
 ## Completed
 
+- [x] Investigate Solid warning about computations created outside a `createRoot` during command palette tests
+
+- [x] Test run 2026-01-19: `packages/ui-canvas/test/scene.test.ts` fails with `TypeError: this.toggleIcon.poly is not a function` from `packages/ui-canvas/src/node-view.ts`
+- [x] Fix `pnpm test` Vitest worker pool timeouts (forks worker fails to start for app-web/graph-core tests during `@shadr/ui-canvas` run)
+- [x] Add UI canvas coverage for camera transforms and wire geometry/layout invariants in `packages/ui-canvas/src/camera.ts`, `packages/ui-canvas/src/wire-geometry.ts`, `packages/ui-canvas/src/layout.ts`
+- [x] Add tests for worker execution plumbing (protocol + worker lifecycle) in `packages/app-web/src/workers/exec-worker-protocol.ts` and `packages/app-web/src/workers/exec-worker.ts`
+
+- [x] Setup playright testing for the UI frontend web app, test common things like modals, sidebars, etc...
+- [x] When loading any graph file or json, or on load, make sure the "main" graph layer is selected and active, not any subgraphs
+- [x] Transform the bottom command menu bar to: a text input (condensed when not active to make room for more commands. When active, the text input takes control and covers all other actions and buttons, as well as extending in height to show results while text input is at the bottom), export and import icon with proper tooltips, move the settings to the top left container of the window, remove the workspace text too. Make this bottom command menu the command palette/center. When the shortcut to activate the control palette is pressed, the text input is activated and the whole command menu container expands for the results
+- [x] Re-create the side panel: taller in size, max height and scrollable container, content tabs. The tabs can adjust dynamically: when debug is enabled, then a new debug tab appears. Prefer smart icons for tab names, not text. The side panel is visible only when one tab is enabled or visible: when debug is enabled, then the side panel is always visible. When the debug is disabled, and no node is selected, then the panel is not visible. When an active node or wire is selected, then the panel appears. More tabs may appear in certain contexts.
+- [x] The sub grid items disappear as you zoom out, leaving only the middle y and x lines visible. The grid lines adjust dynamically: as you zoom in, more subdivided lines appear through opacity changes, and as you zoom out, the subdivided lines dissapear via opacity to get a smooth effect. This happens dynamically at every zoom level, so at every zoom level there are three types: minor, major, and middle x/y.
+- [x] Re-create the rendering for the node box in Pixi.js. Sockets need to be rendered on top of the box on the edge/border of the box, the border needs to remain the same size throughout the box on all sides (currently it's incosistent: thicker and thinner in some areas, prefer thinner border), use icons (svg) over text whne possible (convert the "v" collapse letter to an actual cheveron icon)
+- [x] In the UI, prefer icons over text for buttons when possible
+- [x] Smart keyboard shortcut setting: global key down listener, list each key stroke in the disabled input box, and a complex layer for parsing/processing key strokes matching them up with valid/stored shortcuts and pass that event through the event bus
+- [x] The settings dialog needs to have a max height with scrollable contents
+- [x] Reloading the app breaks the subgraphs and renames the "main" graph layer, while removing the inner subgraph. Ensure the functionality for subgraphs is robust
+- [x] Labels for sockets need to appear inside the node box, and have "smart" width: too long of text is condensed to "..." in the middle, leaving the letters on each end visible
+- [x] Subgraphs should change the command menu at the bottom, provide options like forms to create inputs/outputs, uncollapse, etc...
+- [x] Double-clicking text rendered on the canvas should open a text input to allow for renaming (form with text input and clear/reset button on the same row as icons)
+- [x] The group frame needs to have a larger hit area at the corners to resize
+- [x] Allow search by tag type in command menu (cmd/command, control/ctrl/ctl, node)
+- [x] Change the CMD + K command palette shortcut to be the space bar (shortcut not active when text input is active anywhere in the app)
+- [x] Remove the double click functionality to create a new node (double click is reserved for only entering subgraphs and renaming text on the canvas, these features will be implemented later)
+- [x] Test run 2026-01-19: `packages/app-web/test/keybinding-settings-panel.test.tsx` capture never starts in Vitest (missing "Press keys to set the shortcut"; Backspace does not remove binding)
+- [x] Test run 2026-01-19: `packages/app-web/test/keybinding-settings-panel.test.tsx` throws "Client-only API called on the server side"
+- [x] Test run 2026-01-19: `packages/app-web/test/command-palette.test.tsx` throws "Client-only API called on the server side" (lucide-solid icon render)
+- [x] Test run 2026-01-19: `packages/graph-core/test/topo-sort.test.ts` throws `SocketConnectionLimitExceeded`
+- [x] Test failure: `vitest` jsdom workers fail to start (missing `jsdom`) for `packages/app-web/test/command-palette.test.tsx` and `packages/app-web/test/keybinding-settings-panel.test.tsx`
+- [x] Test run 2026-01-19: Vitest jsdom workers fail to start (missing `jsdom`) for `packages/app-web/test/command-palette.test.tsx` and `packages/app-web/test/keybinding-settings-panel.test.tsx`
+
+- [x] Test failure: `packages/graph-core/test/topo-sort.test.ts` throws `SocketConnectionLimitExceeded` during setup
+- [x] Test failure: `packages/ui-overlay/test/exports.test.ts` cannot resolve `@shadr/ui-overlay`
+- [x] Test run 2026-01-19: `packages/ui-overlay/test/exports.test.ts` cannot resolve `@shadr/ui-overlay`
+- [x] Type error: No overload matches this call. The last overload gave the following error. Object literal may only specify known properties, and inline does not exist in type DepsOptions. (ts 2769) (vitest.config.ts)
 - [x] Test failure: `packages/devtools/test/exports.test.ts` cannot resolve `@shadr/devtools`
 - [x] Test run 2026-01-19: `packages/devtools/test/exports.test.ts` cannot resolve `@shadr/devtools`
 - [x] Test failure: `packages/app-web/test/store.test.ts` cannot resolve `~/editor/conversion-registry` from `packages/app-web/src/editor/store.ts`

@@ -1,10 +1,11 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 
 import CommandPalette, {
   type CommandPaletteEntry,
+  parseCommandPaletteQuery,
+  sortCommandPaletteEntries,
 } from "../src/components/CommandPalette";
 
 type MountedPalette = {
@@ -20,7 +21,7 @@ const mountCommandPalette = (
   document.body.appendChild(container);
   const dispose = render(
     () =>
-      createComponent(CommandPalette, {
+      CommandPalette({
         open: true,
         onOpenChange,
         entries,
@@ -102,5 +103,39 @@ describe("CommandPalette keyboard navigation", () => {
 
     expect(firstSelect).toHaveBeenCalledTimes(1);
     expect(secondSelect).not.toHaveBeenCalled();
+  });
+
+  it("filters by kind tags in the query", () => {
+    const entries: CommandPaletteEntry[] = [
+      { id: "alpha", label: "Alpha", kind: "command", onSelect: vi.fn() },
+      { id: "beta", label: "Beta", kind: "control", onSelect: vi.fn() },
+      { id: "gamma", label: "Gamma", kind: "node", onSelect: vi.fn() },
+    ];
+    const cmdQuery = parseCommandPaletteQuery("cmd");
+    const cmdResults = sortCommandPaletteEntries(
+      entries,
+      cmdQuery.query,
+      cmdQuery.kinds,
+    );
+    expect(cmdResults).toHaveLength(1);
+    expect(cmdResults[0]?.label).toBe("Alpha");
+
+    const ctrlQuery = parseCommandPaletteQuery("ctrl");
+    const ctrlResults = sortCommandPaletteEntries(
+      entries,
+      ctrlQuery.query,
+      ctrlQuery.kinds,
+    );
+    expect(ctrlResults).toHaveLength(1);
+    expect(ctrlResults[0]?.label).toBe("Beta");
+
+    const nodeQuery = parseCommandPaletteQuery("node");
+    const nodeResults = sortCommandPaletteEntries(
+      entries,
+      nodeQuery.query,
+      nodeQuery.kinds,
+    );
+    expect(nodeResults).toHaveLength(1);
+    expect(nodeResults[0]?.label).toBe("Gamma");
   });
 });

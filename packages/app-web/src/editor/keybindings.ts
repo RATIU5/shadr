@@ -1,6 +1,7 @@
 import type { JsonObject } from "@shadr/shared";
 
 export type KeybindingChord = string;
+export type KeybindingSequence = ReadonlyArray<KeybindingChord>;
 export type KeybindingActionDefinition = Readonly<{
   id: string;
   label: string;
@@ -15,7 +16,7 @@ export const KEYBINDING_ACTIONS = [
     label: "Open command palette",
     description: "Search commands and nodes.",
     category: "General",
-    defaultBindings: ["Mod+K"],
+    defaultBindings: ["Space"],
   },
   {
     id: "menu.context",
@@ -285,6 +286,8 @@ const KEY_ALIASES: Record<string, string> = {
   insert: "Insert",
 };
 
+const SEQUENCE_DELIMITER = /\s+/;
+
 const buildDefaultBindings = (): Record<
   KeybindingActionId,
   ReadonlyArray<KeybindingChord>
@@ -327,6 +330,17 @@ const normalizeKeyLabel = (raw: string): string => {
     return trimmed.toUpperCase();
   }
   return trimmed;
+};
+
+const splitKeybindingSequence = (binding: string): ReadonlyArray<string> => {
+  const trimmed = binding.trim();
+  if (!trimmed) {
+    return [];
+  }
+  return trimmed
+    .split(SEQUENCE_DELIMITER)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
 };
 
 const parseChordParts = (
@@ -374,6 +388,30 @@ export const normalizeKeybindingChord = (
   );
   parts.push(parsed.key);
   return parts.join("+");
+};
+
+const parseBindingSequence = (binding: string): KeybindingSequence | null => {
+  const parts = splitKeybindingSequence(binding);
+  if (parts.length === 0) {
+    return null;
+  }
+  const normalized = parts
+    .map((part) => normalizeKeybindingChord(part))
+    .filter((entry): entry is KeybindingChord => entry !== null);
+  if (normalized.length !== parts.length) {
+    return null;
+  }
+  return normalized;
+};
+
+export const normalizeKeybindingBinding = (
+  binding: string,
+): KeybindingChord | null => {
+  const sequence = parseBindingSequence(binding);
+  if (!sequence) {
+    return null;
+  }
+  return sequence.join(" ");
 };
 
 const parseChord = (
@@ -479,6 +517,71 @@ export const resolveKeybindingAction = (
   return null;
 };
 
+export const resolveKeybindingSequence = (
+  sequence: KeybindingSequence,
+  profile: KeybindingProfile,
+): KeybindingActionId | null => {
+  if (sequence.length === 0) {
+    return null;
+  }
+  for (const action of KEYBINDING_ACTIONS) {
+    const bindings = profile.bindings[action.id] ?? [];
+    for (const binding of bindings) {
+      const bindingSequence = parseBindingSequence(binding);
+      if (!bindingSequence) {
+        continue;
+      }
+      if (
+        bindingSequence.length === sequence.length &&
+        bindingSequence.every((value, index) => value === sequence[index])
+      ) {
+        return action.id;
+      }
+    }
+  }
+  return null;
+};
+
+export const isKeybindingSequencePrefix = (
+  sequence: KeybindingSequence,
+  profile: KeybindingProfile,
+): boolean => {
+  if (sequence.length === 0) {
+    return false;
+  }
+  for (const action of KEYBINDING_ACTIONS) {
+    const bindings = profile.bindings[action.id] ?? [];
+    for (const binding of bindings) {
+      const bindingSequence = parseBindingSequence(binding);
+      if (!bindingSequence || bindingSequence.length < sequence.length) {
+        continue;
+      }
+      const isPrefix = sequence.every(
+        (value, index) => value === bindingSequence[index],
+      );
+      if (isPrefix) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+export const serializeKeybindingSequence = (
+  sequence: KeybindingSequence,
+): KeybindingChord | null => {
+  if (sequence.length === 0) {
+    return null;
+  }
+  const normalized = sequence
+    .map((entry) => normalizeKeybindingChord(entry))
+    .filter((entry): entry is KeybindingChord => entry !== null);
+  if (normalized.length !== sequence.length) {
+    return null;
+  }
+  return normalized.join(" ");
+};
+
 export const getKeybindingConflicts = (
   profile: KeybindingProfile,
 ): ReadonlyMap<KeybindingChord, ReadonlyArray<KeybindingActionId>> => {
@@ -486,7 +589,7 @@ export const getKeybindingConflicts = (
   for (const action of KEYBINDING_ACTIONS) {
     const bindings = profile.bindings[action.id] ?? [];
     for (const binding of bindings) {
-      const normalized = normalizeKeybindingChord(binding);
+      const normalized = normalizeKeybindingBinding(binding);
       if (!normalized) {
         continue;
       }
@@ -542,7 +645,7 @@ const coerceBindingList = (
   }
   const normalized = rawList
     .map((entry) =>
-      typeof entry === "string" ? normalizeKeybindingChord(entry) : null,
+      typeof entry === "string" ? normalizeKeybindingBinding(entry) : null,
     )
     .filter((entry): entry is KeybindingChord => entry !== null);
   return normalized;
@@ -646,4 +749,17 @@ export const formatKeybindingChord = (
               : parsed.key.toUpperCase();
   parts.push(keyLabel);
   return parts.join("+");
+};
+
+export const formatKeybindingBinding = (
+  binding: KeybindingChord,
+  isMac: boolean,
+): string => {
+  const sequence = parseBindingSequence(binding);
+  if (!sequence) {
+    return binding;
+  }
+  return sequence
+    .map((chord) => formatKeybindingChord(chord, isMac))
+    .join(", ");
 };

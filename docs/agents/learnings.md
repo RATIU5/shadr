@@ -21,3 +21,5 @@ Add discoveries here that help future iterations avoid mistakes.
 - Subgraph promoted params are stored in `SubgraphNodeParams.promotedParams` and synced across instances via `replace-node-io` when sockets are added or removed.
 - DOM overlay layering uses CSS z-index tokens in `app.css` (`--layer-*`) with pointer-events pass-through; panels use `z-[var(--layer-panel)]` and the toast region is `pointer-events-none` with clickable children.
 - `~/editor/*` imports resolve against `packages/app-web/src/editor`; Vite does not resolve to `src/routes/editor`, so shared editor utilities should live in `src/editor`.
+- Vitest jsdom tests for `KeybindingSettingsPanel` can fail to trigger capture state; click events do not surface "Press keys to set the shortcut" or remove bindings, so check Solid event delegation in tests.
+- When editing inside subgraphs, autosave should persist the root document (and UI state should record the root graph id) to avoid reloading into a nested subgraph and losing the wrapper node.

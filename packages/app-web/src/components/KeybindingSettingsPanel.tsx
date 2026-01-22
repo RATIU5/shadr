@@ -1,10 +1,12 @@
 import type { JsonObject } from "@shadr/shared";
+import { Copy, Download, Plus, Trash2, Upload, X } from "lucide-solid";
 import {
   type Accessor,
-  createEffect,
   createMemo,
   createSignal,
   For,
+  onCleanup,
+  onMount,
   Show,
 } from "solid-js";
 
@@ -13,17 +15,20 @@ import type {
   KeybindingActionId,
   KeybindingChord,
   KeybindingProfile,
+  KeybindingSequence,
   KeybindingState,
 } from "~/editor/keybindings";
 import {
   coerceKeybindingState,
   createKeybindingProfileId,
   eventToKeybindingChord,
+  formatKeybindingBinding,
   formatKeybindingChord,
   getActiveKeybindingProfile,
   getKeybindingConflicts,
   KEYBINDING_ACTIONS,
   keybindingStateToJson,
+  serializeKeybindingSequence,
 } from "~/editor/keybindings";
 
 type KeybindingSettingsPanelProps = Readonly<{
@@ -70,8 +75,11 @@ export default function KeybindingSettingsPanel(
   props: KeybindingSettingsPanelProps,
 ) {
   const [capture, setCapture] = createSignal<CaptureState | null>(null);
+  const [captureSequence, setCaptureSequence] =
+    createSignal<KeybindingSequence>([]);
   const [importStatus, setImportStatus] = createSignal<string | null>(null);
   let importInputRef: HTMLInputElement | undefined;
+  let captureTimer: number | null = null;
 
   const isMac = createMemo(() => isMacPlatform());
   const activeProfile = createMemo(() =>
@@ -143,37 +151,75 @@ export default function KeybindingSettingsPanel(
 
   const handleCapture = (actionId: KeybindingActionId, index: number): void => {
     setImportStatus(null);
+    if (captureTimer) {
+      window.clearTimeout(captureTimer);
+      captureTimer = null;
+    }
+    setCaptureSequence([]);
     setCapture({ actionId, index });
   };
 
-  createEffect(() => {
-    const activeCapture = capture();
-    if (!activeCapture) {
-      return;
-    }
+  onMount(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      const activeCapture = capture();
+      if (!activeCapture) {
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
       if (event.key === "Escape") {
+        if (captureTimer) {
+          window.clearTimeout(captureTimer);
+          captureTimer = null;
+        }
         setCapture(null);
+        setCaptureSequence([]);
         return;
       }
       if (event.key === "Backspace" || event.key === "Delete") {
         updateBinding(activeCapture.actionId, activeCapture.index, null);
+        if (captureTimer) {
+          window.clearTimeout(captureTimer);
+          captureTimer = null;
+        }
         setCapture(null);
+        setCaptureSequence([]);
         return;
       }
       const chord = eventToKeybindingChord(event);
       if (!chord) {
         return;
       }
-      updateBinding(activeCapture.actionId, activeCapture.index, chord);
-      setCapture(null);
+      const nextSequence = [...captureSequence(), chord];
+      setCaptureSequence(nextSequence);
+      if (captureTimer) {
+        window.clearTimeout(captureTimer);
+      }
+      captureTimer = window.setTimeout(() => {
+        const serialized = serializeKeybindingSequence(nextSequence);
+        if (serialized) {
+          updateBinding(
+            activeCapture.actionId,
+            activeCapture.index,
+            serialized,
+          );
+        }
+        setCapture(null);
+        setCaptureSequence([]);
+        if (captureTimer) {
+          window.clearTimeout(captureTimer);
+          captureTimer = null;
+        }
+      }, 650);
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => {
+    onCleanup(() => {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
-    };
+      if (captureTimer) {
+        window.clearTimeout(captureTimer);
+        captureTimer = null;
+      }
+    });
   });
 
   const createProfile = (): void => {
@@ -276,24 +322,33 @@ export default function KeybindingSettingsPanel(
               </select>
               <button
                 type="button"
-                class="rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
+                class="inline-flex items-center justify-center rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
                 onClick={createProfile}
+                aria-label="New profile"
+                title="New profile"
               >
-                New
+                <Plus class="h-3.5 w-3.5" />
+                <span class="sr-only">New</span>
               </button>
               <button
                 type="button"
-                class="rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
+                class="inline-flex items-center justify-center rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
                 onClick={duplicateProfile}
+                aria-label="Duplicate profile"
+                title="Duplicate profile"
               >
-                Duplicate
+                <Copy class="h-3.5 w-3.5" />
+                <span class="sr-only">Duplicate</span>
               </button>
               <button
                 type="button"
-                class="rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--status-error-text)]"
+                class="inline-flex items-center justify-center rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--status-error-text)]"
                 onClick={deleteProfile}
+                aria-label="Delete profile"
+                title="Delete profile"
               >
-                Delete
+                <Trash2 class="h-3.5 w-3.5" />
+                <span class="sr-only">Delete</span>
               </button>
             </div>
           </div>
@@ -301,17 +356,23 @@ export default function KeybindingSettingsPanel(
             <div class="flex flex-wrap gap-2">
               <button
                 type="button"
-                class="rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
+                class="inline-flex items-center justify-center rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
                 onClick={() => importInputRef?.click()}
+                aria-label="Import keybindings"
+                title="Import keybindings"
               >
-                Import
+                <Upload class="h-3.5 w-3.5" />
+                <span class="sr-only">Import</span>
               </button>
               <button
                 type="button"
-                class="rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
+                class="inline-flex items-center justify-center rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
                 onClick={exportKeybindings}
+                aria-label="Export keybindings"
+                title="Export keybindings"
               >
-                Export
+                <Download class="h-3.5 w-3.5" />
+                <span class="sr-only">Export</span>
               </button>
             </div>
             <span class="text-[0.6rem] text-[color:var(--text-muted)]">
@@ -348,8 +409,17 @@ export default function KeybindingSettingsPanel(
             }}
           />
           <Show when={capture()}>
-            <div class="rounded-lg border border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] px-3 py-2 text-[0.7rem] text-[color:var(--status-info-text)]">
-              Press keys to set the shortcut. Esc cancels, Delete clears.
+            <div class="flex flex-col gap-2">
+              <div class="rounded-lg border border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] px-3 py-2 text-[0.7rem] text-[color:var(--status-info-text)]">
+                Press keys to set the shortcut. Esc cancels, Delete clears.
+              </div>
+              <input
+                class="w-full rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-2 text-[0.75rem] text-[color:var(--text-strong)]"
+                value={captureSequence()
+                  .map((entry) => formatKeybindingChord(entry, isMac()))
+                  .join(", ")}
+                disabled
+              />
             </div>
           </Show>
           <Show when={importStatus()}>
@@ -411,7 +481,7 @@ export default function KeybindingSettingsPanel(
                                           handleCapture(action.id, index())
                                         }
                                       >
-                                        {formatKeybindingChord(
+                                        {formatKeybindingBinding(
                                           binding,
                                           isMac(),
                                         )}
@@ -423,7 +493,7 @@ export default function KeybindingSettingsPanel(
                                       </Show>
                                       <button
                                         type="button"
-                                        class="text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
+                                        class="inline-flex items-center justify-center text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
                                         onClick={() =>
                                           updateBinding(
                                             action.id,
@@ -431,8 +501,11 @@ export default function KeybindingSettingsPanel(
                                             null,
                                           )
                                         }
+                                        aria-label="Remove binding"
+                                        title="Remove binding"
                                       >
-                                        Remove
+                                        <X class="h-3 w-3" />
+                                        <span class="sr-only">Remove</span>
                                       </button>
                                     </div>
                                   );
@@ -440,12 +513,15 @@ export default function KeybindingSettingsPanel(
                               </For>
                               <button
                                 type="button"
-                                class="rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
+                                class="inline-flex items-center justify-center rounded-lg border border-[color:var(--border-soft)] px-2 py-1 text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]"
                                 onClick={() =>
                                   handleCapture(action.id, bindings().length)
                                 }
+                                aria-label="Add binding"
+                                title="Add binding"
                               >
-                                Add
+                                <Plus class="h-3.5 w-3.5" />
+                                <span class="sr-only">Add</span>
                               </button>
                             </div>
                           </div>

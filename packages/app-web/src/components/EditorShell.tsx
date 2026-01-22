@@ -8,6 +8,7 @@ import {
   type GraphNode,
   type GraphSocket,
   graphToDocumentV1,
+  type GraphWire,
   type NodeId,
   type SocketId,
   type WireId,
@@ -30,10 +31,14 @@ import type {
 } from "@shadr/shared";
 import {
   getSocketTypeMetadata,
+  makeNodeId,
   makeSocketId,
+  makeSubgraphInputNodeType,
   makeWireId,
   MAX_SUBGRAPH_DEPTH,
   SOCKET_TYPE_PRIMITIVES,
+  SUBGRAPH_INPUT_NODE_PREFIX,
+  SUBGRAPH_INPUT_SOCKET_KEY,
   SUBGRAPH_NODE_TYPE,
 } from "@shadr/shared";
 import { defaultNodeLayout } from "@shadr/ui-canvas";
@@ -43,14 +48,22 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Bug,
   ChevronRight,
   CircleDot,
+  Download,
   EyeOff,
+  Link2,
+  Maximize2,
   Minimize2,
+  Play,
+  Plus,
   Redo2,
+  Settings2,
   Sparkles,
   Trash2,
   Undo2,
+  Upload,
   X,
 } from "lucide-solid";
 import {
@@ -81,6 +94,7 @@ import {
   parseGraphDocumentJson,
 } from "~/editor/graph-io";
 import {
+  createRemoveNodeCommand,
   createReplaceNodeIoCommand,
   createUpdateFrameCommand,
   createUpdateNodeIoCommand,
@@ -291,7 +305,9 @@ export default function EditorShell() {
   type NodeErrorFilter = "all" | "error" | "warning";
   const [nodeErrorFilter, setNodeErrorFilter] =
     createSignal<NodeErrorFilter>("all");
-  const [debugPanelOpen, setDebugPanelOpen] = createSignal(false);
+  type SidePanelTabId = "context" | "output" | "subgraph" | "frame" | "debug";
+  const [sidePanelTab, setSidePanelTab] =
+    createSignal<SidePanelTabId>("context");
   type SettingsTab =
     | "canvas"
     | "interaction"
@@ -300,6 +316,14 @@ export default function EditorShell() {
     | "shortcuts";
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [settingsTab, setSettingsTab] = createSignal<SettingsTab>("canvas");
+  const [newSubgraphInputName, setNewSubgraphInputName] =
+    createSignal<string>("input");
+  const [newSubgraphInputType, setNewSubgraphInputType] =
+    createSignal<SocketTypeId>("float");
+  const [newSubgraphOutputName, setNewSubgraphOutputName] =
+    createSignal<string>("output");
+  const [newSubgraphOutputSocketId, setNewSubgraphOutputSocketId] =
+    createSignal<SocketId | "">("");
 
   const isDirtyGraph = createMemo(() => store.dirtyState().dirty.size > 0);
   const outputProgress = createMemo(() => store.outputProgress());
@@ -316,6 +340,7 @@ export default function EditorShell() {
   const executionVizEnabled = createMemo(
     () => store.settings().executionVizEnabled,
   );
+  const commandPaletteActive = createMemo(() => store.commandPaletteOpen());
   const execVisualization = createMemo(() => store.execVisualization());
   const graphPath = createMemo<ReadonlyArray<GraphBreadcrumb>>(() => {
     const path = store.graphPath();
@@ -364,7 +389,10 @@ export default function EditorShell() {
     "pointer-events-none absolute inset-0 z-[var(--layer-hud)]";
   const execTimelineAnchor = "absolute right-3 top-16";
   const controlMenuRoot =
-    "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,720px)] flex-col gap-2 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] px-3 py-2 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[35vh] overflow-y-auto";
+    "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,720px)] flex-col gap-2 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] px-3 py-2 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur overflow-hidden";
+  const controlMenuCollapsed = "max-h-[35vh]";
+  const controlMenuExpanded = "max-h-[60vh]";
+  const controlMenuBody = "flex min-h-0 flex-col gap-2 overflow-y-auto pr-1";
   const controlMenuTitle =
     "text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
   const controlMenuValue = "text-[0.8rem] text-[color:var(--text-strong)]";
@@ -379,9 +407,10 @@ export default function EditorShell() {
   const controlMenuDanger =
     "border-[color:var(--status-danger-border)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-text)] hover:border-[color:var(--status-danger-border)]";
   const settingsModalRoot =
-    "fixed left-1/2 top-[12vh] z-[var(--layer-modal)] w-[min(94vw,720px)] -translate-x-1/2 rounded-[1.2rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] p-5 text-[color:var(--app-text)] shadow-[var(--shadow-popup)]";
+    "fixed left-1/2 top-[12vh] z-[var(--layer-modal)] flex max-h-[80vh] w-[min(94vw,720px)] -translate-x-1/2 flex-col rounded-[1.2rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] p-5 text-[color:var(--app-text)] shadow-[var(--shadow-popup)]";
   const settingsTitle =
     "text-[0.75rem] uppercase tracking-[0.22em] text-[color:var(--text-muted)]";
+  const settingsBody = "mt-4 flex flex-1 flex-col overflow-y-auto pr-1";
   const settingsSection =
     "flex flex-col gap-3 rounded-[0.9rem] border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel)] p-4";
   const settingsTabBase =
@@ -400,10 +429,19 @@ export default function EditorShell() {
     "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[0.6rem] uppercase tracking-[0.18em] transition";
   const settingsRange = "w-full accent-[color:var(--status-info-text)]";
   const settingsClose =
-    "rounded-full border border-[color:var(--border-muted)] px-2.5 py-1 text-[0.55rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)] hover:border-[color:var(--border-strong)]";
+    "inline-flex items-center justify-center rounded-full border border-[color:var(--border-muted)] px-2.5 py-1 text-[0.55rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)] hover:border-[color:var(--border-strong)]";
 
   const sidePanelRoot =
-    "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,320px)] flex-col gap-3 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-3 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[70vh] overflow-y-auto";
+    "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,340px)] min-h-[32vh] max-h-[82vh] flex-col gap-3 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-3 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur";
+  const sidePanelTabsRoot =
+    "flex items-center gap-1 rounded-full border border-[color:var(--border-soft)] bg-[color:var(--surface-panel)] p-1";
+  const sidePanelTabButton =
+    "inline-flex items-center justify-center rounded-full border px-2 py-1.5 text-[color:var(--text-muted)] transition hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-strong)]";
+  const sidePanelTabActive =
+    "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]";
+  const sidePanelTabInactive = "border-transparent";
+  const sidePanelBody =
+    "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1";
   const sidePanelTitle =
     "text-[0.6rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
   const sidePanelValue = "text-[0.85rem] text-[color:var(--text-strong)]";
@@ -740,6 +778,29 @@ export default function EditorShell() {
     return { document: { ...document, nodes }, updated: true };
   };
 
+  const getRootGraphId = (): GraphId => {
+    const stack = navStack();
+    if (stack.length > 0) {
+      return stack[0].document.graphId;
+    }
+    return store.graph().graphId;
+  };
+
+  const getRootDocumentForSave = (): GraphDocumentV1 => {
+    const stack = navStack();
+    const currentDocument = graphToDocumentV1(store.graph());
+    if (stack.length <= 1) {
+      return currentDocument;
+    }
+    const rootDocument = stack[0]?.document ?? currentDocument;
+    const updated = updateSubgraphInstancesInDocument(
+      rootDocument,
+      currentDocument.graphId,
+      currentDocument,
+    );
+    return updated.updated ? updated.document : rootDocument;
+  };
+
   const rebuildNavStack = (
     stack: ReadonlyArray<GraphNavEntry>,
     rootDocument: GraphDocumentV1,
@@ -944,9 +1005,7 @@ export default function EditorShell() {
     const validWires = (ids: ReadonlyArray<WireId>): WireId[] =>
       ids.filter((id) => graphSnapshot.wires.has(id));
 
-    store.setGraphPath(
-      normalizeGraphPath(state.graphPath, graphSnapshot.graphId),
-    );
+    store.setGraphPath(normalizeGraphPath([], graphSnapshot.graphId));
     store.setCanvasCenter(state.canvasCenter);
     store.setBypassedNodes(new Set(validNodes(state.bypassedNodes)));
     store.setCollapsedNodes(new Set(validNodes(state.collapsedNodes)));
@@ -1021,7 +1080,7 @@ export default function EditorShell() {
     );
     const runAutosave = (): void => {
       autosaveTimer = null;
-      const document = graphToDocumentV1(store.graph());
+      const document = getRootDocumentForSave();
       setAutosaveStatusWithTimeout("saving");
       void runAppEffectEither(saveGraphDocumentEffect(document), appLayer).then(
         (saveResult) => {
@@ -1131,14 +1190,11 @@ export default function EditorShell() {
     }
     uiStateSaveTimer = window.setTimeout(() => {
       uiStateSaveTimer = null;
-      const graphSnapshot = store.graph();
-      const mergedRecent = mergeRecentGraphIds(
-        graphSnapshot.graphId,
-        recentGraphIds(),
-      );
+      const rootGraphId = getRootGraphId();
+      const mergedRecent = mergeRecentGraphIds(rootGraphId, recentGraphIds());
       setRecentGraphIds(mergedRecent);
       const uiState: EditorUiState = {
-        lastGraphId: graphSnapshot.graphId,
+        lastGraphId: rootGraphId,
         recentGraphIds: mergedRecent,
         graphPath: store.graphPath(),
         canvasCenter: store.canvasCenter(),
@@ -1232,6 +1288,85 @@ export default function EditorShell() {
       return null;
     }
     return parseSubgraphParams(node.params);
+  });
+  type SubgraphOutputCandidate = Readonly<{
+    socket: GraphSocket;
+    label: string;
+  }>;
+  const subgraphOutputCandidates = createMemo<SubgraphOutputCandidate[]>(() => {
+    const params = selectedSubgraphParams();
+    if (!params) {
+      return [];
+    }
+    const usedOutputs = new Set(params.outputs.map((entry) => entry.socketId));
+    const nodesById = new Map(
+      params.graph.nodes.map((node) => [node.id, node]),
+    );
+    return params.graph.sockets.flatMap((socket) => {
+      if (socket.direction !== "output") {
+        return [];
+      }
+      if (usedOutputs.has(socket.id)) {
+        return [];
+      }
+      const node = nodesById.get(socket.nodeId);
+      if (!node) {
+        return [];
+      }
+      if (node.type.startsWith(SUBGRAPH_INPUT_NODE_PREFIX)) {
+        return [];
+      }
+      const nodeLabel = getNodeCatalogEntry(node.type)?.label ?? node.type;
+      return [
+        {
+          socket,
+          label: `${nodeLabel}.${socket.name}`,
+        },
+      ];
+    });
+  });
+  let lastSubgraphNodeId: NodeId | null = null;
+  let lastSubgraphOutputSocketId: string | null = null;
+  createEffect(() => {
+    const nodeId = selectedSubgraphNode()?.id ?? null;
+    const candidates = subgraphOutputCandidates();
+    if (nodeId !== lastSubgraphNodeId) {
+      lastSubgraphNodeId = nodeId;
+      setNewSubgraphInputName("input");
+      setNewSubgraphInputType("float");
+      if (candidates.length > 0) {
+        setNewSubgraphOutputSocketId(candidates[0]?.socket.id ?? "");
+        setNewSubgraphOutputName(candidates[0]?.label ?? "output");
+      } else {
+        setNewSubgraphOutputSocketId("");
+        setNewSubgraphOutputName("output");
+      }
+      return;
+    }
+    if (candidates.length === 0) {
+      setNewSubgraphOutputSocketId("");
+      return;
+    }
+    const currentId = newSubgraphOutputSocketId();
+    if (
+      !currentId ||
+      !candidates.some((entry) => entry.socket.id === currentId)
+    ) {
+      setNewSubgraphOutputSocketId(candidates[0]?.socket.id ?? "");
+    }
+  });
+  createEffect(() => {
+    const socketId = newSubgraphOutputSocketId();
+    if (!socketId || socketId === lastSubgraphOutputSocketId) {
+      return;
+    }
+    lastSubgraphOutputSocketId = socketId;
+    const candidate = subgraphOutputCandidates().find(
+      (entry) => entry.socket.id === socketId,
+    );
+    if (candidate) {
+      setNewSubgraphOutputName(candidate.label);
+    }
   });
   const promotedParamsByKey = createMemo(() => {
     const params = selectedSubgraphParams();
@@ -1403,6 +1538,71 @@ export default function EditorShell() {
   const selectedOutputSocketId = createMemo(() => {
     const node = selectedOutputNode();
     return node?.outputs[0] ?? null;
+  });
+  type SidePanelTab = Readonly<{
+    id: SidePanelTabId;
+    label: string;
+    icon: typeof CircleDot;
+  }>;
+  const sidePanelTabs = createMemo<ReadonlyArray<SidePanelTab>>(() => {
+    const tabs: SidePanelTab[] = [];
+    if (selectionCount() > 0) {
+      tabs.push({
+        id: "context",
+        label: "Context",
+        icon: CircleDot,
+      });
+    }
+    if (selectedOutputType()) {
+      tabs.push({
+        id: "output",
+        label: "Output",
+        icon: Play,
+      });
+    }
+    if (selectedSubgraphNode()) {
+      tabs.push({
+        id: "subgraph",
+        label: "Subgraph",
+        icon: Link2,
+      });
+    }
+    if (selectedFrame() && !selectedNode()) {
+      tabs.push({
+        id: "frame",
+        label: "Frame",
+        icon: Maximize2,
+      });
+    }
+    if (isDebugMode) {
+      tabs.push({
+        id: "debug",
+        label: "Debug",
+        icon: Bug,
+      });
+    }
+    return tabs;
+  });
+  const showSidePanel = createMemo(() => sidePanelTabs().length > 0);
+  const toggleDebugTab = () => {
+    if (sidePanelTab() === "debug") {
+      const fallback = sidePanelTabs().find((tab) => tab.id !== "debug");
+      if (fallback) {
+        setSidePanelTab(fallback.id);
+      }
+      return;
+    }
+    setSidePanelTab("debug");
+  };
+  createEffect(() => {
+    const tabs = sidePanelTabs();
+    if (tabs.length === 0) {
+      return;
+    }
+    const current = sidePanelTab();
+    if (!tabs.some((tab) => tab.id === current)) {
+      setSidePanelTab(tabs[0].id);
+    }
   });
   const isSingleSelection = createMemo(() => selectedNodeIds().length === 1);
   const isSingleFrameSelection = createMemo(
@@ -2314,6 +2514,349 @@ export default function EditorShell() {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : "socket";
   };
+  const makeUniqueSocketName = (
+    base: string,
+    used: ReadonlySet<string>,
+  ): string => {
+    const normalized = sanitizeSocketName(base);
+    let candidate = normalized;
+    let index = 1;
+    while (used.has(candidate)) {
+      candidate = `${normalized}-${index}`;
+      index += 1;
+    }
+    return candidate;
+  };
+  const nextSubgraphInputPosition = (
+    document: GraphDocumentV1,
+  ): { x: number; y: number } => {
+    const base = getGraphDocumentCenter(document);
+    const inputCount = document.nodes.filter((node) =>
+      node.type.startsWith(SUBGRAPH_INPUT_NODE_PREFIX),
+    ).length;
+    return {
+      x: base.x - 220,
+      y: base.y + inputCount * 80,
+    };
+  };
+  const addSubgraphInput = (): void => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params) {
+      return;
+    }
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      notifyToast("Subgraph update failed", "Subgraph sockets missing.");
+      return;
+    }
+    const usedNames = new Set(sockets.map((socket) => socket.name));
+    const inputKey = makeUniqueSocketName(newSubgraphInputName(), usedNames);
+    const inputType = newSubgraphInputType();
+    const usedNodeIds = new Set(params.graph.nodes.map((entry) => entry.id));
+    let index = 1;
+    let inputNodeId = makeNodeId(`subgraph-input-${index}`);
+    while (usedNodeIds.has(inputNodeId)) {
+      index += 1;
+      inputNodeId = makeNodeId(`subgraph-input-${index}`);
+    }
+    const inputSocketId = makeSocketId(
+      `${inputNodeId}.${SUBGRAPH_INPUT_SOCKET_KEY}`,
+    );
+    const inputNode: GraphNode = {
+      id: inputNodeId,
+      type: makeSubgraphInputNodeType(inputType),
+      position: nextSubgraphInputPosition(params.graph),
+      params: {},
+      inputs: [],
+      outputs: [inputSocketId],
+    };
+    const inputSocket: GraphSocket = {
+      id: inputSocketId,
+      nodeId: inputNodeId,
+      name: SUBGRAPH_INPUT_SOCKET_KEY,
+      label: "Value",
+      direction: "output",
+      dataType: inputType,
+      required: false,
+    };
+    const nextGraph: GraphDocumentV1 = {
+      ...params.graph,
+      nodes: [...params.graph.nodes, inputNode],
+      sockets: [...params.graph.sockets, inputSocket],
+    };
+    const nextParams: SubgraphNodeParams = {
+      ...params,
+      graph: nextGraph,
+      inputs: [...params.inputs, { key: inputKey, nodeId: inputNodeId }],
+    };
+    const wrapperSocketId = makeSocketId(`${node.id}.${inputKey}`);
+    const wrapperSocket: GraphSocket = {
+      id: wrapperSocketId,
+      nodeId: node.id,
+      name: inputKey,
+      label: inputKey,
+      direction: "input",
+      dataType: inputType,
+      required: false,
+    };
+    const nextNode: GraphNode = {
+      ...node,
+      inputs: [...node.inputs, wrapperSocketId],
+      params: serializeSubgraphParams(nextParams),
+    };
+    const nextSockets = [...sockets, wrapperSocket];
+    commitSubgraphIoUpdate(nextNode, nextSockets, nextParams);
+  };
+  const addSubgraphOutput = (): void => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params) {
+      return;
+    }
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      notifyToast("Subgraph update failed", "Subgraph sockets missing.");
+      return;
+    }
+    const socketId = newSubgraphOutputSocketId();
+    if (!socketId) {
+      notifyToast("Subgraph update failed", "Pick a subgraph output socket.");
+      return;
+    }
+    const candidate = subgraphOutputCandidates().find(
+      (entry) => entry.socket.id === socketId,
+    );
+    if (!candidate) {
+      notifyToast("Subgraph update failed", "Output socket is unavailable.");
+      return;
+    }
+    const usedNames = new Set(sockets.map((socket) => socket.name));
+    const outputKey = makeUniqueSocketName(newSubgraphOutputName(), usedNames);
+    const nextParams: SubgraphNodeParams = {
+      ...params,
+      outputs: [...params.outputs, { key: outputKey, socketId }],
+    };
+    const wrapperSocketId = makeSocketId(`${node.id}.${outputKey}`);
+    const wrapperSocket: GraphSocket = {
+      id: wrapperSocketId,
+      nodeId: node.id,
+      name: outputKey,
+      label: outputKey,
+      direction: "output",
+      dataType: candidate.socket.dataType,
+      required: false,
+    };
+    const nextNode: GraphNode = {
+      ...node,
+      outputs: [...node.outputs, wrapperSocketId],
+      params: serializeSubgraphParams(nextParams),
+    };
+    const nextSockets = [...sockets, wrapperSocket];
+    commitSubgraphIoUpdate(nextNode, nextSockets, nextParams);
+  };
+  const uncollapseSubgraphNode = (): void => {
+    const node = selectedSubgraphNode();
+    const params = selectedSubgraphParams();
+    if (!node || !params) {
+      return;
+    }
+    const graphSnapshot = store.graph();
+    const wrapperSockets = collectNodeSockets(node);
+    if (!wrapperSockets) {
+      notifyToast("Uncollapse failed", "Subgraph sockets missing.");
+      return;
+    }
+    const parentNodes = new Set(graphSnapshot.nodes.keys());
+    parentNodes.delete(node.id);
+    const parentSockets = new Set(graphSnapshot.sockets.keys());
+    for (const socket of wrapperSockets) {
+      parentSockets.delete(socket.id);
+    }
+    const subgraphNodes = params.graph.nodes;
+    const subgraphSockets = params.graph.sockets;
+    const subgraphWires = params.graph.wires;
+    for (const subgraphNode of subgraphNodes) {
+      if (parentNodes.has(subgraphNode.id)) {
+        notifyToast(
+          "Uncollapse blocked",
+          "Subgraph node IDs conflict with existing nodes.",
+        );
+        return;
+      }
+    }
+    for (const subgraphSocket of subgraphSockets) {
+      if (parentSockets.has(subgraphSocket.id)) {
+        notifyToast(
+          "Uncollapse blocked",
+          "Subgraph socket IDs conflict with existing sockets.",
+        );
+        return;
+      }
+    }
+    const subgraphInputNodeIds = new Set(
+      params.inputs.map((entry) => entry.nodeId),
+    );
+    const removedSocketIds = new Set(
+      subgraphSockets
+        .filter((socket) => subgraphInputNodeIds.has(socket.nodeId))
+        .map((socket) => socket.id),
+    );
+    const keptNodes = subgraphNodes.filter(
+      (subgraphNode) => !subgraphInputNodeIds.has(subgraphNode.id),
+    );
+    const keptSockets = subgraphSockets.filter(
+      (socket) => !removedSocketIds.has(socket.id),
+    );
+    const keptSocketIds = new Set(keptSockets.map((socket) => socket.id));
+    const keptWires = subgraphWires.filter(
+      (wire) =>
+        keptSocketIds.has(wire.fromSocketId) &&
+        keptSocketIds.has(wire.toSocketId),
+    );
+    const inputSocketTargets = new Map<string, SocketId[]>();
+    for (const entry of params.inputs) {
+      const inputSocket = subgraphSockets.find(
+        (socket) =>
+          socket.nodeId === entry.nodeId &&
+          socket.name === SUBGRAPH_INPUT_SOCKET_KEY,
+      );
+      if (!inputSocket) {
+        notifyToast("Uncollapse failed", "Subgraph input socket missing.");
+        return;
+      }
+      const targets = subgraphWires
+        .filter((wire) => wire.fromSocketId === inputSocket.id)
+        .map((wire) => wire.toSocketId);
+      inputSocketTargets.set(entry.key, targets);
+    }
+    const incomingWiresBySocket = new Map<SocketId, GraphWire[]>();
+    const outgoingWiresBySocket = new Map<SocketId, GraphWire[]>();
+    for (const wire of graphSnapshot.wires.values()) {
+      const incoming = incomingWiresBySocket.get(wire.toSocketId);
+      if (incoming) {
+        incoming.push(wire);
+      } else {
+        incomingWiresBySocket.set(wire.toSocketId, [wire]);
+      }
+      const outgoing = outgoingWiresBySocket.get(wire.fromSocketId);
+      if (outgoing) {
+        outgoing.push(wire);
+      } else {
+        outgoingWiresBySocket.set(wire.fromSocketId, [wire]);
+      }
+    }
+    const wrapperInputSockets = new Map(
+      wrapperSockets
+        .filter((socket) => socket.direction === "input")
+        .map((socket) => [socket.name, socket]),
+    );
+    const wrapperOutputSockets = new Map(
+      wrapperSockets
+        .filter((socket) => socket.direction === "output")
+        .map((socket) => [socket.name, socket]),
+    );
+    const usedWireIds = new Set(graphSnapshot.wires.keys());
+    const createWireId = (): WireId => {
+      let index = usedWireIds.size + 1;
+      let candidate = makeWireId(`wire-${index}`);
+      while (usedWireIds.has(candidate)) {
+        index += 1;
+        candidate = makeWireId(`wire-${index}`);
+      }
+      usedWireIds.add(candidate);
+      return candidate;
+    };
+    const newWires: GraphWire[] = [];
+    for (const [key, targets] of inputSocketTargets.entries()) {
+      const wrapperSocket = wrapperInputSockets.get(key);
+      if (!wrapperSocket) {
+        continue;
+      }
+      const incoming = incomingWiresBySocket.get(wrapperSocket.id) ?? [];
+      for (const source of incoming) {
+        for (const targetSocketId of targets) {
+          if (!keptSocketIds.has(targetSocketId)) {
+            continue;
+          }
+          newWires.push({
+            id: createWireId(),
+            fromSocketId: source.fromSocketId,
+            toSocketId: targetSocketId,
+          });
+        }
+      }
+    }
+    for (const entry of params.outputs) {
+      const wrapperSocket = wrapperOutputSockets.get(entry.key);
+      if (!wrapperSocket) {
+        continue;
+      }
+      const outgoing = outgoingWiresBySocket.get(wrapperSocket.id) ?? [];
+      for (const wire of outgoing) {
+        if (!keptSocketIds.has(entry.socketId)) {
+          continue;
+        }
+        newWires.push({
+          id: createWireId(),
+          fromSocketId: entry.socketId,
+          toSocketId: wire.toSocketId,
+        });
+      }
+    }
+    const socketsByNodeId = new Map<NodeId, GraphSocket[]>();
+    for (const socket of keptSockets) {
+      const list = socketsByNodeId.get(socket.nodeId);
+      if (list) {
+        list.push(socket);
+      } else {
+        socketsByNodeId.set(socket.nodeId, [socket]);
+      }
+    }
+    const commands: GraphCommand[] = [];
+    const removeCommand = createRemoveNodeCommand(graphSnapshot, node.id);
+    if (!removeCommand) {
+      notifyToast("Uncollapse failed", "Unable to remove subgraph node.");
+      return;
+    }
+    commands.push(removeCommand);
+    for (const subgraphNode of keptNodes) {
+      const nodeSockets = socketsByNodeId.get(subgraphNode.id);
+      if (!nodeSockets) {
+        notifyToast("Uncollapse failed", "Subgraph sockets missing.");
+        return;
+      }
+      commands.push({
+        kind: "add-node",
+        node: subgraphNode,
+        sockets: nodeSockets,
+      });
+    }
+    for (const wire of keptWires) {
+      commands.push({
+        kind: "add-wire",
+        wire: { ...wire, id: createWireId() },
+      });
+    }
+    for (const wire of newWires) {
+      commands.push({ kind: "add-wire", wire });
+    }
+    store.beginHistoryBatch("uncollapse-subgraph");
+    let changed = false;
+    for (const command of commands) {
+      if (store.applyGraphCommandTransient(command)) {
+        store.recordGraphCommand(command);
+        changed = true;
+      }
+    }
+    store.commitHistoryBatch();
+    if (changed) {
+      store.refreshActiveOutput();
+      store.setNodeSelection(new Set(keptNodes.map((entry) => entry.id)));
+      store.setWireSelection(new Set());
+      store.setFrameSelection(new Set());
+    }
+  };
 
   const updateSubgraphSocketName = (
     node: GraphNode,
@@ -3003,9 +3546,9 @@ export default function EditorShell() {
         label: "Debug panel",
         description: "Toggle dev-only debug panel",
         kind: "control",
-        stateLabel: debugPanelOpen() ? "On" : "Off",
+        stateLabel: sidePanelTab() === "debug" ? "On" : "Off",
         keywords: ["debug", "panel", "devtools"],
-        onSelect: () => setDebugPanelOpen((current) => !current),
+        onSelect: () => toggleDebugTab(),
       });
     }
 
@@ -3126,14 +3669,28 @@ export default function EditorShell() {
             <Redo2 class="h-3 w-3" />
             <span class="sr-only">Redo</span>
           </button>
+          <button
+            class={`${historyButtonBase} ${historyButtonActive}`}
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Open settings"
+            title="Open settings"
+          >
+            <Settings2 class="h-3 w-3" />
+            <span class="sr-only">Open settings</span>
+          </button>
           {isDebugMode ? (
             <button
               class={`${historyButtonBase} ${
-                debugPanelOpen() ? debugButtonActive : historyButtonActive
+                sidePanelTab() === "debug"
+                  ? debugButtonActive
+                  : historyButtonActive
               }`}
-              onClick={() => setDebugPanelOpen((current) => !current)}
+              onClick={() => toggleDebugTab()}
+              aria-label="Debug panel"
+              title="Debug panel"
             >
-              Debug
+              <Bug class="h-3 w-3" />
+              <span class="sr-only">Debug</span>
             </button>
           ) : null}
         </div>
@@ -3180,119 +3737,275 @@ export default function EditorShell() {
         ) : null}
 
         <div class="absolute bottom-4 left-1/2 -translate-x-1/2">
-          <div class={controlMenuRoot} role="region" aria-label="Control menu">
-            {selectionCount() > 0 ? (
-              <>
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <div class="flex items-center gap-2">
-                    <span class={controlMenuTitle}>Selection</span>
-                    <span class={controlMenuValue}>{selectionSummary()}</span>
-                  </div>
-                  <div class="flex flex-wrap items-center gap-2">
-                    {selectedNodeIds().length > 0 ? (
-                      <>
+          <div
+            class={`${controlMenuRoot} ${
+              commandPaletteActive()
+                ? controlMenuExpanded
+                : controlMenuCollapsed
+            }`}
+            role="region"
+            aria-label="Control menu"
+          >
+            {!commandPaletteActive() && selectionCount() > 0 ? (
+              <div class={controlMenuBody}>
+                {selectedSubgraphNode() && selectionCount() === 1 ? (
+                  <>
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <div class="flex items-center gap-2">
+                        <span class={controlMenuTitle}>Subgraph</span>
+                        <span class={controlMenuValue}>
+                          {selectedNodeLabel()}
+                        </span>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2">
                         <button
-                          class={`${controlMenuButton} ${
-                            isBypassedSelection()
-                              ? controlMenuWarn
-                              : controlMenuMuted
-                          }`}
-                          onClick={toggleBypassSelection}
+                          class={`${controlMenuButton} ${controlMenuInfo}`}
+                          onClick={() =>
+                            navigateToSubgraph(selectedSubgraphNode()!.id)
+                          }
+                          aria-label="Dive"
+                          title="Dive"
                         >
-                          <EyeOff class="h-3.5 w-3.5" />
-                          Bypass
+                          <ArrowRight class="h-3.5 w-3.5" />
+                          <span class="sr-only">Dive</span>
                         </button>
                         <button
+                          class={`${controlMenuButton} ${controlMenuMuted}`}
+                          onClick={uncollapseSubgraphNode}
+                          aria-label="Uncollapse"
+                          title="Uncollapse"
+                        >
+                          <Maximize2 class="h-3.5 w-3.5" />
+                          <span class="sr-only">Uncollapse</span>
+                        </button>
+                        <button
+                          class={`${controlMenuButton} ${controlMenuDanger}`}
+                          onClick={() => deleteSelection()}
+                          aria-label="Delete"
+                          title="Delete"
+                        >
+                          <Trash2 class="h-3.5 w-3.5" />
+                          <span class="sr-only">Delete</span>
+                        </button>
+                        <button
+                          class={`${controlMenuButton} ${controlMenuMuted}`}
+                          onClick={clearSelection}
+                          aria-label="Clear selection"
+                          title="Clear selection"
+                        >
+                          <X class="h-3.5 w-3.5" />
+                          <span class="sr-only">Clear</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="flex flex-col gap-2">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class={controlMenuTitle}>Add Input</span>
+                        <input
+                          class={ioInput}
+                          value={newSubgraphInputName()}
+                          placeholder="Input name"
+                          onChange={(event) =>
+                            setNewSubgraphInputName(event.currentTarget.value)
+                          }
+                        />
+                        <select
+                          class={ioSelect}
+                          value={newSubgraphInputType()}
+                          onChange={(event) =>
+                            setNewSubgraphInputType(
+                              event.currentTarget.value as SocketTypeId,
+                            )
+                          }
+                        >
+                          <For each={SOCKET_TYPE_PRIMITIVES}>
+                            {(typeId) => (
+                              <option value={typeId}>
+                                {getSocketTypeLabel(typeId)}
+                              </option>
+                            )}
+                          </For>
+                        </select>
+                        <button
+                          class={`${controlMenuButton} ${controlMenuInfo}`}
+                          onClick={addSubgraphInput}
+                          aria-label="Add input"
+                          title="Add input"
+                        >
+                          <Plus class="h-3.5 w-3.5" />
+                          <span class="sr-only">Add input</span>
+                        </button>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class={controlMenuTitle}>Add Output</span>
+                        <select
+                          class={ioSelect}
+                          value={newSubgraphOutputSocketId()}
+                          disabled={subgraphOutputCandidates().length === 0}
+                          onChange={(event) =>
+                            setNewSubgraphOutputSocketId(
+                              event.currentTarget.value as SocketId,
+                            )
+                          }
+                        >
+                          <For each={subgraphOutputCandidates()}>
+                            {(candidate) => (
+                              <option value={candidate.socket.id}>
+                                {candidate.label}
+                              </option>
+                            )}
+                          </For>
+                        </select>
+                        <input
+                          class={ioInput}
+                          value={newSubgraphOutputName()}
+                          placeholder="Output name"
+                          onChange={(event) =>
+                            setNewSubgraphOutputName(event.currentTarget.value)
+                          }
+                        />
+                        <button
+                          class={`${controlMenuButton} ${controlMenuInfo}`}
+                          disabled={subgraphOutputCandidates().length === 0}
+                          onClick={addSubgraphOutput}
+                          aria-label="Add output"
+                          title="Add output"
+                        >
+                          <Plus class="h-3.5 w-3.5" />
+                          <span class="sr-only">Add output</span>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                      <span class={controlMenuTitle}>Selection</span>
+                      <span class={controlMenuValue}>{selectionSummary()}</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      {selectedNodeIds().length > 0 ? (
+                        <>
+                          <button
+                            class={`${controlMenuButton} ${
+                              isBypassedSelection()
+                                ? controlMenuWarn
+                                : controlMenuMuted
+                            }`}
+                            onClick={toggleBypassSelection}
+                            aria-label="Bypass"
+                            title="Bypass"
+                          >
+                            <EyeOff class="h-3.5 w-3.5" />
+                            <span class="sr-only">Bypass</span>
+                          </button>
+                          <button
+                            class={`${controlMenuButton} ${
+                              isCollapsedSelection()
+                                ? controlMenuInfo
+                                : controlMenuMuted
+                            }`}
+                            onClick={toggleCollapseSelection}
+                            aria-label="Collapse"
+                            title="Collapse"
+                          >
+                            <Minimize2 class="h-3.5 w-3.5" />
+                            <span class="sr-only">Collapse</span>
+                          </button>
+                        </>
+                      ) : null}
+                      {isSingleFrameSelection() ? (
+                        <button
                           class={`${controlMenuButton} ${
-                            isCollapsedSelection()
+                            isCollapsedFrameSelection()
                               ? controlMenuInfo
                               : controlMenuMuted
                           }`}
-                          onClick={toggleCollapseSelection}
+                          onClick={toggleFrameCollapsedSelection}
+                          aria-label={
+                            isCollapsedFrameSelection()
+                              ? "Expand frame"
+                              : "Collapse frame"
+                          }
+                          title={
+                            isCollapsedFrameSelection()
+                              ? "Expand frame"
+                              : "Collapse frame"
+                          }
                         >
-                          <Minimize2 class="h-3.5 w-3.5" />
-                          Collapse
+                          {isCollapsedFrameSelection() ? (
+                            <Maximize2 class="h-3.5 w-3.5" />
+                          ) : (
+                            <Minimize2 class="h-3.5 w-3.5" />
+                          )}
+                          <span class="sr-only">
+                            {isCollapsedFrameSelection()
+                              ? "Expand"
+                              : "Collapse"}
+                          </span>
                         </button>
-                      </>
-                    ) : null}
-                    {isSingleFrameSelection() ? (
+                      ) : null}
+                      {selectedNodeIds().length > 0 ? (
+                        <button
+                          class={`${controlMenuButton} ${controlMenuInfo}`}
+                          onClick={() => deleteSelection("bridge")}
+                          aria-label="Delete + Bridge"
+                          title="Delete + Bridge"
+                        >
+                          <Link2 class="h-3.5 w-3.5" />
+                          <span class="sr-only">Delete + Bridge</span>
+                        </button>
+                      ) : null}
                       <button
-                        class={`${controlMenuButton} ${
-                          isCollapsedFrameSelection()
-                            ? controlMenuInfo
-                            : controlMenuMuted
-                        }`}
-                        onClick={toggleFrameCollapsedSelection}
-                      >
-                        <Minimize2 class="h-3.5 w-3.5" />
-                        {isCollapsedFrameSelection() ? "Expand" : "Collapse"}
-                      </button>
-                    ) : null}
-                    {selectedNodeIds().length > 0 ? (
-                      <button
-                        class={`${controlMenuButton} ${controlMenuInfo}`}
-                        onClick={() => deleteSelection("bridge")}
+                        class={`${controlMenuButton} ${controlMenuDanger}`}
+                        onClick={() => deleteSelection()}
+                        aria-label="Delete"
+                        title="Delete"
                       >
                         <Trash2 class="h-3.5 w-3.5" />
-                        Delete + Bridge
+                        <span class="sr-only">Delete</span>
                       </button>
-                    ) : null}
-                    <button
-                      class={`${controlMenuButton} ${controlMenuDanger}`}
-                      onClick={() => deleteSelection()}
-                    >
-                      <Trash2 class="h-3.5 w-3.5" />
-                      Delete
-                    </button>
-                    <button
-                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                      onClick={clearSelection}
-                    >
-                      <X class="h-3.5 w-3.5" />
-                      Clear
-                    </button>
+                      <button
+                        class={`${controlMenuButton} ${controlMenuMuted}`}
+                        onClick={clearSelection}
+                        aria-label="Clear selection"
+                        title="Clear selection"
+                      >
+                        <X class="h-3.5 w-3.5" />
+                        <span class="sr-only">Clear</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <div class="flex items-center gap-2">
-                    <span class={controlMenuTitle}>Workspace</span>
-                    <span class={controlMenuValue}>No selection</span>
-                  </div>
-                  <div class="flex flex-wrap items-center gap-2">
-                    <button
-                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                      onClick={triggerImport}
-                    >
-                      Import
-                    </button>
-                    <button
-                      class={`${controlMenuButton} ${controlMenuInfo}`}
-                      onClick={exportGraph}
-                    >
-                      Export
-                    </button>
-                    <button
-                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                      onClick={() => store.setCommandPaletteOpen(true)}
-                    >
-                      Commands
-                    </button>
-                  </div>
-                </div>
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class={controlMenuTitle}>Settings</span>
+                )}
+              </div>
+            ) : null}
+            <CommandPalette
+              open={commandPaletteActive()}
+              onOpenChange={store.setCommandPaletteOpen}
+              entries={commandPaletteEntries()}
+              trailingActions={
+                <>
                   <button
                     class={`${controlMenuButton} ${controlMenuMuted}`}
-                    onClick={() => setSettingsOpen(true)}
+                    onClick={triggerImport}
+                    aria-label="Import"
+                    title="Import"
                   >
-                    Open settings
+                    <Upload class="h-3.5 w-3.5" />
+                    <span class="sr-only">Import</span>
                   </button>
-                </div>
-              </>
-            )}
+                  <button
+                    class={`${controlMenuButton} ${controlMenuInfo}`}
+                    onClick={exportGraph}
+                    aria-label="Export"
+                    title="Export"
+                  >
+                    <Download class="h-3.5 w-3.5" />
+                    <span class="sr-only">Export</span>
+                  </button>
+                </>
+              }
+            />
           </div>
         </div>
 
@@ -3322,710 +4035,339 @@ export default function EditorShell() {
           );
         })()}
 
-        {isDebugMode && debugPanelOpen() ? (
-          <div class="absolute bottom-24 right-3">
-            <DebugPanel
-              graph={store.graph()}
-              dirtyState={store.dirtyState()}
-              execHistory={store.execHistory()}
-              debugEvents={store.debugEvents()}
-              watchedSockets={store.watchedSockets()}
-              selectedNodeId={selectedNode()?.id ?? null}
-              onAddWatchedSocket={store.addWatchedSocket}
-              onRemoveWatchedSocket={store.removeWatchedSocket}
-              onClearWatchedSockets={store.clearWatchedSockets}
-              onClearExecHistory={store.clearExecHistory}
-              onClearDebugEvents={store.clearDebugEvents}
-              onClose={() => setDebugPanelOpen(false)}
-            />
-          </div>
-        ) : null}
-
-        {selectionCount() > 0 ? (
+        {showSidePanel() ? (
           <aside
             class="absolute right-3 top-1/2 -translate-y-1/2"
             aria-label="Selection details"
           >
             <div class={sidePanelRoot}>
-              <div class="flex items-center justify-between gap-3">
-                <div class="flex items-center gap-2">
-                  <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
-                  <span class={sidePanelTitle}>Context</span>
+              <div class="flex items-center justify-between gap-2">
+                <div
+                  class={sidePanelTabsRoot}
+                  role="tablist"
+                  aria-label="Side panel"
+                >
+                  <For each={sidePanelTabs()}>
+                    {(tab) => {
+                      const isActive = () => sidePanelTab() === tab.id;
+                      const Icon = tab.icon;
+                      return (
+                        <button
+                          class={`${sidePanelTabButton} ${
+                            isActive()
+                              ? sidePanelTabActive
+                              : sidePanelTabInactive
+                          }`}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive()}
+                          aria-label={tab.label}
+                          title={tab.label}
+                          tabIndex={isActive() ? 0 : -1}
+                          onClick={() => setSidePanelTab(tab.id)}
+                        >
+                          <Icon class="h-4 w-4" />
+                          <span class="sr-only">{tab.label}</span>
+                        </button>
+                      );
+                    }}
+                  </For>
                 </div>
-                <span class={`${sidePanelChip} ${sidePanelInfo}`}>
-                  {selectionCount()} selected
-                </span>
-              </div>
-
-              <div class="flex flex-wrap items-center gap-2">
-                {selectedNodeIds().length > 0 ? (
+                {selectionCount() > 0 ? (
                   <span class={`${sidePanelChip} ${sidePanelInfo}`}>
-                    {selectedNodeIds().length} nodes
-                  </span>
-                ) : null}
-                {selectedFrameIds().length > 0 ? (
-                  <span class={`${sidePanelChip} ${sidePanelInfo}`}>
-                    {selectedFrameIds().length} frames
-                  </span>
-                ) : null}
-                {selectedWireIds().length > 0 ? (
-                  <span class={`${sidePanelChip} ${sidePanelInfo}`}>
-                    {selectedWireIds().length} wires
+                    {selectionSummary()}
                   </span>
                 ) : null}
               </div>
 
-              {selectedNode() ? (
-                <div class="flex flex-col gap-2">
-                  <div class="flex items-center gap-2">
-                    <CircleDot class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
-                    <span class={sidePanelTitle}>Node</span>
-                  </div>
-                  <div class={sidePanelValue}>{selectedNodeLabel()}</div>
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span
-                      class={`${sidePanelChip} ${
-                        isSelectedDirty() ? sidePanelWarn : sidePanelInfo
-                      }`}
-                    >
-                      {isSelectedDirty() ? "Dirty" : "Clean"}
-                    </span>
-                    <span
-                      class={`${sidePanelChip} ${
-                        selectedNodeErrors().length > 0
-                          ? sidePanelDanger
-                          : sidePanelMuted
-                      }`}
-                    >
-                      {selectedNodeErrors().length > 0
-                        ? `${selectedNodeErrors().length} errors`
-                        : "No errors"}
-                    </span>
-                    {isBypassedSelection() ? (
-                      <span class={`${sidePanelChip} ${sidePanelWarn}`}>
-                        Bypassed
-                      </span>
-                    ) : null}
-                    {isCollapsedSelection() ? (
+              <div class={sidePanelBody}>
+                {sidePanelTab() === "context" ? (
+                  <>
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="flex items-center gap-2">
+                        <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                        <span class={sidePanelTitle}>Context</span>
+                      </div>
                       <span class={`${sidePanelChip} ${sidePanelInfo}`}>
-                        Collapsed
+                        {selectionCount()} selected
                       </span>
-                    ) : null}
-                  </div>
+                    </div>
 
-                  {selectedNodeErrors().length > 0 ? (
-                    <div class="flex flex-col gap-2">
-                      <div class="flex items-center justify-between gap-2">
-                        <div class="flex items-center gap-2">
-                          <AlertTriangle class="h-3.5 w-3.5 text-[color:var(--status-danger-text)]" />
-                          <span class={sidePanelTitle}>Errors</span>
-                        </div>
-                        <span class={`${sidePanelChip} ${sidePanelDanger}`}>
-                          {nodeErrorCounts().total}
+                    <div class="flex flex-wrap items-center gap-2">
+                      {selectedNodeIds().length > 0 ? (
+                        <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                          {selectedNodeIds().length} nodes
                         </span>
-                      </div>
-                      <div class="flex flex-wrap items-center gap-2">
-                        <For each={["all", "error", "warning"] as const}>
-                          {(filter) => (
-                            <button
-                              class={`${sidePanelChip} ${sidePanelChipButton} ${
-                                nodeErrorFilter() === filter
-                                  ? nodeErrorFilterTone(filter)
-                                  : sidePanelMuted
-                              }`}
-                              type="button"
-                              onClick={() => setNodeErrorFilter(filter)}
-                            >
-                              {formatNodeErrorFilterLabel(filter)}
-                              {filter === "all"
-                                ? ` (${nodeErrorCounts().total})`
-                                : filter === "error"
-                                  ? ` (${nodeErrorCounts().error})`
-                                  : ` (${nodeErrorCounts().warning})`}
-                            </button>
-                          )}
-                        </For>
-                      </div>
+                      ) : null}
+                      {selectedFrameIds().length > 0 ? (
+                        <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                          {selectedFrameIds().length} frames
+                        </span>
+                      ) : null}
+                      {selectedWireIds().length > 0 ? (
+                        <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                          {selectedWireIds().length} wires
+                        </span>
+                      ) : null}
+                    </div>
+
+                    {selectedNode() ? (
                       <div class="flex flex-col gap-2">
-                        <For each={filteredNodeErrors()}>
-                          {(entry) => (
-                            <details
-                              class={`${sidePanelRowDense} ${
-                                entry.severity === "error"
-                                  ? sidePanelDanger
-                                  : sidePanelWarn
-                              }`}
-                            >
-                              <summary
-                                class="flex cursor-pointer list-none items-center justify-between gap-2"
-                                title={`${entry.title}: ${entry.summary}`}
+                        <div class="flex items-center gap-2">
+                          <CircleDot class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                          <span class={sidePanelTitle}>Node</span>
+                        </div>
+                        <div class={sidePanelValue}>{selectedNodeLabel()}</div>
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span
+                            class={`${sidePanelChip} ${
+                              isSelectedDirty() ? sidePanelWarn : sidePanelInfo
+                            }`}
+                          >
+                            {isSelectedDirty() ? "Dirty" : "Clean"}
+                          </span>
+                          <span
+                            class={`${sidePanelChip} ${
+                              selectedNodeErrors().length > 0
+                                ? sidePanelDanger
+                                : sidePanelMuted
+                            }`}
+                          >
+                            {selectedNodeErrors().length > 0
+                              ? `${selectedNodeErrors().length} errors`
+                              : "No errors"}
+                          </span>
+                          {isBypassedSelection() ? (
+                            <span class={`${sidePanelChip} ${sidePanelWarn}`}>
+                              Bypassed
+                            </span>
+                          ) : null}
+                          {isCollapsedSelection() ? (
+                            <span class={`${sidePanelChip} ${sidePanelInfo}`}>
+                              Collapsed
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {selectedNodeErrors().length > 0 ? (
+                          <div class="flex flex-col gap-2">
+                            <div class="flex items-center justify-between gap-2">
+                              <div class="flex items-center gap-2">
+                                <AlertTriangle class="h-3.5 w-3.5 text-[color:var(--status-danger-text)]" />
+                                <span class={sidePanelTitle}>Errors</span>
+                              </div>
+                              <span
+                                class={`${sidePanelChip} ${sidePanelDanger}`}
                               >
-                                <div class="flex min-w-0 flex-1 items-center gap-2">
-                                  <span
-                                    class={`${sidePanelChip} ${
+                                {nodeErrorCounts().total}
+                              </span>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2">
+                              <For each={["all", "error", "warning"] as const}>
+                                {(filter) => (
+                                  <button
+                                    class={`${sidePanelChip} ${sidePanelChipButton} ${
+                                      nodeErrorFilter() === filter
+                                        ? nodeErrorFilterTone(filter)
+                                        : sidePanelMuted
+                                    }`}
+                                    type="button"
+                                    onClick={() => setNodeErrorFilter(filter)}
+                                  >
+                                    {formatNodeErrorFilterLabel(filter)}
+                                    {filter === "all"
+                                      ? ` (${nodeErrorCounts().total})`
+                                      : filter === "error"
+                                        ? ` (${nodeErrorCounts().error})`
+                                        : ` (${nodeErrorCounts().warning})`}
+                                  </button>
+                                )}
+                              </For>
+                            </div>
+                            <div class="flex flex-col gap-2">
+                              <For each={filteredNodeErrors()}>
+                                {(entry) => (
+                                  <details
+                                    class={`${sidePanelRowDense} ${
                                       entry.severity === "error"
                                         ? sidePanelDanger
                                         : sidePanelWarn
                                     }`}
                                   >
-                                    {entry.severity === "error"
-                                      ? "Error"
-                                      : "Warn"}
-                                  </span>
-                                  <span class="truncate text-[0.7rem] text-[color:var(--text-strong)]">
-                                    {entry.summary}
-                                  </span>
-                                </div>
-                                <span
-                                  class={`${sidePanelChip} ${sidePanelMuted}`}
-                                >
-                                  Details
-                                </span>
-                              </summary>
-                              <div class="flex flex-col gap-1 text-[0.65rem] text-[color:var(--text-soft)]">
-                                <span class="font-semibold text-[color:var(--text-strong)]">
-                                  {entry.title}
-                                </span>
-                                {entry.detail ? (
-                                  <span>{entry.detail}</span>
-                                ) : null}
-                                {isDebugMode && entry.context.length > 0 ? (
-                                  <div class="mt-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.6rem] text-[color:var(--text-muted)]">
-                                    <For each={entry.context}>
-                                      {(line) => <div>{line}</div>}
-                                    </For>
-                                  </div>
-                                ) : null}
-                                {isDebugMode && entry.stack ? (
-                                  <pre class="mt-1 max-h-28 overflow-auto rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.55rem] text-[color:var(--text-muted)]">
-                                    {entry.stack}
-                                  </pre>
-                                ) : null}
-                              </div>
-                            </details>
-                          )}
-                        </For>
-                        {filteredNodeErrors().length === 0 ? (
-                          <div class={`${sidePanelRow} ${sidePanelMuted}`}>
-                            No {formatNodeErrorFilterLabel(nodeErrorFilter())}{" "}
-                            for this node.
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {selectedOutputType() ? (
-                    <div class="flex flex-col gap-2">
-                      <div class="flex items-center gap-2">
-                        <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
-                        <span class={sidePanelTitle}>Output</span>
-                      </div>
-                      <div class="flex flex-wrap items-center gap-2">
-                        <span class={`${sidePanelChip} ${outputStatusTone()}`}>
-                          {outputStatus() === "running"
-                            ? "Compiling"
-                            : outputStatus() === "ready"
-                              ? "Ready"
-                              : outputStatus() === "error"
-                                ? "Error"
-                                : "Idle"}
-                        </span>
-                        <span class={`${sidePanelChip} ${sidePanelMuted}`}>
-                          {outputLabel()}
-                        </span>
-                        {outputStatus() === "running" ? (
-                          <button
-                            class={`${sidePanelChip} ${sidePanelWarn} ${sidePanelChipButton}`}
-                            type="button"
-                            onClick={() => store.cancelOutputEvaluation()}
-                          >
-                            Cancel
-                          </button>
-                        ) : null}
-                      </div>
-                      {outputMessage() ? (
-                        <div class={`${sidePanelRow} ${sidePanelDanger}`}>
-                          <span class="truncate">{outputMessage()}</span>
-                        </div>
-                      ) : null}
-                      {(() => {
-                        const artifact = outputArtifact();
-                        if (!artifact) {
-                          return null;
-                        }
-                        return (
-                          <div class="flex flex-col gap-2">
-                            {artifact.kind === "image" ? (
-                              <img
-                                class="h-28 w-full rounded-lg border border-[color:var(--border-soft)] object-cover"
-                                src={artifact.dataUrl}
-                                alt="Output preview"
-                              />
-                            ) : (
-                              <pre class="max-h-32 overflow-auto rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] p-2 text-[0.75rem] text-[color:var(--text-soft)]">
-                                {artifact.text}
-                              </pre>
-                            )}
-                          </div>
-                        );
-                      })()}
-                      <div class="flex flex-wrap items-center gap-2">
-                        <button
-                          class={`${controlMenuButton} ${controlMenuInfo}`}
-                          onClick={requestOutputNow}
-                        >
-                          Compile
-                        </button>
-                        <button
-                          class={`${controlMenuButton} ${controlMenuMuted}`}
-                          onClick={downloadOutput}
-                          disabled={!outputArtifact()}
-                        >
-                          Download
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {selectedSubgraphNode() ? (
-                    <div class="flex flex-col gap-2">
-                      <div class="flex items-center gap-2">
-                        <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
-                        <span class={sidePanelTitle}>Subgraph I/O</span>
-                      </div>
-                      {!selectedSubgraphParams() ? (
-                        <div class={`${sidePanelRow} ${sidePanelDanger}`}>
-                          Subgraph params missing
-                        </div>
-                      ) : (
-                        <>
-                          <div class="flex items-center justify-between">
-                            <span class={sidePanelTitle}>Inputs</span>
-                            <span class={`${sidePanelChip} ${sidePanelMuted}`}>
-                              {subgraphInputRows().length}
-                            </span>
-                          </div>
-                          <For each={subgraphInputRows()}>
-                            {(row) => (
-                              <div class={ioPanel}>
-                                <div class="flex items-center justify-between gap-2">
-                                  <div class="flex min-w-0 flex-1 items-center gap-2">
-                                    <input
-                                      class={ioInput}
-                                      value={row.socket.name}
-                                      onChange={(event) => {
-                                        const node = selectedSubgraphNode();
-                                        if (!node) {
-                                          return;
-                                        }
-                                        updateSubgraphSocketName(
-                                          node,
-                                          row.socket.id,
-                                          event.currentTarget.value,
-                                        );
-                                      }}
-                                    />
-                                    {row.promotion ? (
+                                    <summary
+                                      class="flex cursor-pointer list-none items-center justify-between gap-2"
+                                      title={`${entry.title}: ${entry.summary}`}
+                                    >
+                                      <div class="flex min-w-0 flex-1 items-center gap-2">
+                                        <span
+                                          class={`${sidePanelChip} ${
+                                            entry.severity === "error"
+                                              ? sidePanelDanger
+                                              : sidePanelWarn
+                                          }`}
+                                        >
+                                          {entry.severity === "error"
+                                            ? "Error"
+                                            : "Warn"}
+                                        </span>
+                                        <span class="truncate text-[0.7rem] text-[color:var(--text-strong)]">
+                                          {entry.summary}
+                                        </span>
+                                      </div>
                                       <span
                                         class={`${sidePanelChip} ${sidePanelMuted}`}
                                       >
-                                        Promoted
+                                        Details
                                       </span>
-                                    ) : null}
-                                  </div>
-                                  <div class="flex items-center gap-1">
-                                    <button
-                                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                                      disabled={row.index === 0}
-                                      onClick={() => {
-                                        const node = selectedSubgraphNode();
-                                        if (!node) {
-                                          return;
-                                        }
-                                        updateSubgraphSocketOrder(
-                                          node,
-                                          "input",
-                                          row.index,
-                                          row.index - 1,
-                                        );
-                                      }}
-                                    >
-                                      Up
-                                    </button>
-                                    <button
-                                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                                      disabled={
-                                        row.index ===
-                                        subgraphInputRows().length - 1
-                                      }
-                                      onClick={() => {
-                                        const node = selectedSubgraphNode();
-                                        if (!node) {
-                                          return;
-                                        }
-                                        updateSubgraphSocketOrder(
-                                          node,
-                                          "input",
-                                          row.index,
-                                          row.index + 1,
-                                        );
-                                      }}
-                                    >
-                                      Down
-                                    </button>
-                                  </div>
+                                    </summary>
+                                    <div class="flex flex-col gap-1 text-[0.65rem] text-[color:var(--text-soft)]">
+                                      <span class="font-semibold text-[color:var(--text-strong)]">
+                                        {entry.title}
+                                      </span>
+                                      {entry.detail ? (
+                                        <span>{entry.detail}</span>
+                                      ) : null}
+                                      {isDebugMode &&
+                                      entry.context.length > 0 ? (
+                                        <div class="mt-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.6rem] text-[color:var(--text-muted)]">
+                                          <For each={entry.context}>
+                                            {(line) => <div>{line}</div>}
+                                          </For>
+                                        </div>
+                                      ) : null}
+                                      {isDebugMode && entry.stack ? (
+                                        <pre class="mt-1 max-h-28 overflow-auto rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-panel-muted)] px-2 py-1 text-[0.55rem] text-[color:var(--text-muted)]">
+                                          {entry.stack}
+                                        </pre>
+                                      ) : null}
+                                    </div>
+                                  </details>
+                                )}
+                              </For>
+                              {filteredNodeErrors().length === 0 ? (
+                                <div
+                                  class={`${sidePanelRow} ${sidePanelMuted}`}
+                                >
+                                  No{" "}
+                                  {formatNodeErrorFilterLabel(
+                                    nodeErrorFilter(),
+                                  )}{" "}
+                                  for this node.
                                 </div>
-                                <div class="grid grid-cols-2 gap-2">
-                                  <div class="flex flex-col gap-1">
-                                    <span class={ioLabel}>Type</span>
-                                    <select
-                                      class={ioSelect}
-                                      value={row.socket.dataType}
-                                      disabled={!!row.promotion}
-                                      onChange={(event) => {
-                                        const node = selectedSubgraphNode();
-                                        if (!node) {
-                                          return;
-                                        }
-                                        updateSubgraphSocketType(
-                                          node,
-                                          row.socket.id,
-                                          event.currentTarget
-                                            .value as SocketTypeId,
-                                        );
-                                      }}
-                                    >
-                                      <For each={SOCKET_TYPE_PRIMITIVES}>
-                                        {(typeId) => (
-                                          <option value={typeId}>
-                                            {getSocketTypeLabel(typeId)}
-                                          </option>
-                                        )}
-                                      </For>
-                                    </select>
-                                  </div>
-                                  <div class="flex flex-col gap-1">
-                                    <span class={ioLabel}>Required</span>
-                                    <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
-                                      <input
-                                        type="checkbox"
-                                        checked={row.socket.required}
-                                        disabled={!!row.promotion}
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketRequired(
-                                            node,
-                                            row.socket.id,
-                                            event.currentTarget.checked,
-                                          );
-                                        }}
-                                      />
-                                      Required
-                                    </label>
-                                  </div>
-                                  <div class="col-span-2 flex flex-col gap-1">
-                                    <span class={ioLabel}>Default</span>
-                                    {row.socket.dataType === "bool" ? (
-                                      <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
-                                        <input
-                                          type="checkbox"
-                                          checked={
-                                            row.socket.defaultValue === true
-                                          }
-                                          disabled={!!row.promotion}
-                                          onChange={(event) => {
-                                            const node = selectedSubgraphNode();
-                                            if (!node) {
-                                              return;
-                                            }
-                                            updateSubgraphSocketDefault(
-                                              node,
-                                              row.socket.id,
-                                              event.currentTarget.checked,
-                                            );
-                                          }}
-                                        />
-                                        True
-                                      </label>
-                                    ) : (
-                                      <input
-                                        class={ioInput}
-                                        value={formatDefaultValue(
-                                          row.socket.defaultValue,
-                                        )}
-                                        placeholder="(none)"
-                                        disabled={!!row.promotion}
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          applyDefaultInput(
-                                            node,
-                                            row.socket,
-                                            event.currentTarget.value,
-                                          );
-                                        }}
-                                      />
-                                    )}
-                                    <button
-                                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                                      disabled={
-                                        row.socket.defaultValue === undefined ||
-                                        !!row.promotion
-                                      }
-                                      onClick={() => {
-                                        const node = selectedSubgraphNode();
-                                        if (!node) {
-                                          return;
-                                        }
-                                        updateSubgraphSocketDefault(
-                                          node,
-                                          row.socket.id,
-                                          undefined,
-                                        );
-                                      }}
-                                    >
-                                      Clear default
-                                    </button>
-                                  </div>
-                                  <div class="col-span-2 flex flex-col gap-1">
-                                    <span class={ioLabel}>Label</span>
-                                    <div class="grid grid-cols-2 gap-2">
-                                      <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
-                                        <input
-                                          type="checkbox"
-                                          checked={
-                                            row.socket.labelSettings
-                                              ?.visible !== false
-                                          }
-                                          onChange={(event) => {
-                                            const node = selectedSubgraphNode();
-                                            if (!node) {
-                                              return;
-                                            }
-                                            updateSubgraphSocketLabelVisibility(
-                                              node,
-                                              row.socket.id,
-                                              event.currentTarget.checked,
-                                            );
-                                          }}
-                                        />
-                                        Show
-                                      </label>
-                                      <select
-                                        class={ioSelect}
-                                        value={
-                                          row.socket.labelSettings?.position ??
-                                          "auto"
-                                        }
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketLabelPosition(
-                                            node,
-                                            row.socket.id,
-                                            event.currentTarget
-                                              .value as GraphSocketLabelPosition,
-                                          );
-                                        }}
-                                      >
-                                        <For each={socketLabelPositions}>
-                                          {(position) => (
-                                            <option value={position}>
-                                              {formatSocketLabelPosition(
-                                                position,
-                                              )}
-                                            </option>
-                                          )}
-                                        </For>
-                                      </select>
-                                      <input
-                                        class={ioInput}
-                                        value={
-                                          row.socket.labelSettings?.offset?.x ??
-                                          ""
-                                        }
-                                        placeholder="Offset X"
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketLabelOffset(
-                                            node,
-                                            row.socket.id,
-                                            "x",
-                                            event.currentTarget.value,
-                                          );
-                                        }}
-                                      />
-                                      <input
-                                        class={ioInput}
-                                        value={
-                                          row.socket.labelSettings?.offset?.y ??
-                                          ""
-                                        }
-                                        placeholder="Offset Y"
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketLabelOffset(
-                                            node,
-                                            row.socket.id,
-                                            "y",
-                                            event.currentTarget.value,
-                                          );
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                  <div class="col-span-2 grid grid-cols-2 gap-2">
-                                    <div class="flex flex-col gap-1">
-                                      <span class={ioLabel}>Units</span>
-                                      <input
-                                        class={ioInput}
-                                        value={row.socket.metadata?.units ?? ""}
-                                        placeholder="(none)"
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketMetadata(
-                                            node,
-                                            row.socket.id,
-                                            {
-                                              units: event.currentTarget.value,
-                                            },
-                                          );
-                                        }}
-                                      />
-                                    </div>
-                                    <div class="flex flex-col gap-1">
-                                      <span class={ioLabel}>Format</span>
-                                      <select
-                                        class={ioSelect}
-                                        value={
-                                          row.socket.metadata?.format ?? "auto"
-                                        }
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketMetadata(
-                                            node,
-                                            row.socket.id,
-                                            {
-                                              format: event.currentTarget
-                                                .value as GraphSocketNumberFormat,
-                                            },
-                                          );
-                                        }}
-                                      >
-                                        <For each={socketNumberFormats}>
-                                          {(format) => (
-                                            <option value={format}>
-                                              {formatSocketNumberFormat(format)}
-                                            </option>
-                                          )}
-                                        </For>
-                                      </select>
-                                    </div>
-                                    <div class="flex flex-col gap-1">
-                                      <span class={ioLabel}>Min</span>
-                                      <input
-                                        class={ioInput}
-                                        value={row.socket.metadata?.min ?? ""}
-                                        placeholder="(none)"
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketMetadata(
-                                            node,
-                                            row.socket.id,
-                                            {
-                                              min: parseOptionalNumber(
-                                                event.currentTarget.value,
-                                              ),
-                                            },
-                                          );
-                                        }}
-                                      />
-                                    </div>
-                                    <div class="flex flex-col gap-1">
-                                      <span class={ioLabel}>Max</span>
-                                      <input
-                                        class={ioInput}
-                                        value={row.socket.metadata?.max ?? ""}
-                                        placeholder="(none)"
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketMetadata(
-                                            node,
-                                            row.socket.id,
-                                            {
-                                              max: parseOptionalNumber(
-                                                event.currentTarget.value,
-                                              ),
-                                            },
-                                          );
-                                        }}
-                                      />
-                                    </div>
-                                    <div class="col-span-2 flex flex-col gap-1">
-                                      <span class={ioLabel}>Step</span>
-                                      <input
-                                        class={ioInput}
-                                        value={row.socket.metadata?.step ?? ""}
-                                        placeholder="(none)"
-                                        onChange={(event) => {
-                                          const node = selectedSubgraphNode();
-                                          if (!node) {
-                                            return;
-                                          }
-                                          updateSubgraphSocketMetadata(
-                                            node,
-                                            row.socket.id,
-                                            {
-                                              step: parseOptionalNumber(
-                                                event.currentTarget.value,
-                                              ),
-                                            },
-                                          );
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                          </For>
-
-                          <div class="flex items-center justify-between">
-                            <span class={sidePanelTitle}>Outputs</span>
-                            <span class={`${sidePanelChip} ${sidePanelMuted}`}>
-                              {subgraphOutputRows().length}
-                            </span>
+                              ) : null}
+                            </div>
                           </div>
-                          <For each={subgraphOutputRows()}>
-                            {(row) => (
-                              <div class={ioPanel}>
-                                <div class="flex items-center justify-between gap-2">
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {sidePanelTab() === "output" ? (
+                  <div class="flex flex-col gap-2">
+                    <div class="flex items-center gap-2">
+                      <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                      <span class={sidePanelTitle}>Output</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class={`${sidePanelChip} ${outputStatusTone()}`}>
+                        {outputStatus() === "running"
+                          ? "Compiling"
+                          : outputStatus() === "ready"
+                            ? "Ready"
+                            : outputStatus() === "error"
+                              ? "Error"
+                              : "Idle"}
+                      </span>
+                      <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                        {outputLabel()}
+                      </span>
+                      {outputStatus() === "running" ? (
+                        <button
+                          class={`${sidePanelChip} ${sidePanelWarn} ${sidePanelChipButton}`}
+                          type="button"
+                          onClick={() => store.cancelOutputEvaluation()}
+                          aria-label="Cancel output"
+                          title="Cancel output"
+                        >
+                          <X class="h-3 w-3" />
+                          <span class="sr-only">Cancel</span>
+                        </button>
+                      ) : null}
+                    </div>
+                    {outputMessage() ? (
+                      <div class={`${sidePanelRow} ${sidePanelDanger}`}>
+                        <span class="truncate">{outputMessage()}</span>
+                      </div>
+                    ) : null}
+                    {(() => {
+                      const artifact = outputArtifact();
+                      if (!artifact) {
+                        return null;
+                      }
+                      return (
+                        <div class="flex flex-col gap-2">
+                          {artifact.kind === "image" ? (
+                            <img
+                              class="h-28 w-full rounded-lg border border-[color:var(--border-soft)] object-cover"
+                              src={artifact.dataUrl}
+                              alt="Output preview"
+                            />
+                          ) : (
+                            <pre class="max-h-32 overflow-auto rounded-lg border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-muted)] p-2 text-[0.75rem] text-[color:var(--text-soft)]">
+                              {artifact.text}
+                            </pre>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    <div class="flex flex-wrap items-center gap-2">
+                      <button
+                        class={`${controlMenuButton} ${controlMenuInfo}`}
+                        onClick={requestOutputNow}
+                        aria-label="Compile"
+                        title="Compile"
+                      >
+                        <Play class="h-3.5 w-3.5" />
+                        <span class="sr-only">Compile</span>
+                      </button>
+                      <button
+                        class={`${controlMenuButton} ${controlMenuMuted}`}
+                        onClick={downloadOutput}
+                        disabled={!outputArtifact()}
+                        aria-label="Download"
+                        title="Download"
+                      >
+                        <Download class="h-3.5 w-3.5" />
+                        <span class="sr-only">Download</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {sidePanelTab() === "subgraph" ? (
+                  <div class="flex flex-col gap-2">
+                    <div class="flex items-center gap-2">
+                      <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                      <span class={sidePanelTitle}>Subgraph I/O</span>
+                    </div>
+                    {!selectedSubgraphParams() ? (
+                      <div class={`${sidePanelRow} ${sidePanelDanger}`}>
+                        Subgraph params missing
+                      </div>
+                    ) : (
+                      <>
+                        <div class="flex items-center justify-between">
+                          <span class={sidePanelTitle}>Inputs</span>
+                          <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                            {subgraphInputRows().length}
+                          </span>
+                        </div>
+                        <For each={subgraphInputRows()}>
+                          {(row) => (
+                            <div class={ioPanel}>
+                              <div class="flex items-center justify-between gap-2">
+                                <div class="flex min-w-0 flex-1 items-center gap-2">
                                   <input
                                     class={ioInput}
                                     value={row.socket.name}
@@ -4041,55 +4383,174 @@ export default function EditorShell() {
                                       );
                                     }}
                                   />
-                                  <div class="flex items-center gap-1">
-                                    <button
-                                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                                      disabled={row.index === 0}
-                                      onClick={() => {
-                                        const node = selectedSubgraphNode();
-                                        if (!node) {
-                                          return;
-                                        }
-                                        updateSubgraphSocketOrder(
-                                          node,
-                                          "output",
-                                          row.index,
-                                          row.index - 1,
-                                        );
-                                      }}
+                                  {row.promotion ? (
+                                    <span
+                                      class={`${sidePanelChip} ${sidePanelMuted}`}
                                     >
-                                      Up
-                                    </button>
-                                    <button
-                                      class={`${controlMenuButton} ${controlMenuMuted}`}
-                                      disabled={
-                                        row.index ===
-                                        subgraphOutputRows().length - 1
-                                      }
-                                      onClick={() => {
-                                        const node = selectedSubgraphNode();
-                                        if (!node) {
-                                          return;
-                                        }
-                                        updateSubgraphSocketOrder(
-                                          node,
-                                          "output",
-                                          row.index,
-                                          row.index + 1,
-                                        );
-                                      }}
-                                    >
-                                      Down
-                                    </button>
-                                  </div>
+                                      Promoted
+                                    </span>
+                                  ) : null}
                                 </div>
+                                <div class="flex items-center gap-1">
+                                  <button
+                                    class={`${controlMenuButton} ${controlMenuMuted}`}
+                                    disabled={row.index === 0}
+                                    onClick={() => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketOrder(
+                                        node,
+                                        "input",
+                                        row.index,
+                                        row.index - 1,
+                                      );
+                                    }}
+                                  >
+                                    Up
+                                  </button>
+                                  <button
+                                    class={`${controlMenuButton} ${controlMenuMuted}`}
+                                    disabled={
+                                      row.index ===
+                                      subgraphInputRows().length - 1
+                                    }
+                                    onClick={() => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketOrder(
+                                        node,
+                                        "input",
+                                        row.index,
+                                        row.index + 1,
+                                      );
+                                    }}
+                                  >
+                                    Down
+                                  </button>
+                                </div>
+                              </div>
+                              <div class="grid grid-cols-2 gap-2">
                                 <div class="flex flex-col gap-1">
                                   <span class={ioLabel}>Type</span>
-                                  <div class={ioInput}>
-                                    {getSocketTypeLabel(row.socket.dataType)}
-                                  </div>
+                                  <select
+                                    class={ioSelect}
+                                    value={row.socket.dataType}
+                                    disabled={!!row.promotion}
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketType(
+                                        node,
+                                        row.socket.id,
+                                        event.currentTarget
+                                          .value as SocketTypeId,
+                                      );
+                                    }}
+                                  >
+                                    <For each={SOCKET_TYPE_PRIMITIVES}>
+                                      {(typeId) => (
+                                        <option value={typeId}>
+                                          {getSocketTypeLabel(typeId)}
+                                        </option>
+                                      )}
+                                    </For>
+                                  </select>
                                 </div>
                                 <div class="flex flex-col gap-1">
+                                  <span class={ioLabel}>Required</span>
+                                  <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                    <input
+                                      type="checkbox"
+                                      checked={row.socket.required}
+                                      disabled={!!row.promotion}
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketRequired(
+                                          node,
+                                          row.socket.id,
+                                          event.currentTarget.checked,
+                                        );
+                                      }}
+                                    />
+                                    Required
+                                  </label>
+                                </div>
+                                <div class="col-span-2 flex flex-col gap-1">
+                                  <span class={ioLabel}>Default</span>
+                                  {row.socket.dataType === "bool" ? (
+                                    <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={
+                                          row.socket.defaultValue === true
+                                        }
+                                        disabled={!!row.promotion}
+                                        onChange={(event) => {
+                                          const node = selectedSubgraphNode();
+                                          if (!node) {
+                                            return;
+                                          }
+                                          updateSubgraphSocketDefault(
+                                            node,
+                                            row.socket.id,
+                                            event.currentTarget.checked,
+                                          );
+                                        }}
+                                      />
+                                      True
+                                    </label>
+                                  ) : (
+                                    <input
+                                      class={ioInput}
+                                      value={formatDefaultValue(
+                                        row.socket.defaultValue,
+                                      )}
+                                      placeholder="(none)"
+                                      disabled={!!row.promotion}
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        applyDefaultInput(
+                                          node,
+                                          row.socket,
+                                          event.currentTarget.value,
+                                        );
+                                      }}
+                                    />
+                                  )}
+                                  <button
+                                    class={`${controlMenuButton} ${controlMenuMuted}`}
+                                    disabled={
+                                      row.socket.defaultValue === undefined ||
+                                      !!row.promotion
+                                    }
+                                    onClick={() => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketDefault(
+                                        node,
+                                        row.socket.id,
+                                        undefined,
+                                      );
+                                    }}
+                                  >
+                                    Clear default
+                                  </button>
+                                </div>
+                                <div class="col-span-2 flex flex-col gap-1">
                                   <span class={ioLabel}>Label</span>
                                   <div class="grid grid-cols-2 gap-2">
                                     <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
@@ -4184,7 +4645,7 @@ export default function EditorShell() {
                                     />
                                   </div>
                                 </div>
-                                <div class="grid grid-cols-2 gap-2">
+                                <div class="col-span-2 grid grid-cols-2 gap-2">
                                   <div class="flex flex-col gap-1">
                                     <span class={ioLabel}>Units</span>
                                     <input
@@ -4308,240 +4769,549 @@ export default function EditorShell() {
                                   </div>
                                 </div>
                               </div>
-                            )}
-                          </For>
+                            </div>
+                          )}
+                        </For>
+
+                        <div class="flex items-center justify-between">
+                          <span class={sidePanelTitle}>Outputs</span>
+                          <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                            {subgraphOutputRows().length}
+                          </span>
+                        </div>
+                        <For each={subgraphOutputRows()}>
+                          {(row) => (
+                            <div class={ioPanel}>
+                              <div class="flex items-center justify-between gap-2">
+                                <input
+                                  class={ioInput}
+                                  value={row.socket.name}
+                                  onChange={(event) => {
+                                    const node = selectedSubgraphNode();
+                                    if (!node) {
+                                      return;
+                                    }
+                                    updateSubgraphSocketName(
+                                      node,
+                                      row.socket.id,
+                                      event.currentTarget.value,
+                                    );
+                                  }}
+                                />
+                                <div class="flex items-center gap-1">
+                                  <button
+                                    class={`${controlMenuButton} ${controlMenuMuted}`}
+                                    disabled={row.index === 0}
+                                    onClick={() => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketOrder(
+                                        node,
+                                        "output",
+                                        row.index,
+                                        row.index - 1,
+                                      );
+                                    }}
+                                  >
+                                    Up
+                                  </button>
+                                  <button
+                                    class={`${controlMenuButton} ${controlMenuMuted}`}
+                                    disabled={
+                                      row.index ===
+                                      subgraphOutputRows().length - 1
+                                    }
+                                    onClick={() => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketOrder(
+                                        node,
+                                        "output",
+                                        row.index,
+                                        row.index + 1,
+                                      );
+                                    }}
+                                  >
+                                    Down
+                                  </button>
+                                </div>
+                              </div>
+                              <div class="flex flex-col gap-1">
+                                <span class={ioLabel}>Type</span>
+                                <div class={ioInput}>
+                                  {getSocketTypeLabel(row.socket.dataType)}
+                                </div>
+                              </div>
+                              <div class="flex flex-col gap-1">
+                                <span class={ioLabel}>Label</span>
+                                <div class="grid grid-cols-2 gap-2">
+                                  <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                    <input
+                                      type="checkbox"
+                                      checked={
+                                        row.socket.labelSettings?.visible !==
+                                        false
+                                      }
+                                      onChange={(event) => {
+                                        const node = selectedSubgraphNode();
+                                        if (!node) {
+                                          return;
+                                        }
+                                        updateSubgraphSocketLabelVisibility(
+                                          node,
+                                          row.socket.id,
+                                          event.currentTarget.checked,
+                                        );
+                                      }}
+                                    />
+                                    Show
+                                  </label>
+                                  <select
+                                    class={ioSelect}
+                                    value={
+                                      row.socket.labelSettings?.position ??
+                                      "auto"
+                                    }
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketLabelPosition(
+                                        node,
+                                        row.socket.id,
+                                        event.currentTarget
+                                          .value as GraphSocketLabelPosition,
+                                      );
+                                    }}
+                                  >
+                                    <For each={socketLabelPositions}>
+                                      {(position) => (
+                                        <option value={position}>
+                                          {formatSocketLabelPosition(position)}
+                                        </option>
+                                      )}
+                                    </For>
+                                  </select>
+                                  <input
+                                    class={ioInput}
+                                    value={
+                                      row.socket.labelSettings?.offset?.x ?? ""
+                                    }
+                                    placeholder="Offset X"
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketLabelOffset(
+                                        node,
+                                        row.socket.id,
+                                        "x",
+                                        event.currentTarget.value,
+                                      );
+                                    }}
+                                  />
+                                  <input
+                                    class={ioInput}
+                                    value={
+                                      row.socket.labelSettings?.offset?.y ?? ""
+                                    }
+                                    placeholder="Offset Y"
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketLabelOffset(
+                                        node,
+                                        row.socket.id,
+                                        "y",
+                                        event.currentTarget.value,
+                                      );
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              <div class="grid grid-cols-2 gap-2">
+                                <div class="flex flex-col gap-1">
+                                  <span class={ioLabel}>Units</span>
+                                  <input
+                                    class={ioInput}
+                                    value={row.socket.metadata?.units ?? ""}
+                                    placeholder="(none)"
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketMetadata(
+                                        node,
+                                        row.socket.id,
+                                        {
+                                          units: event.currentTarget.value,
+                                        },
+                                      );
+                                    }}
+                                  />
+                                </div>
+                                <div class="flex flex-col gap-1">
+                                  <span class={ioLabel}>Format</span>
+                                  <select
+                                    class={ioSelect}
+                                    value={
+                                      row.socket.metadata?.format ?? "auto"
+                                    }
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketMetadata(
+                                        node,
+                                        row.socket.id,
+                                        {
+                                          format: event.currentTarget
+                                            .value as GraphSocketNumberFormat,
+                                        },
+                                      );
+                                    }}
+                                  >
+                                    <For each={socketNumberFormats}>
+                                      {(format) => (
+                                        <option value={format}>
+                                          {formatSocketNumberFormat(format)}
+                                        </option>
+                                      )}
+                                    </For>
+                                  </select>
+                                </div>
+                                <div class="flex flex-col gap-1">
+                                  <span class={ioLabel}>Min</span>
+                                  <input
+                                    class={ioInput}
+                                    value={row.socket.metadata?.min ?? ""}
+                                    placeholder="(none)"
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketMetadata(
+                                        node,
+                                        row.socket.id,
+                                        {
+                                          min: parseOptionalNumber(
+                                            event.currentTarget.value,
+                                          ),
+                                        },
+                                      );
+                                    }}
+                                  />
+                                </div>
+                                <div class="flex flex-col gap-1">
+                                  <span class={ioLabel}>Max</span>
+                                  <input
+                                    class={ioInput}
+                                    value={row.socket.metadata?.max ?? ""}
+                                    placeholder="(none)"
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketMetadata(
+                                        node,
+                                        row.socket.id,
+                                        {
+                                          max: parseOptionalNumber(
+                                            event.currentTarget.value,
+                                          ),
+                                        },
+                                      );
+                                    }}
+                                  />
+                                </div>
+                                <div class="col-span-2 flex flex-col gap-1">
+                                  <span class={ioLabel}>Step</span>
+                                  <input
+                                    class={ioInput}
+                                    value={row.socket.metadata?.step ?? ""}
+                                    placeholder="(none)"
+                                    onChange={(event) => {
+                                      const node = selectedSubgraphNode();
+                                      if (!node) {
+                                        return;
+                                      }
+                                      updateSubgraphSocketMetadata(
+                                        node,
+                                        row.socket.id,
+                                        {
+                                          step: parseOptionalNumber(
+                                            event.currentTarget.value,
+                                          ),
+                                        },
+                                      );
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </For>
+
+                        <div class="flex items-center justify-between">
+                          <span class={sidePanelTitle}>Promoted Params</span>
+                          <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                            {subgraphPromotedCount()}
+                          </span>
+                        </div>
+                        {subgraphPromotableFields().length === 0 ? (
+                          <div class={`${sidePanelRow} ${sidePanelMuted}`}>
+                            No promotable params
+                          </div>
+                        ) : (
+                          <div class={ioPanel}>
+                            <For each={subgraphPromotableFields()}>
+                              {(row) => (
+                                <div class="flex items-center justify-between gap-2">
+                                  <div class="flex min-w-0 flex-1 flex-col gap-1">
+                                    <span class={ioLabel}>{row.label}</span>
+                                    <span class="truncate text-[0.7rem] text-[color:var(--text-strong)]">
+                                      {row.field.label}
+                                    </span>
+                                    {row.promotion ? (
+                                      <span class="text-[0.6rem] text-[color:var(--text-muted)]">
+                                        Socket: {row.promotion.key} -{" "}
+                                        {getSocketTypeLabel(
+                                          getParamSocketType(row.field),
+                                        )}
+                                      </span>
+                                    ) : (
+                                      <span class="text-[0.6rem] text-[color:var(--text-muted)]">
+                                        {getSocketTypeLabel(
+                                          getParamSocketType(row.field),
+                                        )}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                    <input
+                                      type="checkbox"
+                                      checked={!!row.promotion}
+                                      onChange={(event) =>
+                                        updateSubgraphParamPromotion(
+                                          row.node,
+                                          row.field,
+                                          event.currentTarget.checked,
+                                        )
+                                      }
+                                    />
+                                    Expose
+                                  </label>
+                                </div>
+                              )}
+                            </For>
+                          </div>
+                        )}
+
+                        <div class="flex items-center justify-between">
+                          <span class={sidePanelTitle}>Instance Overrides</span>
+                          <span
+                            class={`${sidePanelChip} ${
+                              subgraphOverrideCount() > 0
+                                ? sidePanelInfo
+                                : sidePanelMuted
+                            }`}
+                          >
+                            {subgraphOverrideCount()} overrides
+                          </span>
+                        </div>
+                        {subgraphOverrideNodes().length === 0 ? (
+                          <div class={`${sidePanelRow} ${sidePanelMuted}`}>
+                            No overrideable params
+                          </div>
+                        ) : (
+                          <SubgraphParamOverrides
+                            nodes={subgraphOverrideNodes()}
+                            onOverrideChange={setSubgraphParamOverride}
+                            onOverrideReset={resetSubgraphParamOverride}
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : null}
+
+                {sidePanelTab() === "frame"
+                  ? (() => {
+                      const frame = selectedFrame();
+                      if (!frame || selectedNode()) {
+                        return null;
+                      }
+                      const groups = frameSocketGroups();
+                      return (
+                        <div class="flex flex-col gap-2">
+                          <div class="flex items-center gap-2">
+                            <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
+                            <span class={sidePanelTitle}>Frame</span>
+                          </div>
+                          <div class={ioPanel}>
+                            <div class="flex flex-col gap-1">
+                              <span class={ioLabel}>Title</span>
+                              <input
+                                class={ioInput}
+                                value={frame.title}
+                                onChange={(event) =>
+                                  updateFrame(frame.id, {
+                                    title: sanitizeFrameTitle(
+                                      event.currentTarget.value,
+                                    ),
+                                  })
+                                }
+                              />
+                            </div>
+                            <div class="flex flex-col gap-1">
+                              <span class={ioLabel}>Description</span>
+                              <textarea
+                                class={`${ioInput} min-h-[64px] resize-y`}
+                                value={frame.description ?? ""}
+                                onChange={(event) =>
+                                  updateFrame(frame.id, {
+                                    description: event.currentTarget.value,
+                                  })
+                                }
+                              />
+                            </div>
+                            <div class="flex items-center justify-between gap-3">
+                              <div class="flex flex-col gap-1">
+                                <span class={ioLabel}>Color</span>
+                                <input
+                                  class={ioInput}
+                                  type="color"
+                                  value={formatFrameColor(frame.color)}
+                                  onChange={(event) => {
+                                    const parsed = parseFrameColor(
+                                      event.currentTarget.value,
+                                    );
+                                    if (parsed !== null) {
+                                      updateFrame(frame.id, { color: parsed });
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                <input
+                                  type="checkbox"
+                                  checked={frame.collapsed ?? false}
+                                  onChange={(event) =>
+                                    updateFrame(frame.id, {
+                                      collapsed: event.currentTarget.checked,
+                                    })
+                                  }
+                                />
+                                Collapsed
+                              </label>
+                            </div>
+                          </div>
 
                           <div class="flex items-center justify-between">
-                            <span class={sidePanelTitle}>Promoted Params</span>
+                            <span class={sidePanelTitle}>Exposed Inputs</span>
                             <span class={`${sidePanelChip} ${sidePanelMuted}`}>
-                              {subgraphPromotedCount()}
+                              {groups.inputs.length}
                             </span>
                           </div>
-                          {subgraphPromotableFields().length === 0 ? (
+                          {groups.inputs.length === 0 ? (
                             <div class={`${sidePanelRow} ${sidePanelMuted}`}>
-                              No promotable params
+                              No inputs inside frame
                             </div>
                           ) : (
                             <div class={ioPanel}>
-                              <For each={subgraphPromotableFields()}>
+                              <For each={groups.inputs}>
                                 {(row) => (
-                                  <div class="flex items-center justify-between gap-2">
-                                    <div class="flex min-w-0 flex-1 flex-col gap-1">
-                                      <span class={ioLabel}>{row.label}</span>
-                                      <span class="truncate text-[0.7rem] text-[color:var(--text-strong)]">
-                                        {row.field.label}
-                                      </span>
-                                      {row.promotion ? (
-                                        <span class="text-[0.6rem] text-[color:var(--text-muted)]">
-                                          Socket: {row.promotion.key} -{" "}
-                                          {getSocketTypeLabel(
-                                            getParamSocketType(row.field),
-                                          )}
-                                        </span>
-                                      ) : (
-                                        <span class="text-[0.6rem] text-[color:var(--text-muted)]">
-                                          {getSocketTypeLabel(
-                                            getParamSocketType(row.field),
-                                          )}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
-                                      <input
-                                        type="checkbox"
-                                        checked={!!row.promotion}
-                                        onChange={(event) =>
-                                          updateSubgraphParamPromotion(
-                                            row.node,
-                                            row.field,
-                                            event.currentTarget.checked,
-                                          )
-                                        }
-                                      />
-                                      Expose
-                                    </label>
-                                  </div>
+                                  <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                    <input
+                                      type="checkbox"
+                                      checked={row.exposed}
+                                      onChange={(event) =>
+                                        updateFrameExposure(
+                                          frame,
+                                          row.socket.id,
+                                          "input",
+                                          event.currentTarget.checked,
+                                        )
+                                      }
+                                    />
+                                    <span class="truncate">
+                                      {formatFrameSocketLabel(row)}
+                                    </span>
+                                  </label>
                                 )}
                               </For>
                             </div>
                           )}
 
                           <div class="flex items-center justify-between">
-                            <span class={sidePanelTitle}>
-                              Instance Overrides
-                            </span>
-                            <span
-                              class={`${sidePanelChip} ${
-                                subgraphOverrideCount() > 0
-                                  ? sidePanelInfo
-                                  : sidePanelMuted
-                              }`}
-                            >
-                              {subgraphOverrideCount()} overrides
+                            <span class={sidePanelTitle}>Exposed Outputs</span>
+                            <span class={`${sidePanelChip} ${sidePanelMuted}`}>
+                              {groups.outputs.length}
                             </span>
                           </div>
-                          {subgraphOverrideNodes().length === 0 ? (
+                          {groups.outputs.length === 0 ? (
                             <div class={`${sidePanelRow} ${sidePanelMuted}`}>
-                              No overrideable params
+                              No outputs inside frame
                             </div>
                           ) : (
-                            <SubgraphParamOverrides
-                              nodes={subgraphOverrideNodes()}
-                              onOverrideChange={setSubgraphParamOverride}
-                              onOverrideReset={resetSubgraphParamOverride}
-                            />
+                            <div class={ioPanel}>
+                              <For each={groups.outputs}>
+                                {(row) => (
+                                  <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
+                                    <input
+                                      type="checkbox"
+                                      checked={row.exposed}
+                                      onChange={(event) =>
+                                        updateFrameExposure(
+                                          frame,
+                                          row.socket.id,
+                                          "output",
+                                          event.currentTarget.checked,
+                                        )
+                                      }
+                                    />
+                                    <span class="truncate">
+                                      {formatFrameSocketLabel(row)}
+                                    </span>
+                                  </label>
+                                )}
+                              </For>
+                            </div>
                           )}
-                        </>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {(() => {
-                const frame = selectedFrame();
-                if (!frame || selectedNode()) {
-                  return null;
-                }
-                const groups = frameSocketGroups();
-                return (
-                  <div class="flex flex-col gap-2">
-                    <div class="flex items-center gap-2">
-                      <Sparkles class="h-3.5 w-3.5 text-[color:var(--status-info-text)]" />
-                      <span class={sidePanelTitle}>Frame</span>
-                    </div>
-                    <div class={ioPanel}>
-                      <div class="flex flex-col gap-1">
-                        <span class={ioLabel}>Title</span>
-                        <input
-                          class={ioInput}
-                          value={frame.title}
-                          onChange={(event) =>
-                            updateFrame(frame.id, {
-                              title: sanitizeFrameTitle(
-                                event.currentTarget.value,
-                              ),
-                            })
-                          }
-                        />
-                      </div>
-                      <div class="flex flex-col gap-1">
-                        <span class={ioLabel}>Description</span>
-                        <textarea
-                          class={`${ioInput} min-h-[64px] resize-y`}
-                          value={frame.description ?? ""}
-                          onChange={(event) =>
-                            updateFrame(frame.id, {
-                              description: event.currentTarget.value,
-                            })
-                          }
-                        />
-                      </div>
-                      <div class="flex items-center justify-between gap-3">
-                        <div class="flex flex-col gap-1">
-                          <span class={ioLabel}>Color</span>
-                          <input
-                            class={ioInput}
-                            type="color"
-                            value={formatFrameColor(frame.color)}
-                            onChange={(event) => {
-                              const parsed = parseFrameColor(
-                                event.currentTarget.value,
-                              );
-                              if (parsed !== null) {
-                                updateFrame(frame.id, { color: parsed });
-                              }
-                            }}
-                          />
                         </div>
-                        <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
-                          <input
-                            type="checkbox"
-                            checked={frame.collapsed ?? false}
-                            onChange={(event) =>
-                              updateFrame(frame.id, {
-                                collapsed: event.currentTarget.checked,
-                              })
-                            }
-                          />
-                          Collapsed
-                        </label>
-                      </div>
-                    </div>
+                      );
+                    })()
+                  : null}
 
-                    <div class="flex items-center justify-between">
-                      <span class={sidePanelTitle}>Exposed Inputs</span>
-                      <span class={`${sidePanelChip} ${sidePanelMuted}`}>
-                        {groups.inputs.length}
-                      </span>
-                    </div>
-                    {groups.inputs.length === 0 ? (
-                      <div class={`${sidePanelRow} ${sidePanelMuted}`}>
-                        No inputs inside frame
-                      </div>
-                    ) : (
-                      <div class={ioPanel}>
-                        <For each={groups.inputs}>
-                          {(row) => (
-                            <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
-                              <input
-                                type="checkbox"
-                                checked={row.exposed}
-                                onChange={(event) =>
-                                  updateFrameExposure(
-                                    frame,
-                                    row.socket.id,
-                                    "input",
-                                    event.currentTarget.checked,
-                                  )
-                                }
-                              />
-                              <span class="truncate">
-                                {formatFrameSocketLabel(row)}
-                              </span>
-                            </label>
-                          )}
-                        </For>
-                      </div>
-                    )}
-
-                    <div class="flex items-center justify-between">
-                      <span class={sidePanelTitle}>Exposed Outputs</span>
-                      <span class={`${sidePanelChip} ${sidePanelMuted}`}>
-                        {groups.outputs.length}
-                      </span>
-                    </div>
-                    {groups.outputs.length === 0 ? (
-                      <div class={`${sidePanelRow} ${sidePanelMuted}`}>
-                        No outputs inside frame
-                      </div>
-                    ) : (
-                      <div class={ioPanel}>
-                        <For each={groups.outputs}>
-                          {(row) => (
-                            <label class="flex items-center gap-2 text-[0.7rem] text-[color:var(--text-strong)]">
-                              <input
-                                type="checkbox"
-                                checked={row.exposed}
-                                onChange={(event) =>
-                                  updateFrameExposure(
-                                    frame,
-                                    row.socket.id,
-                                    "output",
-                                    event.currentTarget.checked,
-                                  )
-                                }
-                              />
-                              <span class="truncate">
-                                {formatFrameSocketLabel(row)}
-                              </span>
-                            </label>
-                          )}
-                        </For>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
+                {sidePanelTab() === "debug" ? (
+                  <DebugPanel
+                    embedded={true}
+                    graph={store.graph()}
+                    dirtyState={store.dirtyState()}
+                    execHistory={store.execHistory()}
+                    debugEvents={store.debugEvents()}
+                    watchedSockets={store.watchedSockets()}
+                    selectedNodeId={selectedNode()?.id ?? null}
+                    onAddWatchedSocket={store.addWatchedSocket}
+                    onRemoveWatchedSocket={store.removeWatchedSocket}
+                    onClearWatchedSockets={store.clearWatchedSockets}
+                    onClearExecHistory={store.clearExecHistory}
+                    onClearDebugEvents={store.clearDebugEvents}
+                  />
+                ) : null}
+              </div>
             </div>
           </aside>
         ) : null}
@@ -4566,8 +5336,11 @@ export default function EditorShell() {
                 class={settingsClose}
                 type="button"
                 onClick={() => setSettingsOpen(false)}
+                aria-label="Close settings"
+                title="Close settings"
               >
-                Close
+                <X class="h-3.5 w-3.5" />
+                <span class="sr-only">Close</span>
               </button>
             </div>
 
@@ -4629,7 +5402,7 @@ export default function EditorShell() {
               </button>
             </div>
 
-            <div class="mt-4">
+            <div class={settingsBody}>
               {settingsTab() === "canvas" ? (
                 <div class={settingsSection}>
                   <div class={settingsRow}>
@@ -4971,12 +5744,6 @@ export default function EditorShell() {
       >
         <Toast.List class={toastList} />
       </Toast.Region>
-
-      <CommandPalette
-        open={store.commandPaletteOpen()}
-        onOpenChange={store.setCommandPaletteOpen}
-        entries={commandPaletteEntries()}
-      />
     </main>
   );
 }

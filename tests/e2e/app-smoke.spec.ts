@@ -150,3 +150,40 @@ test("context menu can add and delete nodes", async ({ page }) => {
 
   await expect.poll(() => getNodeIds(page).then((ids) => ids.length)).toBe(0);
 });
+
+test("settings dialog opens and side panel appears on selection", async ({
+  page,
+}) => {
+  await page.goto(appUrl);
+
+  await expect(page.getByRole("heading", { name: "Shadr" })).toBeVisible();
+  await waitForTestApi(page);
+
+  const sidePanel = page.getByLabel("Selection details");
+  await expect(sidePanel).toHaveCount(0);
+
+  const canvas = page.getByTestId("editor-canvas");
+  await expect(canvas).toBeVisible();
+
+  await canvas.dblclick({ position: { x: 260, y: 260 } });
+  await expect.poll(() => getNodeIds(page).then((ids) => ids.length)).toBe(1);
+
+  const [nodeId] = await getNodeIds(page);
+  if (!nodeId) {
+    throw new Error("Expected node for side panel selection test.");
+  }
+  const nodeCenter = await getNodeScreenCenter(page, nodeId);
+  if (!nodeCenter) {
+    throw new Error("Missing node screen position for side panel selection.");
+  }
+  await page.mouse.click(nodeCenter.x, nodeCenter.y);
+
+  await expect(sidePanel).toBeVisible();
+
+  await page.getByRole("button", { name: "Open settings" }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
+  await expect(settingsDialog).toBeVisible();
+
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(settingsDialog).toHaveCount(0);
+});

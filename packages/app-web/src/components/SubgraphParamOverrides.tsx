@@ -9,6 +9,7 @@ import type {
   Vec4,
 } from "@shadr/plugin-system";
 import type { JsonObject, JsonValue } from "@shadr/shared";
+import { RotateCcw } from "lucide-solid";
 import { For } from "solid-js";
 
 type OverrideNodeEntry = Readonly<{
@@ -139,7 +140,7 @@ export default function SubgraphParamOverrides(
   const fieldChipOverride =
     "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]";
   const resetButtonBase =
-    "rounded-full border px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.18em] transition";
+    "inline-flex items-center justify-center rounded-full border px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.18em] transition";
   const resetButtonActive =
     "border-[color:var(--status-warn-border)] bg-[color:var(--status-warn-bg)] text-[color:var(--status-warn-text)] hover:border-[color:var(--status-warn-border)]";
   const resetButtonDisabled =
@@ -181,8 +182,11 @@ export default function SubgraphParamOverrides(
             }`}
             disabled={!isOverridden}
             onClick={() => props.onOverrideReset(nodeId, field.id)}
+            aria-label="Reset override"
+            title="Reset override"
           >
-            Reset
+            <RotateCcw class="h-3 w-3" />
+            <span class="sr-only">Reset</span>
           </button>
         </div>
       </div>

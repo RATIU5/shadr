@@ -1,6 +1,7 @@
 import type { DirtyState } from "@shadr/exec-engine";
 import type { Graph, NodeId, SocketId } from "@shadr/graph-core";
 import type { JsonValue } from "@shadr/shared";
+import { Eye, Plus, Trash2, X } from "lucide-solid";
 import { createEffect, createMemo, createSignal, For } from "solid-js";
 
 import ExecDebugConsole from "~/components/ExecDebugConsole";
@@ -26,6 +27,7 @@ const formatValue = (value: JsonValue | undefined): string => {
 
 /* eslint-disable no-unused-vars */
 type DebugPanelProps = Readonly<{
+  embedded?: boolean;
   graph: Graph;
   dirtyState: DirtyState;
   execHistory: ReadonlyArray<ExecDebugEntry>;
@@ -37,7 +39,7 @@ type DebugPanelProps = Readonly<{
   onClearWatchedSockets: () => void;
   onClearExecHistory: () => void;
   onClearDebugEvents: () => void;
-  onClose: () => void;
+  onClose?: () => void;
 }>;
 /* eslint-enable no-unused-vars */
 
@@ -139,8 +141,9 @@ export default function DebugPanel(props: DebugPanelProps) {
     return outputs;
   });
 
-  const panelRoot =
-    "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,420px)] flex-col gap-4 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-3 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[75vh] overflow-y-auto";
+  const panelRoot = props.embedded
+    ? "flex flex-col gap-4 text-[color:var(--app-text)]"
+    : "pointer-events-auto z-[var(--layer-panel)] flex w-[min(92vw,420px)] flex-col gap-4 rounded-[1.1rem] border border-[color:var(--border-soft)] bg-[color:var(--surface-panel-strong)] px-3 py-3 text-[color:var(--app-text)] shadow-[var(--shadow-panel)] backdrop-blur max-h-[75vh] overflow-y-auto";
   const panelTitle =
     "text-[0.7rem] uppercase tracking-[0.2em] text-[color:var(--text-muted)]";
   const panelSubtitle = "text-[0.75rem] text-[color:var(--text-muted)]";
@@ -157,7 +160,7 @@ export default function DebugPanel(props: DebugPanelProps) {
   const badgeInfo =
     "border-[color:var(--status-info-border)] bg-[color:var(--status-info-bg)] text-[color:var(--status-info-text)]";
   const buttonBase =
-    "rounded-full border border-[color:var(--border-muted)] bg-transparent px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)] transition hover:border-[color:var(--border-strong)]";
+    "inline-flex items-center justify-center rounded-full border border-[color:var(--border-muted)] bg-transparent px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] text-[color:var(--text-soft)] transition hover:border-[color:var(--border-strong)]";
   const buttonDanger =
     "border-[color:var(--status-danger-border)] text-[color:var(--status-danger-text)]";
   const inputSelect =
@@ -172,9 +175,18 @@ export default function DebugPanel(props: DebugPanelProps) {
           <h3 class={panelTitle}>Debug Panel</h3>
           <p class={panelSubtitle}>Dev-only output and event streams.</p>
         </div>
-        <button class={buttonBase} type="button" onClick={props.onClose}>
-          Close
-        </button>
+        {!props.embedded && props.onClose ? (
+          <button
+            class={buttonBase}
+            type="button"
+            onClick={props.onClose}
+            aria-label="Close"
+            title="Close"
+          >
+            <X class="h-3 w-3" />
+            <span class="sr-only">Close</span>
+          </button>
+        ) : null}
       </div>
 
       <div class={sectionCard}>
@@ -197,8 +209,11 @@ export default function DebugPanel(props: DebugPanelProps) {
                       class={buttonBase}
                       type="button"
                       onClick={() => props.onAddWatchedSocket(row.socketId)}
+                      aria-label="Watch socket"
+                      title="Watch socket"
                     >
-                      Watch
+                      <Eye class="h-3 w-3" />
+                      <span class="sr-only">Watch</span>
                     </button>
                   </div>
                   <pre class="mt-2 max-h-32 overflow-auto text-[0.7rem] text-[color:var(--text-strong)]">
@@ -222,8 +237,11 @@ export default function DebugPanel(props: DebugPanelProps) {
             class={`${buttonBase} ${buttonDanger}`}
             type="button"
             onClick={props.onClearWatchedSockets}
+            aria-label="Clear watched sockets"
+            title="Clear watched sockets"
           >
-            Clear
+            <Trash2 class="h-3 w-3" />
+            <span class="sr-only">Clear</span>
           </button>
         </div>
         <div class="mt-2 flex items-center gap-2">
@@ -251,8 +269,11 @@ export default function DebugPanel(props: DebugPanelProps) {
                 props.onAddWatchedSocket(socketId);
               }
             }}
+            aria-label="Add socket"
+            title="Add socket"
           >
-            Add
+            <Plus class="h-3 w-3" />
+            <span class="sr-only">Add</span>
           </button>
         </div>
         {watchedRows().length > 0 ? (
@@ -269,8 +290,11 @@ export default function DebugPanel(props: DebugPanelProps) {
                       class={`${buttonBase} ${buttonDanger}`}
                       type="button"
                       onClick={() => props.onRemoveWatchedSocket(row.socketId)}
+                      aria-label="Remove socket"
+                      title="Remove socket"
                     >
-                      Remove
+                      <X class="h-3 w-3" />
+                      <span class="sr-only">Remove</span>
                     </button>
                   </div>
                   {row.missing ? (
@@ -305,8 +329,11 @@ export default function DebugPanel(props: DebugPanelProps) {
             class={`${buttonBase} ${buttonDanger}`}
             type="button"
             onClick={props.onClearDebugEvents}
+            aria-label="Clear events"
+            title="Clear events"
           >
-            Clear
+            <Trash2 class="h-3 w-3" />
+            <span class="sr-only">Clear</span>
           </button>
         </div>
         {props.debugEvents.length > 0 ? (

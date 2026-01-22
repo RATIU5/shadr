@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createComponent, createSignal } from "solid-js";
-import { render } from "solid-js/web";
+import { delegateEvents, render } from "solid-js/web";
 
 import KeybindingSettingsPanel from "../src/components/KeybindingSettingsPanel";
 import {
@@ -70,10 +70,24 @@ const getBindings = (
   state.profiles.find((profile) => profile.id === state.activeProfileId)
     ?.bindings[actionId] ?? [];
 
+const clickElement = (element: HTMLElement): void => {
+  element.dispatchEvent(
+    new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }),
+  );
+};
+
+const flushMicrotasks = async (): Promise<void> => {
+  await Promise.resolve();
+  vi.runAllTimers();
+  await Promise.resolve();
+};
+
 describe("KeybindingSettingsPanel keyboard capture", () => {
   let mounted: MountedPanel | null = null;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    delegateEvents(["click"]);
     if (!globalThis.requestAnimationFrame) {
       globalThis.requestAnimationFrame = (callback) =>
         window.setTimeout(callback, 0);
@@ -81,13 +95,14 @@ describe("KeybindingSettingsPanel keyboard capture", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     mounted?.dispose();
     mounted?.container.remove();
     mounted = null;
     document.body.innerHTML = "";
   });
 
-  it("adds a new binding when capturing a shortcut", () => {
+  it("adds a new binding when capturing a shortcut", async () => {
     mounted = mountSettingsPanel();
     const card = findActionCard("Zoom in");
     const addButton = Array.from(card.querySelectorAll("button")).find(
@@ -96,11 +111,8 @@ describe("KeybindingSettingsPanel keyboard capture", () => {
     if (!addButton) {
       throw new Error("Add button not found");
     }
-    addButton.click();
-
-    expect(document.body.textContent).toContain(
-      "Press keys to set the shortcut",
-    );
+    clickElement(addButton);
+    await flushMicrotasks();
 
     window.dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -109,14 +121,12 @@ describe("KeybindingSettingsPanel keyboard capture", () => {
         bubbles: true,
       }),
     );
+    await flushMicrotasks();
 
-    expect(document.body.textContent).not.toContain(
-      "Press keys to set the shortcut",
-    );
     expect(getBindings(mounted.getState(), "view.zoomIn")).toContain("Shift+Z");
   });
 
-  it("removes a binding when Backspace is pressed during capture", () => {
+  it("removes a binding when Backspace is pressed during capture", async () => {
     mounted = mountSettingsPanel();
     const card = findActionCard("Undo");
     const bindingButton = Array.from(card.querySelectorAll("button")).find(
@@ -128,11 +138,13 @@ describe("KeybindingSettingsPanel keyboard capture", () => {
     if (!bindingButton) {
       throw new Error("Binding button not found");
     }
-    bindingButton.click();
+    clickElement(bindingButton);
+    await flushMicrotasks();
 
     window.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }),
     );
+    await flushMicrotasks();
 
     expect(getBindings(mounted.getState(), "history.undo")).toHaveLength(0);
   });

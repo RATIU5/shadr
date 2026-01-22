@@ -40,6 +40,7 @@ import {
   type NodeLayout,
 } from "@shadr/ui-canvas";
 import { Either } from "effect";
+import { RotateCcw, X } from "lucide-solid";
 import type { Application, Graphics } from "pixi.js";
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 
@@ -63,13 +64,19 @@ import {
   createRemoveNodeCommand,
   createRemoveWireCommand,
   createUpdateFrameCommand,
+  createUpdateNodeIoCommand,
   type GraphCommand,
   isNoopCommand,
 } from "~/editor/history";
+import { publishKeybindingEvent } from "~/editor/keybinding-events";
 import {
+  eventToKeybindingChord,
   getActiveKeybindingProfile,
+  isKeybindingSequencePrefix,
   type KeybindingActionId,
-  resolveKeybindingAction,
+  type KeybindingChord,
+  resolveKeybindingSequence,
+  serializeKeybindingSequence,
 } from "~/editor/keybindings";
 import {
   getNodeCatalogEntry,
@@ -152,6 +159,19 @@ type ContextMenuEntry =
     }>
   | Readonly<{
       kind: "separator";
+    }>;
+type TextEditState =
+  | Readonly<{
+      kind: "frame-title";
+      frameId: FrameId;
+      screen: Point;
+      defaultValue: string;
+    }>
+  | Readonly<{
+      kind: "socket-label";
+      socketId: SocketId;
+      screen: Point;
+      defaultValue: string;
     }>;
 
 const applyResponseCurve = (value: number, curve: number): number => {
@@ -300,6 +320,8 @@ const WIRE_AUTO_SCROLL_SPEED_PX = 18;
 const DEFAULT_FRAME_SIZE = { width: 320, height: 220 };
 const FRAME_MIN_SIZE = { width: 180, height: 120 };
 const FRAME_RESIZE_HIT_SIZE = 10;
+const FRAME_RESIZE_CORNER_HIT_SIZE = 18;
+const FRAME_TITLE_BAR_HEIGHT = 22;
 const GROUP_FRAME_PADDING = { x: 40, y: 48 };
 
 const buildWireInsertNodeTypes = (
@@ -590,6 +612,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     screen: Point;
     client: Point;
   } | null = null;
+  let textEditInput: HTMLInputElement | undefined;
 
   const { onViewportEmpty, onDiveIntoSubgraph, onCollapseSelectionToSubgraph } =
     props;
@@ -1026,6 +1049,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(
     null,
   );
+  const [textEdit, setTextEdit] = createSignal<TextEditState | null>(null);
+  const [textEditValue, setTextEditValue] = createSignal("");
   const [paramPanelSizes, setParamPanelSizes] = createSignal(
     new Map<string, NodeParamSize>(),
   );
@@ -1059,6 +1084,86 @@ export default function EditorCanvas(props: EditorCanvasProps) {
   const getSceneSocketPosition = (socketId: SocketId): Point | null =>
     scene?.getSocketPosition(socketId) ??
     getSocketPosition(graphSnapshot, socketId, layout);
+
+  const openFrameTitleEditor = (frame: GraphFrame, screen: Point): void => {
+    setTextEdit({
+      kind: "frame-title",
+      frameId: frame.id,
+      screen,
+      defaultValue: frame.title,
+    });
+    setTextEditValue(frame.title);
+    setContextMenu(null);
+  };
+
+  const openSocketLabelEditor = (socket: GraphSocket, screen: Point): void => {
+    const defaultValue = socket.label?.trim().length
+      ? socket.label
+      : socket.name;
+    setTextEdit({
+      kind: "socket-label",
+      socketId: socket.id,
+      screen,
+      defaultValue,
+    });
+    setTextEditValue(defaultValue);
+    setContextMenu(null);
+  };
+
+  const commitTextEdit = (state: TextEditState, rawValue?: string): void => {
+    const value = rawValue ?? textEditValue();
+    if (state.kind === "frame-title") {
+      const frame = graphSnapshot.frames.get(state.frameId);
+      if (!frame) {
+        setTextEdit(null);
+        return;
+      }
+      const nextTitle = sanitizeFrameTitle(value);
+      if (nextTitle !== frame.title) {
+        applyGraphCommand(
+          createUpdateFrameCommand(frame, { ...frame, title: nextTitle }),
+        );
+      }
+      setTextEdit(null);
+      return;
+    }
+    const socket = graphSnapshot.sockets.get(state.socketId);
+    if (!socket) {
+      setTextEdit(null);
+      return;
+    }
+    const node = graphSnapshot.nodes.get(socket.nodeId);
+    if (!node) {
+      setTextEdit(null);
+      return;
+    }
+    const sockets = collectNodeSockets(node);
+    if (!sockets) {
+      setTextEdit(null);
+      return;
+    }
+    const trimmed = value.trim();
+    const nextLabel =
+      trimmed.length === 0 || trimmed === socket.name ? undefined : trimmed;
+    if (nextLabel === socket.label) {
+      setTextEdit(null);
+      return;
+    }
+    const nextSockets = sockets.map((entry) =>
+      entry.id === socket.id ? { ...entry, label: nextLabel } : entry,
+    );
+    applyGraphCommand(
+      createUpdateNodeIoCommand(
+        { node, sockets },
+        { node, sockets: nextSockets },
+      ),
+    );
+    setTextEdit(null);
+  };
+
+  const cancelTextEdit = (): void => {
+    setTextEdit(null);
+  };
 
   const registerTestApi = (): (() => void) | null => {
     if (typeof window === "undefined") {
@@ -1123,39 +1228,43 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     const localY = worldPoint.y - frame.position.y;
     const { width, height } = frame.size;
     const within =
-      localX >= -FRAME_RESIZE_HIT_SIZE &&
-      localX <= width + FRAME_RESIZE_HIT_SIZE &&
-      localY >= -FRAME_RESIZE_HIT_SIZE &&
-      localY <= height + FRAME_RESIZE_HIT_SIZE;
+      localX >= -FRAME_RESIZE_CORNER_HIT_SIZE &&
+      localX <= width + FRAME_RESIZE_CORNER_HIT_SIZE &&
+      localY >= -FRAME_RESIZE_CORNER_HIT_SIZE &&
+      localY <= height + FRAME_RESIZE_CORNER_HIT_SIZE;
     if (!within) {
       return null;
     }
-    const nearLeft = localX <= FRAME_RESIZE_HIT_SIZE;
-    const nearRight = localX >= width - FRAME_RESIZE_HIT_SIZE;
-    const nearTop = localY <= FRAME_RESIZE_HIT_SIZE;
-    const nearBottom = localY >= height - FRAME_RESIZE_HIT_SIZE;
-    if (nearTop && nearLeft) {
+    const nearLeftEdge = localX <= FRAME_RESIZE_HIT_SIZE;
+    const nearRightEdge = localX >= width - FRAME_RESIZE_HIT_SIZE;
+    const nearTopEdge = localY <= FRAME_RESIZE_HIT_SIZE;
+    const nearBottomEdge = localY >= height - FRAME_RESIZE_HIT_SIZE;
+    const nearLeftCorner = localX <= FRAME_RESIZE_CORNER_HIT_SIZE;
+    const nearRightCorner = localX >= width - FRAME_RESIZE_CORNER_HIT_SIZE;
+    const nearTopCorner = localY <= FRAME_RESIZE_CORNER_HIT_SIZE;
+    const nearBottomCorner = localY >= height - FRAME_RESIZE_CORNER_HIT_SIZE;
+    if (nearTopCorner && nearLeftCorner) {
       return "nw";
     }
-    if (nearTop && nearRight) {
+    if (nearTopCorner && nearRightCorner) {
       return "ne";
     }
-    if (nearBottom && nearLeft) {
+    if (nearBottomCorner && nearLeftCorner) {
       return "sw";
     }
-    if (nearBottom && nearRight) {
+    if (nearBottomCorner && nearRightCorner) {
       return "se";
     }
-    if (nearTop) {
+    if (nearTopEdge) {
       return "n";
     }
-    if (nearBottom) {
+    if (nearBottomEdge) {
       return "s";
     }
-    if (nearLeft) {
+    if (nearLeftEdge) {
       return "w";
     }
-    if (nearRight) {
+    if (nearRightEdge) {
       return "e";
     }
     return null;
@@ -1424,10 +1533,6 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     const maxX = Math.max(topLeft.x, bottomRight.x);
     const minY = Math.min(topLeft.y, bottomRight.y);
     const maxY = Math.max(topLeft.y, bottomRight.y);
-    const startX = Math.floor(minX / GRID_SIZE) * GRID_SIZE;
-    const endX = Math.ceil(maxX / GRID_SIZE) * GRID_SIZE;
-    const startY = Math.floor(minY / GRID_SIZE) * GRID_SIZE;
-    const endY = Math.ceil(maxY / GRID_SIZE) * GRID_SIZE;
     const zoom = Math.max(scene.getZoom(), 0.001);
     const clamp = (value: number, min: number, max: number): number =>
       Math.min(Math.max(value, min), max);
@@ -1440,18 +1545,21 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       return t * t * (3 - 2 * t);
     };
     const lineWidth = 1 / zoom;
-    const minorSpacing = GRID_SIZE;
-    const majorSpacing = GRID_SIZE * 4;
-    const minorAlpha = clamp(
-      smoothstep(minorSpacing * zoom, 6, 22) * 0.18,
-      0,
-      0.18,
-    );
-    const majorAlpha = clamp(
-      smoothstep(majorSpacing * zoom, 10, 60) * 0.45,
-      0,
-      0.45,
-    );
+    const targetMinorPx = 22;
+    const level = Math.log2((GRID_SIZE * zoom) / targetMinorPx);
+    const levelStep = Math.floor(level);
+    const levelBlend = clamp(level - levelStep, 0, 1);
+    const spacingScale = Math.pow(2, -levelStep);
+    const minorSpacing = GRID_SIZE * spacingScale;
+    const majorSpacing = minorSpacing * 4;
+    const zoomFade = smoothstep(zoom, 0.06, 0.18);
+    const minorLevelFade = smoothstep(levelBlend, 0.15, 0.85);
+    const minorAlpha =
+      clamp(smoothstep(minorSpacing * zoom, 6, 26) * 0.18, 0, 0.18) *
+      minorLevelFade *
+      zoomFade;
+    const majorAlpha =
+      clamp(smoothstep(majorSpacing * zoom, 14, 80) * 0.45, 0, 0.45) * zoomFade;
 
     if (minorAlpha > 0) {
       const minorStartX = Math.floor(minX / minorSpacing) * minorSpacing;
@@ -1462,15 +1570,15 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         if (x % majorSpacing === 0) {
           continue;
         }
-        gridGraphics.moveTo(x, startY);
-        gridGraphics.lineTo(x, endY);
+        gridGraphics.moveTo(x, minY);
+        gridGraphics.lineTo(x, maxY);
       }
       for (let y = minorStartY; y <= minorEndY; y += minorSpacing) {
         if (y % majorSpacing === 0) {
           continue;
         }
-        gridGraphics.moveTo(startX, y);
-        gridGraphics.lineTo(endX, y);
+        gridGraphics.moveTo(minX, y);
+        gridGraphics.lineTo(maxX, y);
       }
       gridGraphics.stroke({
         width: lineWidth,
@@ -1485,12 +1593,12 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       const majorStartY = Math.floor(minY / majorSpacing) * majorSpacing;
       const majorEndY = Math.ceil(maxY / majorSpacing) * majorSpacing;
       for (let x = majorStartX; x <= majorEndX; x += majorSpacing) {
-        gridGraphics.moveTo(x, startY);
-        gridGraphics.lineTo(x, endY);
+        gridGraphics.moveTo(x, minY);
+        gridGraphics.lineTo(x, maxY);
       }
       for (let y = majorStartY; y <= majorEndY; y += majorSpacing) {
-        gridGraphics.moveTo(startX, y);
-        gridGraphics.lineTo(endX, y);
+        gridGraphics.moveTo(minX, y);
+        gridGraphics.lineTo(maxX, y);
       }
       gridGraphics.stroke({
         width: lineWidth * 1.4,
@@ -1502,8 +1610,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     const axisWidth = 1.6 / zoom;
     const axisAlpha = 0.7;
     if (0 >= minX && 0 <= maxX) {
-      gridGraphics.moveTo(0, startY);
-      gridGraphics.lineTo(0, endY);
+      gridGraphics.moveTo(0, minY);
+      gridGraphics.lineTo(0, maxY);
       gridGraphics.stroke({
         width: axisWidth,
         color: canvasPalette.gridAxis,
@@ -1511,8 +1619,8 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       });
     }
     if (0 >= minY && 0 <= maxY) {
-      gridGraphics.moveTo(startX, 0);
-      gridGraphics.lineTo(endX, 0);
+      gridGraphics.moveTo(minX, 0);
+      gridGraphics.lineTo(maxX, 0);
       gridGraphics.stroke({
         width: axisWidth,
         color: canvasPalette.gridAxis,
@@ -1671,6 +1779,30 @@ export default function EditorCanvas(props: EditorCanvasProps) {
       }
     }
     return getFrameDragBounds(positions);
+  };
+
+  const sanitizeFrameTitle = (value: string): string => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : "Frame";
+  };
+
+  const collectNodeSockets = (node: GraphNode): GraphSocket[] | null => {
+    const sockets: GraphSocket[] = [];
+    for (const socketId of node.inputs) {
+      const socket = graphSnapshot.sockets.get(socketId);
+      if (!socket) {
+        return null;
+      }
+      sockets.push(socket);
+    }
+    for (const socketId of node.outputs) {
+      const socket = graphSnapshot.sockets.get(socketId);
+      if (!socket) {
+        return null;
+      }
+      sockets.push(socket);
+    }
+    return sockets;
   };
 
   const createFrameFromBounds = (title: string, bounds: Bounds): GraphFrame => {
@@ -4294,15 +4426,85 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         if (hit.kind === "wire") {
           return;
         }
+        if (hit.kind === "socket") {
+          const socket = graphSnapshot.sockets.get(hit.socketId);
+          if (socket) {
+            openSocketLabelEditor(socket, screenPoint);
+          }
+          return;
+        }
         if (hit.kind === "node") {
           const node = graphSnapshot.nodes.get(hit.nodeId);
           if (node?.type === SUBGRAPH_NODE_TYPE && onDiveIntoSubgraph) {
             onDiveIntoSubgraph(node.id);
+          }
+          return;
+        }
+        if (hit.kind === "frame") {
+          const frame = graphSnapshot.frames.get(hit.frameId);
+          if (!frame) {
             return;
           }
+          const worldPoint = scene.screenToWorld(screenPoint);
+          const localY = worldPoint.y - frame.position.y;
+          if (localY >= 0 && localY <= FRAME_TITLE_BAR_HEIGHT) {
+            openFrameTitleEditor(frame, screenPoint);
+          }
         }
-        const worldPoint = scene.screenToWorld(screenPoint);
-        addNodeAt(QUICK_ADD_NODE_TYPE, worldPoint);
+      };
+
+      let keybindingSequence: KeybindingChord[] = [];
+      let keybindingSequenceTimer: number | null = null;
+
+      const clearKeybindingSequence = (): void => {
+        keybindingSequence = [];
+        if (keybindingSequenceTimer) {
+          window.clearTimeout(keybindingSequenceTimer);
+          keybindingSequenceTimer = null;
+        }
+      };
+
+      const scheduleKeybindingSequenceReset = (): void => {
+        if (keybindingSequenceTimer) {
+          window.clearTimeout(keybindingSequenceTimer);
+        }
+        keybindingSequenceTimer = window.setTimeout(
+          () => clearKeybindingSequence(),
+          900,
+        );
+      };
+
+      const resolveSequenceAction = (
+        chord: KeybindingChord,
+      ): {
+        actionId: KeybindingActionId;
+        sequence: KeybindingChord[];
+      } | null => {
+        const profile = getActiveKeybindingProfile(
+          settingsSnapshot.keybindings,
+        );
+        const nextSequence = [...keybindingSequence, chord];
+        const directMatch = resolveKeybindingSequence(nextSequence, profile);
+        if (directMatch) {
+          clearKeybindingSequence();
+          return { actionId: directMatch, sequence: nextSequence };
+        }
+        if (isKeybindingSequencePrefix(nextSequence, profile)) {
+          keybindingSequence = nextSequence;
+          scheduleKeybindingSequenceReset();
+          return null;
+        }
+        clearKeybindingSequence();
+        const singleSequence = [chord];
+        const singleMatch = resolveKeybindingSequence(singleSequence, profile);
+        if (singleMatch) {
+          return { actionId: singleMatch, sequence: singleSequence };
+        }
+        if (isKeybindingSequencePrefix(singleSequence, profile)) {
+          keybindingSequence = singleSequence;
+          scheduleKeybindingSequenceReset();
+        }
+        return null;
       };
 
       const onKeyDown = (event: KeyboardEvent): void => {
@@ -4313,6 +4515,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           if (event.key === "Escape") {
             event.preventDefault();
             setCommandPaletteOpen(false);
+            clearKeybindingSequence();
           }
           return;
         }
@@ -4341,19 +4544,31 @@ export default function EditorCanvas(props: EditorCanvasProps) {
           setSocketTooltip(null);
           setContextMenu(null);
           dragState = { kind: "none" };
+          clearKeybindingSequence();
           return;
         }
 
         if (isEditableTarget) {
+          clearKeybindingSequence();
           return;
         }
 
-        const action = resolveKeybindingAction(
-          event,
-          getActiveKeybindingProfile(settingsSnapshot.keybindings),
-        );
-        if (!action) {
+        const chord = eventToKeybindingChord(event);
+        if (!chord) {
           return;
+        }
+        const resolved = resolveSequenceAction(chord);
+        if (!resolved) {
+          return;
+        }
+        const action = resolved.actionId;
+        const binding = serializeKeybindingSequence(resolved.sequence);
+        if (binding) {
+          publishKeybindingEvent({
+            actionId: action,
+            binding,
+            sequence: resolved.sequence,
+          });
         }
 
         const prevent = (): void => {
@@ -4693,6 +4908,7 @@ export default function EditorCanvas(props: EditorCanvasProps) {
         app?.canvas.removeEventListener("wheel", onWheel);
         window.removeEventListener("keydown", onKeyDown);
         mediaQuery?.removeEventListener("change", onSchemeChange);
+        clearKeybindingSequence();
         resizeObserver.disconnect();
         app?.destroy(true);
         app = null;
@@ -4767,6 +4983,16 @@ export default function EditorCanvas(props: EditorCanvasProps) {
     onCleanup(() => {
       window.clearTimeout(timer);
     });
+  });
+
+  createEffect(() => {
+    if (!textEdit()) {
+      return;
+    }
+    if (textEditInput) {
+      textEditInput.focus();
+      textEditInput.select();
+    }
   });
 
   return (
@@ -4857,6 +5083,82 @@ export default function EditorCanvas(props: EditorCanvasProps) {
               {tooltip.valueLabel}
             </div>
           </div>
+        )}
+      </Show>
+      <Show when={textEdit()} keyed>
+        {(edit) => (
+          <>
+            <div
+              class="absolute inset-0 z-[var(--layer-canvas-overlay)]"
+              aria-hidden="true"
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                commitTextEdit(edit);
+              }}
+            />
+            <form
+              class="absolute z-[var(--layer-canvas-menu)] w-[260px] rounded-xl border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-strong)] p-2 text-[0.75rem] text-[color:var(--text-strong)] shadow-[var(--shadow-panel)]"
+              style={{
+                left: `clamp(12px, ${edit.screen.x}px, calc(100% - 280px))`,
+                top: `clamp(12px, ${edit.screen.y}px, calc(100% - 120px))`,
+              }}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+              }}
+              onSubmit={(event) => {
+                event.preventDefault();
+                commitTextEdit(edit);
+              }}
+            >
+              <div class="flex items-center gap-2">
+                <input
+                  ref={(el) => {
+                    textEditInput = el;
+                  }}
+                  class="flex-1 rounded-lg border border-[color:var(--border-muted)] bg-[color:var(--surface-panel-soft)] px-2 py-1 text-[0.75rem] text-[color:var(--text-strong)] outline-none focus:border-[color:var(--border-strong)]"
+                  value={textEditValue()}
+                  aria-label={
+                    edit.kind === "frame-title"
+                      ? "Edit frame title"
+                      : "Edit socket label"
+                  }
+                  onInput={(event) => {
+                    setTextEditValue(event.currentTarget.value);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      cancelTextEdit();
+                    }
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitTextEdit(edit);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  class="rounded-lg border border-[color:var(--border-muted)] p-1 text-[color:var(--text-muted)] transition hover:text-[color:var(--text-strong)]"
+                  aria-label="Clear text"
+                  onClick={() => {
+                    setTextEditValue("");
+                  }}
+                >
+                  <X class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-[color:var(--border-muted)] p-1 text-[color:var(--text-muted)] transition hover:text-[color:var(--text-strong)]"
+                  aria-label="Reset text"
+                  onClick={() => {
+                    setTextEditValue(edit.defaultValue);
+                  }}
+                >
+                  <RotateCcw class="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </form>
+          </>
         )}
       </Show>
       {contextMenu() ? (

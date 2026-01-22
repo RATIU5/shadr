@@ -1,3 +1,4 @@
+import { Trash2 } from "lucide-solid";
 import { For } from "solid-js";
 
 import type { ExecDebugEntry } from "~/editor/exec-debug";
@@ -39,7 +40,7 @@ export default function ExecDebugConsole(props: ExecDebugConsoleProps) {
   const consoleEmpty =
     "rounded-xl border border-dashed border-[color:var(--border-muted)] bg-[color:var(--surface-panel-muted)] p-3 text-[0.85rem] text-[color:var(--text-muted)]";
   const clearButton =
-    "rounded-full border border-[color:var(--border-muted)] bg-transparent px-[0.6rem] py-[0.2rem] text-[0.65rem] uppercase tracking-[0.1em] text-[color:var(--text-soft)]";
+    "inline-flex items-center justify-center rounded-full border border-[color:var(--border-muted)] bg-transparent px-[0.6rem] py-[0.2rem] text-[0.65rem] uppercase tracking-[0.1em] text-[color:var(--text-soft)]";
 
   return (
     <div class="flex flex-col gap-3">
@@ -54,8 +55,15 @@ export default function ExecDebugConsole(props: ExecDebugConsoleProps) {
         </div>
         <div class="flex items-center gap-2">
           <span class={consoleTag}>Dev</span>
-          <button class={clearButton} type="button" onClick={props.onClear}>
-            Clear
+          <button
+            class={clearButton}
+            type="button"
+            onClick={props.onClear}
+            aria-label="Clear exec history"
+            title="Clear exec history"
+          >
+            <Trash2 class="h-3 w-3" />
+            <span class="sr-only">Clear</span>
           </button>
         </div>
       </div>
